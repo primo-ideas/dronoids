@@ -10,151 +10,190 @@ pub struct Builtin {
 pub const BUILTINS: &[Builtin] = &[
     Builtin {
         name: "mineur",
-        summary: "Va au minerai le plus proche, remplit sa soute, rentre.",
+        summary: "Va au cristal le plus proche, remplit sa soute, rentre.",
         source: r#"; MINEUR -- le programme de départ.
-; Cherche le minerai le plus proche, le creuse jusqu'à
+; Va au cristal le plus proche, le creuse jusqu'à
 ; remplir sa soute, puis rentre décharger à l'usine.
-; Défaut : fonce tout droit et se cogne aux murs.
+; Défaut : fonce tout droit et se cogne aux astéroïdes.
 
 debut:
     CARGO a
     JGE a, FULL, rentrer
-    SCAN b, ORE          ; b = direction du minerai
-    JEQ b, NONE, errer   ; rien en vue ?
-    LOOK c, b
-    JEQ c, ORE, creuser
+    DIST a, ORE          ; distance au cristal le plus proche
+    JEQ a, NONE, errer   ; rien en vue ?
+    JLE a, 1, creuser    ; à portée : on creuse
+    SCAN b, ORE          ; b = angle vers le cristal
     MOVE b
-    JZ ok, errer         ; bloqué : pas de côté au hasard
+    JZ ok, esquive       ; bloqué
     JMP debut
 
 creuser:
-    MINE b
+    MINE
     JMP debut
 
 rentrer:
+    DIST a, BASE
+    JLE a, 1, vider
     SCAN b, BASE
-    JEQ b, NONE, errer
-    LOOK c, b
-    JEQ c, BASE, vider
     MOVE b
-    JZ ok, errer
-    JMP debut
+    JZ ok, esquive
+    JMP rentrer
 
 vider:
-    DROP b
+    DROP
+    JMP debut
+
+esquive:                 ; un pas de côté au hasard
+    RAND c, 180
+    ADD b, c
+    SUB b, 90
+    MOVE b
     JMP debut
 
 errer:
-    RAND b, 4
+    RAND b, 360
+    MOVE b
+    MOVE b
     MOVE b
     JMP debut
 "#,
     },
     Builtin {
         name: "eclaireur",
-        summary: "File en ligne droite, change de cap quand il bute.",
-        source: r#"; ECLAIREUR -- explore en ligne droite et tourne
-; quand il bute. Mine ce qu'il croise et rapporte
-; quand il est plein. Utile pour révéler des gisements
+        summary: "Part en ligne droite, change de cap quand il bute.",
+        source: r#"; ECLAIREUR -- part en ligne droite et change de cap
+; quand il bute. Mine ce qu'il croise, rentre quand il
+; est plein. Utile pour découvrir des gisements lointains
 ; et étendre la zone où l'on peut construire.
 
-    RAND d, 4            ; d = cap
+    RAND d, 360          ; d = cap
 boucle:
     CARGO a
     JGE a, FULL, rentrer
-    LOOK c, d
-    JEQ c, ORE, creuser
+    DIST a, ORE
+    JEQ a, NONE, avancer
+    JLE a, 1, creuser
+avancer:
     MOVE d
     JNZ ok, boucle
-    RAND d, 4            ; bloqué : nouveau cap
+    RAND d, 360          ; bloqué : nouveau cap
     JMP boucle
 
 creuser:
-    MINE d
+    MINE
     JMP boucle
 
 rentrer:
+    DIST a, BASE
+    JLE a, 1, vider
     SCAN b, BASE
-    LOOK c, b
-    JEQ c, BASE, vider
     MOVE b
     JNZ ok, rentrer
-    RAND b, 4
+    RAND c, 180
+    ADD b, c
+    SUB b, 90
     MOVE b
     JMP rentrer
 
 vider:
-    DROP b
-    RAND d, 4
+    DROP
+    RAND d, 360
     JMP boucle
 "#,
     },
     Builtin {
         name: "chasseur",
-        summary: "Traque les drones ennemis puis assiège leurs usines.",
+        summary: "Traque les ennemis, sinon file vers la cible de l'usine.",
         source: r#"; CHASSEUR -- traque les drones ennemis à portée,
-; sinon fonce sur l'usine ennemie la plus proche.
+; sinon attaque l'usine ennemie la plus proche
+; (repérée jusqu'à 40 unités), sinon file vers la
+; cible de son usine : mémoire 0 = X, 1 = Y, 2 = 1
+; si une cible est posée. Sinon, patrouille.
 
 chasse:
+    DIST a, ENEMY
+    JEQ a, NONE, siege
+    JLE a, 2, feu        ; à portée de tir
     SCAN b, ENEMY
-    JEQ b, NONE, siege
-    LOOK c, b
-    JEQ c, ENEMY, frappe
     MOVE b
     JZ ok, esquive
     JMP chasse
 
 siege:
+    DIST a, EBASE
+    JEQ a, NONE, cible
+    JLE a, 2, feu
     SCAN b, EBASE
-    JEQ b, NONE, patrouille
-    LOOK c, b
-    JEQ c, EBASE, frappe
     MOVE b
     JZ ok, esquive
     JMP chasse
 
-frappe:
-    ATTACK b
+feu:
+    ATTACK
+    JMP chasse
+
+cible:
+    PEEK a, 2
+    JZ a, patrouille     ; aucune cible posée
+    POSX a
+    PEEK b, 0
+    SUB b, a             ; b = écart est-ouest
+    POSY a
+    PEEK c, 1
+    SUB c, a             ; c = écart nord-sud
+    ANGLE b, b, c
+    JEQ b, NONE, patrouille
+    MOVE b
+    JZ ok, esquive
     JMP chasse
 
 patrouille:
-    RAND b, 4
-    MOVE b
+    JNZ d, cap           ; d = cap (0 tant qu'il n'est pas choisi)
+    RAND d, 359
+    INC d
+cap:
+    MOVE d
+    JNZ ok, chasse
+    RAND d, 359
+    INC d
     JMP chasse
 
 esquive:
-    RAND b, 4
+    RAND c, 180
+    ADD b, c
+    SUB b, 90
     MOVE b
     JMP chasse
 "#,
     },
     Builtin {
         name: "gardien",
-        summary: "Reste près de la base et attaque les intrus.",
+        summary: "Reste près de la base et tire sur les intrus.",
         source: r#"; GARDIEN -- reste près de son usine et
-; attaque tout ennemi qui s'approche.
+; tire sur tout ennemi qui s'approche.
 
 garde:
     DIST a, ENEMY
     JEQ a, NONE, retour
-    JGT a, 6, retour     ; trop loin, on ne lâche pas la base
+    JLE a, 2, feu
+    JGT a, 8, retour     ; trop loin : on ne lâche pas la base
     SCAN b, ENEMY
-    LOOK c, b
-    JEQ c, ENEMY, frappe
     MOVE b
     JMP garde
 
-frappe:
-    ATTACK b
+feu:
+    ATTACK
     JMP garde
 
 retour:
     DIST a, BASE
-    JLE a, 2, veille
+    JLE a, 3, veille
     SCAN b, BASE
     MOVE b
     JNZ ok, garde
-    RAND b, 4
+    RAND c, 180
+    ADD b, c
+    SUB b, 90
     MOVE b
     JMP garde
 
@@ -168,7 +207,8 @@ veille:
 /// Template for a brand-new program.
 pub const TEMPLATE: &str = r#"; Nouveau programme.
 ; Registres : a b c d (et ok, mis à 1/0 par la dernière action)
-; Directions : N E S W   Choses : ORE ALLY ENEMY BASE EBASE WALL EMPTY
+; Angles en degrés : N=0 E=90 S=180 W=270
+; Choses : ORE ALLY ENEMY BASE EBASE WALL EMPTY
 ; F1 : aide complète
 
 debut:

@@ -1,50 +1,65 @@
-; MINEUR+ -- comme le mineur, mais quand la route directe
-; est bloquée il essaie l'autre axe au lieu d'errer.
+; MINEUR+ -- comme le mineur, mais il regarde devant lui
+; (LOOK) et contourne les obstacles au lieu de foncer dedans.
+
 debut:
     CARGO a
     JGE a, FULL, maison
-    SET d, ORE           ; d = ce qu'on cherche
+    DIST a, ORE
+    JEQ a, NONE, explorer
+    JLE a, 1, creuser
+    SCAN b, ORE
     JMP aller
 maison:
-    SET d, BASE
+    DIST a, BASE
+    JLE a, 1, vider
+    SCAN b, BASE
 aller:
-    SCAN b, d            ; direction naïve vers la cible
-    JEQ b, NONE, errer
-    LOOK c, b
-    JEQ c, d, agir       ; la cible est juste à côté
-    MOVE b
-    JNZ ok, debut
-    ; bloqué : on tente l'axe secondaire
-    JEQ b, E, vertical
-    JEQ b, W, vertical
-    DX a, d              ; on allait N/S : est ou ouest ?
-    SET b, E
-    JGT a, 0, tenter
-    SET b, W
-    JLT a, 0, tenter
-    RAND b, 2            ; aligné : E (1) ou W (3) au hasard
-    MUL b, 2
-    ADD b, 1
-    JMP tenter
-vertical:
-    DY a, d              ; on allait E/W : nord ou sud ?
-    SET b, S
-    JGT a, 0, tenter
-    SET b, N
-    JLT a, 0, tenter
-    RAND b, 2            ; aligné : N (0) ou S (2) au hasard
-    MUL b, 2
-tenter:
-    MOVE b
-    JNZ ok, debut
-errer:
-    RAND b, 4
+    CALL libre           ; corrige le cap b si c'est bouché devant
     MOVE b
     JMP debut
-agir:
-    JEQ d, BASE, vider
-    MINE b
+creuser:
+    MINE
     JMP debut
 vider:
-    DROP b
+    DROP
     JMP debut
+
+explorer:
+    JNZ d, pas           ; d = cap d'exploration (0 = pas encore choisi)
+    RAND d, 359
+    INC d
+pas:
+    SET b, d
+    CALL libre
+    SET d, b
+    MOVE b
+    JMP debut
+
+; libre : à partir du cap b, cherche un cap sans obstacle
+; juste devant : b, b+40, b-40, b+80, b-80...
+; Les drones se croisent : seuls WALL, ORE, BASE, EBASE bloquent.
+libre:
+    SET a, 0
+essai:
+    LOOK c, b
+    JEQ c, EMPTY, trouve
+    JEQ c, ALLY, trouve
+    JEQ c, ENEMY, trouve
+    INC a
+    JGT a, 8, trouve     ; tant pis, on tente quand même
+    SET c, a
+    MOD c, 2
+    JZ c, gauche
+    SET c, a
+    MUL c, 40
+    ADD b, c
+    JMP tourner
+gauche:
+    SET c, a
+    MUL c, 40
+    SUB b, c
+tourner:
+    MOD b, 360
+    JMP essai
+trouve:
+    RET

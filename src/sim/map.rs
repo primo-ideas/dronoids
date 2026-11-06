@@ -1,240 +1,186 @@
-//! Seeded, 180°-symmetric map generation (fair for two players).
+//! Seeded generation of a large open world: asteroid belts, crystal
+//! fields and well-spread starting places.
 
-use super::Tile;
+use super::Rock;
+use crate::geo::{dir_vec, dist2};
 use crate::rng::Rng;
-use crate::rules::{ORE_MAX, ORE_MIN};
+use crate::rules::*;
 
 pub struct GeneratedMap {
-    pub w: i32,
-    pub h: i32,
-    pub tiles: Vec<Tile>,
-    /// Start positions; `starts[1]` is the mirror image of `starts[0]`.
-    pub starts: Vec<(i32, i32)>,
+    pub size: i32,
+    pub rocks: Vec<Rock>,
+    /// (x, y, amount)
+    pub ores: Vec<(i32, i32, i32)>,
+    pub slots: Vec<(i32, i32)>,
 }
 
-pub fn generate(seed: u64, w: i32, h: i32) -> GeneratedMap {
+/// Radius of an ore deposit holding `amount` crystals.
+pub fn ore_radius(amount: i32) -> i32 {
+    FP * 3 / 10 + FP * 4 / 10 * amount.clamp(0, ORE_MAX) / ORE_MAX
+}
+
+/// Smooth value noise in 0..1000 (integer bilinear interpolation).
+struct Noise {
+    step: i32,
+    n: i32,
+    v: Vec<i32>,
+}
+
+impl Noise {
+    fn new(rng: &mut Rng, size: i32, step: i32) -> Noise {
+        let n = size / step + 2;
+        let v = (0..n * n).map(|_| rng.range(0, 1001)).collect();
+        Noise { step, n, v }
+    }
+
+    fn at(&self, x: i32, y: i32) -> i32 {
+        let (gx, gy) = (x / self.step, y / self.step);
+        let (fx, fy) = ((x % self.step) as i64, (y % self.step) as i64);
+        let s = self.step as i64;
+        let g = |i: i32, j: i32| self.v[((j.min(self.n - 1)) * self.n + i.min(self.n - 1)) as usize] as i64;
+        let top = g(gx, gy) * (s - fx) + g(gx + 1, gy) * fx;
+        let bot = g(gx, gy + 1) * (s - fx) + g(gx + 1, gy + 1) * fx;
+        ((top * (s - fy) + bot * fy) / (s * s)) as i32
+    }
+}
+
+pub fn generate(seed: u64, size_units: i32) -> GeneratedMap {
     let mut rng = Rng::new(seed);
-    let n = (w * h) as usize;
-    let idx = |x: i32, y: i32| (y * w + x) as usize;
-    let mirror = |i: usize| n - 1 - i;
-    let inside = |x: i32, y: i32| x >= 0 && y >= 0 && x < w && y < h;
+    let size = size_units * FP;
+    let margin = 24 * FP;
 
-    // 1. Noise, mirrored.
-    let mut wall = vec![false; n];
-    for i in 0..n {
-        if i <= mirror(i) {
-            let v = rng.chance(41, 100);
-            wall[i] = v;
-            wall[mirror(i)] = v;
-        }
-    }
-
-    // 2. Cellular automaton smoothing (symmetric rule keeps the symmetry).
-    for pass in 0..5 {
-        let mut next = wall.clone();
-        for y in 0..h {
-            for x in 0..w {
-                let mut c = 0;
-                for dy in -1..=1 {
-                    for dx in -1..=1 {
-                        if dx == 0 && dy == 0 {
-                            continue;
-                        }
-                        let (nx, ny) = (x + dx, y + dy);
-                        if !inside(nx, ny) || wall[idx(nx, ny)] {
-                            c += 1;
-                        }
-                    }
-                }
-                let cur = wall[idx(x, y)];
-                next[idx(x, y)] = if pass < 3 { c >= 5 || (cur && c >= 4) } else { c >= 5 };
+    // 1. Starting places, spread out by farthest-point sampling.
+    let mut slots: Vec<(i32, i32)> = vec![];
+    let c = size / 2;
+    slots.push((c + rng.range(-40 * FP, 40 * FP), c + rng.range(-40 * FP, 40 * FP)));
+    while slots.len() < SPAWN_SLOTS {
+        let mut best = (0i64, (0, 0));
+        for _ in 0..80 {
+            let p = (rng.range(margin, size - margin), rng.range(margin, size - margin));
+            let d = slots.iter().map(|s| dist2(s.0 - p.0, s.1 - p.1)).min().unwrap();
+            if d > best.0 {
+                best = (d, p);
             }
         }
-        wall = next;
+        slots.push(best.1);
+    }
+    let near_slot = |x: i32, y: i32, r: i32| slots.iter().any(|s| dist2(s.0 - x, s.1 - y) < r as i64 * r as i64);
+
+    // 2. Asteroid belts follow a noise field.
+    let belts = Noise::new(&mut rng, size, 56 * FP);
+    let detail = Noise::new(&mut rng, size, 13 * FP);
+    let mut rocks: Vec<Rock> = vec![];
+    let cell = 16 * FP;
+    let mut rock_grid = super::grid::Grid::new(size, cell);
+    let mut near = vec![];
+    let attempts = (size_units as i64 * size_units as i64 / 30) as usize;
+    for _ in 0..attempts {
+        let (x, y) = (rng.range(FP * 4, size - FP * 4), rng.range(FP * 4, size - FP * 4));
+        let d = belts.at(x, y) * 2 / 3 + detail.at(x, y) / 3;
+        if d < 560 || rng.range(560, 1001) > d {
+            continue;
+        }
+        let r = rng.range(FP * 3 / 2, FP * 3 / 2 + (d - 520) * FP * 6 / 480);
+        if near_slot(x, y, r + 16 * FP) {
+            continue;
+        }
+        rock_grid.query(x, y, r + 8 * FP, &mut near);
+        let overlaps = near.iter().any(|&i| {
+            let o: &Rock = &rocks[i as usize];
+            let gap = o.r + r + FP * 6 / 5;
+            dist2(o.x - x, o.y - y) < gap as i64 * gap as i64
+        });
+        if overlaps {
+            continue;
+        }
+        rock_grid.insert(x, y, rocks.len() as u32);
+        rocks.push(Rock { x, y, r, seed: rng.next_u64() as u32 });
     }
 
-    // 3. Solid border.
-    for x in 0..w {
-        wall[idx(x, 0)] = true;
-        wall[idx(x, h - 1)] = true;
-    }
-    for y in 0..h {
-        wall[idx(0, y)] = true;
-        wall[idx(w - 1, y)] = true;
-    }
-
-    // 4. Start areas.
-    let s0 = (5, h - 6);
-    let s1 = (w - 1 - s0.0, h - 1 - s0.1);
-    for (sx, sy) in [s0, s1] {
-        for dy in -4..=4 {
-            for dx in -4..=4 {
-                let (x, y) = (sx + dx, sy + dy);
-                if dx * dx + dy * dy <= 18 && x > 0 && y > 0 && x < w - 1 && y < h - 1 {
-                    wall[idx(x, y)] = false;
-                }
-            }
-        }
-    }
-
-    // 5. Make sure both starts are connected, then seal unreachable pockets.
-    let flood = |wall: &Vec<bool>| -> Vec<bool> {
-        let mut seen = vec![false; n];
-        let mut stack = vec![s0];
-        seen[idx(s0.0, s0.1)] = true;
-        while let Some((x, y)) = stack.pop() {
-            for (dx, dy) in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
-                let (nx, ny) = (x + dx, y + dy);
-                if inside(nx, ny) && !wall[idx(nx, ny)] && !seen[idx(nx, ny)] {
-                    seen[idx(nx, ny)] = true;
-                    stack.push((nx, ny));
-                }
-            }
-        }
-        seen
-    };
-    let mut reach = flood(&wall);
-    if !reach[idx(s1.0, s1.1)] {
-        // Carve a wobbly corridor towards the other start (and its mirror).
-        let (mut x, mut y) = s0;
-        while (x, y) != s1 {
-            let (dx, dy) = (s1.0 - x, s1.1 - y);
-            if dx != 0 && (dy == 0 || rng.chance(dx.unsigned_abs(), (dx.abs() + dy.abs()) as u32)) {
-                x += dx.signum();
-            } else {
-                y += dy.signum();
-            }
-            for (cx, cy) in [(x, y), (x + 1, y)] {
-                if cx > 0 && cx < w - 1 {
-                    let i = idx(cx, cy);
-                    wall[i] = false;
-                    wall[mirror(i)] = false;
-                }
-            }
-        }
-        reach = flood(&wall);
-    }
-    for i in 0..n {
-        if !reach[i] {
-            wall[i] = true;
-        }
-    }
-
-    let mut tiles: Vec<Tile> = wall.iter().map(|&b| if b { Tile::Wall } else { Tile::Floor }).collect();
-
-    // 6. Ore fields.
-    let dist2 = |a: (i32, i32), b: (i32, i32)| (a.0 - b.0).pow(2) + (a.1 - b.1).pow(2);
-    let grow = |tiles: &mut Vec<Tile>, rng: &mut Rng, cx: i32, cy: i32, size: usize, rich: bool| {
-        // Start from the closest floor tile to the requested centre.
-        let mut seed_at = None;
-        'search: for r in 0..8 {
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    let (x, y) = (cx + dx, cy + dy);
-                    if (dx.abs() == r || dy.abs() == r)
-                        && inside(x, y)
-                        && tiles[idx(x, y)] == Tile::Floor
-                        && dist2((x, y), s0) >= 12
-                        && dist2((x, y), s1) >= 12
-                    {
-                        seed_at = Some((x, y));
-                        break 'search;
-                    }
-                }
-            }
-        }
-        let Some(start) = seed_at else { return };
-        let mut frontier = vec![start];
+    // 3. Crystal fields.
+    let mut ores: Vec<(i32, i32, i32)> = vec![];
+    let mut ore_grid = super::grid::Grid::new(size, cell);
+    let mut cluster = |rng: &mut Rng, ores: &mut Vec<(i32, i32, i32)>, cx: i32, cy: i32, n: usize, rich: i32| {
         let mut placed = 0;
-        let mut guard = 0;
-        while placed < size && !frontier.is_empty() && guard < 400 {
-            guard += 1;
-            let k = rng.below(frontier.len() as u32) as usize;
-            let (x, y) = frontier.swap_remove(k);
-            if !inside(x, y) {
+        for k in 0..n * 6 {
+            if placed >= n {
+                break;
+            }
+            let spread = FP * 2 + (k as i32 / 2) * FP / 3;
+            let (dx, dy) = dir_vec(rng.range(0, 360), rng.range(0, spread.min(6 * FP)));
+            let (x, y) = (cx + dx, cy + dy);
+            if x < FP * 2 || y < FP * 2 || x > size - FP * 2 || y > size - FP * 2 {
                 continue;
             }
-            let i = idx(x, y);
-            if tiles[i] != Tile::Floor || dist2((x, y), s0) < 12 || dist2((x, y), s1) < 12 {
+            let amount = (rng.range(ORE_MIN, ORE_MAX + 1) * rich / 100).min(ORE_MAX * 2);
+            let r = ore_radius(amount);
+            if near_slot(x, y, r + 4 * FP) {
                 continue;
             }
-            let base = rng.range(ORE_MIN as i32, ORE_MAX as i32 + 1) as u16;
-            let amount = if rich { base + ORE_MAX / 2 } else { base };
-            tiles[i] = Tile::Ore(amount);
-            tiles[mirror(i)] = Tile::Ore(amount);
+            rock_grid.query(x, y, r + 8 * FP, &mut near);
+            if near.iter().any(|&i| {
+                let o = &rocks[i as usize];
+                let gap = o.r + r + FP / 2;
+                dist2(o.x - x, o.y - y) < gap as i64 * gap as i64
+            }) {
+                continue;
+            }
+            ore_grid.query(x, y, 2 * FP, &mut near);
+            if near.iter().any(|&i| {
+                let (ox, oy, oa) = ores[i as usize];
+                let gap = ore_radius(oa) + r + FP / 4;
+                dist2(ox - x, oy - y) < gap as i64 * gap as i64
+            }) {
+                continue;
+            }
+            ore_grid.insert(x, y, ores.len() as u32);
+            ores.push((x, y, amount));
             placed += 1;
-            for (dx, dy) in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
-                frontier.push((x + dx, y + dy));
-            }
         }
     };
-
-    // A guaranteed field near each base, offset towards the centre.
-    grow(&mut tiles, &mut rng, s0.0 + 6, s0.1 - 3, 10, false);
-    grow(&mut tiles, &mut rng, s0.0 + 2, s0.1 - 7, 6, false);
-    // A rich contested field in the middle.
-    grow(&mut tiles, &mut rng, w / 2, h / 2, 14, true);
-    // Scattered fields.
-    let mut fields = 0;
-    let mut tries = 0;
-    while fields < 9 && tries < 500 {
-        tries += 1;
-        let x = rng.range(2, w - 2);
-        let y = rng.range(2, h - 2);
-        let i = idx(x, y);
-        if i > mirror(i) || tiles[i] != Tile::Floor {
-            continue;
-        }
-        if dist2((x, y), s0) < 120 || dist2((x, y), s1) < 120 {
-            continue;
-        }
-        let size = rng.range(5, 13) as usize;
-        grow(&mut tiles, &mut rng, x, y, size, false);
-        fields += 1;
+    let slot_list = slots.clone();
+    for &(sx, sy) in &slot_list {
+        let a = rng.range(0, 360);
+        let (dx, dy) = dir_vec(a, 8 * FP);
+        cluster(&mut rng, &mut ores, sx + dx, sy + dy, 10, 100);
+        let (dx, dy) = dir_vec(a + rng.range(100, 260), 15 * FP);
+        cluster(&mut rng, &mut ores, sx + dx, sy + dy, 6, 100);
+    }
+    let fields = (size_units as i64 * size_units as i64 / 2600) as usize;
+    for _ in 0..fields {
+        let (x, y) = (rng.range(margin / 2, size - margin / 2), rng.range(margin / 2, size - margin / 2));
+        // Fields far from every start are richer: worth an expedition.
+        let far = slot_list.iter().map(|s| dist2(s.0 - x, s.1 - y)).min().unwrap();
+        let rich = if far > (60 * FP) as i64 * (60 * FP) as i64 { 160 } else { 100 };
+        let n = rng.range(5, 15) as usize;
+        cluster(&mut rng, &mut ores, x, y, n, rich);
     }
 
-    GeneratedMap { w, h, tiles, starts: vec![s0, s1] }
+    GeneratedMap { size, rocks, ores, slots }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::{MAP_H, MAP_W};
 
     #[test]
-    fn symmetric_and_deterministic() {
-        let a = generate(42, MAP_W, MAP_H);
-        let b = generate(42, MAP_W, MAP_H);
-        assert_eq!(a.tiles, b.tiles);
-        let n = a.tiles.len();
-        for i in 0..n {
-            assert_eq!(a.tiles[i], a.tiles[n - 1 - i]);
-        }
-        let (sx, sy) = a.starts[0];
-        assert_eq!(a.tiles[(sy * a.w + sx) as usize], Tile::Floor);
-    }
-
-    #[test]
-    #[ignore]
-    fn print_map() {
-        for seed in [1u64, 2, 3] {
-            let m = generate(seed, MAP_W, MAP_H);
-            for y in 0..m.h {
-                let row: String = (0..m.w)
-                    .map(|x| {
-                        if m.starts.contains(&(x, y)) {
-                            return '@';
-                        }
-                        match m.tiles[(y * m.w + x) as usize] {
-                            Tile::Floor => '.',
-                            Tile::Wall => '#',
-                            Tile::Ore(_) => '*',
-                        }
-                    })
-                    .collect();
-                println!("{row}");
+    fn deterministic_and_spread_out() {
+        let a = generate(42, WORLD_SIZE);
+        let b = generate(42, WORLD_SIZE);
+        assert_eq!(a.slots, b.slots);
+        assert_eq!(a.ores, b.ores);
+        assert_eq!(a.rocks.len(), b.rocks.len());
+        assert!(a.rocks.len() > 100, "rocks {}", a.rocks.len());
+        assert!(a.ores.len() > 300, "ores {}", a.ores.len());
+        // Starts are far apart from each other.
+        for (i, s) in a.slots.iter().enumerate().take(6) {
+            for t in a.slots.iter().skip(i + 1).take(6) {
+                assert!(dist2(s.0 - t.0, s.1 - t.1) > (70 * FP) as i64 * (70 * FP) as i64);
             }
-            println!();
+        }
+        // ...and each has crystals nearby.
+        for s in &a.slots {
+            assert!(a.ores.iter().any(|o| dist2(o.0 - s.0, o.1 - s.1) < (12 * FP) as i64 * (12 * FP) as i64));
         }
     }
 }

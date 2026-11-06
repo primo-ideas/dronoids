@@ -2,11 +2,17 @@
 name = "game_of_drones"
 version = "0.1.0"
 edition = "2024"
+default-run = "game_of_drones"
 
 [dependencies]
+bincode = "1"
 macroquad = "0.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+
+[[bin]]
+name = "god-server"
+path = "src/bin/server.rs"
 
 [profile.dev]
 opt-level = 1

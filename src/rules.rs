@@ -1,44 +1,76 @@
 //! Game balance constants. Everything the simulation needs to agree on in
-//! multiplayer lives here, so both peers run with identical rules.
+//! multiplayer lives here, so every peer runs with identical rules.
+//!
+//! Distances are fixed-point integers: one world unit is `FP` sub-units.
+//! A drone is about 0.7 unit wide, a factory 2.4.
 
-/// Map size in tiles.
-pub const MAP_W: i32 = 80;
-pub const MAP_H: i32 = 52;
+/// Fixed-point scale: 1 world unit.
+pub const FP: i32 = 1024;
 
-/// How much ore a drone can carry.
+/// The world is a square of this many units.
+pub const WORLD_SIZE: i32 = 512;
+
+/// Simulation speed at "x1".
+pub const TICKS_PER_SEC: f32 = 10.0;
+
+pub const DRONE_RADIUS: i32 = FP * 35 / 100;
+pub const FACTORY_RADIUS: i32 = FP * 12 / 10;
+
+/// Length of one MOVE, and how long actions take (in ticks).
+pub const STEP: i32 = FP;
+pub const MOVE_TICKS: i32 = 6;
+pub const MINE_TICKS: i32 = 12;
+pub const DROP_TICKS: i32 = 6;
+pub const ATTACK_TICKS: i32 = 8;
+pub const WAIT_TICKS: i32 = 5;
+pub const FAIL_TICKS: i32 = 3;
+pub const STALL_TICKS: i32 = 2;
+
+/// MINE / DROP work when the gap between the drone and its target is
+/// below this (so `DIST a, ORE` then `JLE a, 1, ...` is always in reach).
+pub const REACH: i32 = 2 * FP;
+pub const ATTACK_RANGE: i32 = 3 * FP;
+/// How far ahead LOOK probes.
+pub const LOOK_DIST: i32 = FP * 3 / 2;
+/// Drone sensors range. Own factories are always visible, enemy ones
+/// from `EBASE_RANGE`.
+pub const SENSOR_RANGE: i32 = 12 * FP;
+pub const EBASE_RANGE: i32 = 40 * FP;
+
 pub const CARGO_CAP: i32 = 5;
 pub const DRONE_HP: i32 = 10;
-pub const FACTORY_HP: i32 = 150;
+pub const FACTORY_HP: i32 = 200;
 pub const ATTACK_DAMAGE: i32 = 2;
 
 pub const DRONE_COST: i32 = 10;
-pub const FACTORY_COST: i32 = 120;
+pub const FACTORY_COST: i32 = 150;
 pub const START_MINERALS: i32 = 60;
 
 /// Ticks between two drone spawns of a factory.
-pub const SPAWN_INTERVAL: i32 = 12;
+pub const SPAWN_TICKS: i32 = 100;
 
-/// Manhattan radius of drone sensors (factories are visible from anywhere).
-pub const SENSOR_RANGE: i32 = 10;
-/// A new factory must be within this manhattan distance of one of your units.
-pub const BUILD_RANGE: i32 = 6;
-/// ...and at least this far from any enemy factory.
-pub const ENEMY_BUILD_CLEARANCE: i32 = 7;
+/// A new factory must be this close to one of your units...
+pub const BUILD_RANGE: i32 = 8 * FP;
+/// ...this far from enemy factories...
+pub const ENEMY_BUILD_CLEARANCE: i32 = 25 * FP;
+/// ...and leave this gap to any other factory.
+pub const FACTORY_SPACING: i32 = 4 * FP;
 
 pub const MAX_DRONES_PER_PLAYER: usize = 150;
-/// Default / maximum number of living drones per factory.
 pub const DEFAULT_QUOTA: u8 = 8;
 pub const MAX_QUOTA: u8 = 24;
-/// Non-action instructions a drone may execute per tick before it stalls.
+pub const MAX_PLAYERS: usize = 16;
+
+/// Non-action instructions a drone may execute per decision before it
+/// stalls for a moment.
 pub const MAX_OPS_PER_TICK: u32 = 32;
 /// Shared memory cells per factory ("hive memory"), reachable with PEEK/POKE.
 pub const HIVE_MEM: usize = 16;
 /// CALL depth.
 pub const STACK_DEPTH: usize = 8;
 
-/// Simulation speed at "1x".
-pub const TICKS_PER_SEC: f32 = 8.0;
-pub const MAX_PLAYERS: usize = 4;
+pub const ORE_MIN: i32 = 40;
+pub const ORE_MAX: i32 = 120;
 
-pub const ORE_MIN: u16 = 30;
-pub const ORE_MAX: u16 = 90;
+/// Number of possible starting places generated with the map.
+pub const SPAWN_SLOTS: usize = 16;

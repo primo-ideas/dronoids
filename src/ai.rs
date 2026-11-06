@@ -1,9 +1,10 @@
-//! A simple computer opponent. It plays through the same `Command`s as a
-//! human and only uses the built-in programs — beat it with better code.
+//! Computer opponents. They play through the same `Command`s as humans and
+//! only use the built-in programs — beat them with better code.
 
+use crate::geo::{dir_vec, dist2};
 use crate::programs::builtin;
-use crate::rules::{BUILD_RANGE, FACTORY_COST};
-use crate::sim::{Command, Tile, World};
+use crate::rules::*;
+use crate::sim::{Command, World};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
@@ -23,8 +24,8 @@ impl Level {
     fn max_factories(self) -> usize {
         match self {
             Level::Easy => 4,
-            Level::Normal => 7,
-            Level::Hard => 10,
+            Level::Normal => 6,
+            Level::Hard => 9,
         }
     }
     /// Once hunters are allowed, 1 factory out of this many hunts.
@@ -37,11 +38,12 @@ impl Level {
     }
     /// No hunters before this tick.
     fn hunter_gate(self) -> u64 {
-        match self {
-            Level::Easy => 7200,
-            Level::Normal => 3600,
-            Level::Hard => 1000,
-        }
+        let minutes = match self {
+            Level::Easy => 16,
+            Level::Normal => 10,
+            Level::Hard => 5,
+        };
+        (minutes as f32 * 60.0 * TICKS_PER_SEC) as u64
     }
 }
 
@@ -54,97 +56,133 @@ pub struct Bot {
 }
 
 /// Programs given to successive new factories.
-const BUILD_ORDER: &[&str] = &["mineur", "eclaireur", "chasseur", "mineur", "gardien", "chasseur", "chasseur"];
+const BUILD_ORDER: &[&str] = &["mineur", "eclaireur", "mineur", "chasseur", "gardien", "mineur", "chasseur", "chasseur"];
+
+const DENSITY_CELL: i32 = 8 * FP;
 
 impl Bot {
     pub fn new(player: u8, level: Level) -> Bot {
-        Bot { player, level, next_think: 40, next_convert: 0, built: 0 }
+        Bot { player, level, next_think: 60 + player as u64 * 7, next_convert: 0, built: 0 }
     }
 
     pub fn think(&mut self, w: &World) -> Vec<Command> {
         if w.tick < self.next_think {
             return vec![];
         }
-        self.next_think = w.tick + 16;
+        self.next_think = w.tick + 25;
         let Some(me) = w.players.get(self.player as usize) else { return vec![] };
         if !me.alive {
             return vec![];
         }
         let mut cmds = vec![];
-        let factories = w.factory_count(self.player);
-        if me.minerals >= FACTORY_COST + 25 && factories < self.level.max_factories()
+        let hunting = w.tick >= self.level.hunter_gate();
+
+        if me.minerals >= FACTORY_COST + 30 && w.factory_count(self.player) < self.level.max_factories()
             && let Some((x, y)) = self.pick_site(w) {
                 let mut name = BUILD_ORDER[self.built as usize % BUILD_ORDER.len()];
-                if name != "mineur" && name != "eclaireur" && w.tick < self.level.hunter_gate() {
+                if (name == "chasseur" || name == "gardien") && !hunting {
                     name = "mineur";
                 }
                 let b = builtin(name).expect("builtin");
                 cmds.push(Command::PlaceFactory { x, y, name: b.name.into(), source: b.source.into() });
                 self.built += 1;
             }
-        // Once allowed, turn some miners into hunters.
-        if w.tick >= self.level.hunter_gate() && w.tick >= self.next_convert {
+
+        if hunting && w.tick >= self.next_convert {
+            self.next_convert = w.tick + 300;
             let mine: Vec<_> = w.factories.iter().filter(|f| f.owner == self.player).collect();
-            let hunters = mine.iter().filter(|f| f.program.name == "chasseur").count();
-            if hunters < mine.len() / self.level.hunter_share()
-                && let Some(f) = mine.iter().rev().find(|f| f.program.name == "mineur" || f.program.name == "eclaireur") {
+            let hunters: Vec<_> = mine.iter().filter(|f| w.program_name(f.prog) == "chasseur").collect();
+            if hunters.len() < mine.len() / self.level.hunter_share()
+                && let Some(f) = mine.iter().rev().find(|f| matches!(w.program_name(f.prog), "mineur" | "eclaireur")) {
                     let b = builtin("chasseur").expect("builtin");
                     cmds.push(Command::SetProgram { factory: f.id, name: b.name.into(), source: b.source.into() });
-                    self.next_convert = w.tick + 300;
                 }
-        }
-        // Hard bots pour their surplus into bigger armies.
-        if self.level == Level::Hard && me.minerals > 300 {
-            for f in w.factories.iter().filter(|f| f.owner == self.player && f.quota < 14) {
-                if f.program.name == "chasseur" {
-                    cmds.push(Command::SetQuota { factory: f.id, quota: 14 });
+            // Point every hunter factory at the closest rival's home.
+            if let Some(target) = self.closest_rival(w) {
+                for f in &hunters {
+                    if f.mem[2] != 1 || f.mem[0] != target.0 || f.mem[1] != target.1 {
+                        for (i, v) in [(0u8, target.0), (1, target.1), (2, 1)] {
+                            cmds.push(Command::SetMemory { factory: f.id, index: i, value: v });
+                        }
+                    }
+                }
+                if self.level == Level::Hard && me.minerals > 400 {
+                    for f in hunters.iter().filter(|f| f.quota < 14) {
+                        cmds.push(Command::SetQuota { factory: f.id, quota: 14 });
+                    }
                 }
             }
         }
         cmds
     }
 
-    /// Best buildable tile near our drones: lots of ore around, not too
-    /// close to our existing factories.
+    /// Home (in world units) of the nearest other living player.
+    fn closest_rival(&self, w: &World) -> Option<(i32, i32)> {
+        let me = w.players.get(self.player as usize)?;
+        w.players
+            .iter()
+            .filter(|p| p.alive && p.id != self.player)
+            .map(|p| {
+                // Aim at one of their factories if any is left, else their home.
+                let f = w.factories.iter().filter(|f| f.owner == p.id).min_by_key(|f| dist2(f.x - me.home.0, f.y - me.home.1));
+                let at = f.map(|f| (f.x, f.y)).unwrap_or(p.home);
+                (dist2(at.0 - me.home.0, at.1 - me.home.1), at)
+            })
+            .min()
+            .map(|(_, (x, y))| (x / FP, y / FP))
+    }
+
+    /// Best buildable spot near our units: lots of crystals around, not
+    /// too close to our other factories.
     fn pick_site(&self, w: &World) -> Option<(i32, i32)> {
         let me = self.player;
+        let n = w.size / DENSITY_CELL + 1;
+        let mut density = vec![0i32; (n * n) as usize];
+        for o in &w.ores {
+            density[((o.y / DENSITY_CELL) * n + o.x / DENSITY_CELL) as usize] += o.amount;
+        }
+        let ore_around = |x: i32, y: i32| {
+            let (cx, cy) = (x / DENSITY_CELL, y / DENSITY_CELL);
+            let mut s = 0;
+            for j in (cy - 1).max(0)..=(cy + 1).min(n - 1) {
+                for i in (cx - 1).max(0)..=(cx + 1).min(n - 1) {
+                    s += density[(j * n + i) as usize];
+                }
+            }
+            s
+        };
         let anchors: Vec<(i32, i32)> = w
-            .drones
+            .factories
             .iter()
-            .filter(|d| d.owner == me)
-            .step_by(3)
-            .take(40)
-            .map(|d| (d.x, d.y))
+            .filter(|f| f.owner == me)
+            .map(|f| (f.x, f.y))
+            .chain(w.drones.iter().filter(|d| d.owner == me).step_by(3).take(30).map(|d| (d.x, d.y)))
             .collect();
         let mut best: Option<(i32, (i32, i32))> = None;
-        for (ax, ay) in anchors {
-            for dy in (-BUILD_RANGE..=BUILD_RANGE).step_by(2) {
-                for dx in (-BUILD_RANGE..=BUILD_RANGE).step_by(2) {
-                    if dx.abs() + dy.abs() > BUILD_RANGE {
-                        continue;
-                    }
+        for (k, (ax, ay)) in anchors.iter().enumerate() {
+            for step in 0..8 {
+                let angle = step * 45 + (k as i32 * 17) % 45;
+                for r in [5 * FP, 7 * FP] {
+                    let (dx, dy) = dir_vec(angle, r);
                     let (x, y) = (ax + dx, ay + dy);
                     if w.can_place_factory(me, x, y).is_err() {
                         continue;
                     }
-                    let mut ore = 0;
-                    for oy in -5..=5 {
-                        for ox in -5..=5 {
-                            if let Tile::Ore(n) = w.tile(x + ox, y + oy) {
-                                ore += n as i32;
-                            }
-                        }
+                    let ore = ore_around(x, y);
+                    if ore == 0 {
+                        continue;
                     }
                     let nearest_own = w
                         .factories
                         .iter()
                         .filter(|f| f.owner == me)
-                        .map(|f| (f.x - x).abs() + (f.y - y).abs())
+                        .map(|f| dist2(f.x - x, f.y - y))
                         .min()
-                        .unwrap_or(99);
-                    let crowding = if nearest_own < 7 { (7 - nearest_own) * 60 } else { 0 };
-                    let score = ore - crowding;
-                    if ore > 0 && best.is_none_or(|(s, _)| score > s) {
+                        .unwrap_or(i64::MAX);
+                    let crowd = (16 * FP) as i64;
+                    let penalty = if nearest_own < crowd * crowd { 300 } else { 0 };
+                    let score = ore - penalty;
+                    if best.is_none_or(|(s, _)| score > s) {
                         best = Some((score, (x, y)));
                     }
                 }
@@ -157,60 +195,71 @@ impl Bot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::programs;
+
+    fn bot_world(level: Level, bots: usize, human: bool) -> (World, Vec<Bot>) {
+        let mut w = World::new(5);
+        if human {
+            w.join("humain", false);
+        }
+        let mut list = vec![];
+        for i in 0..bots {
+            let id = w.join(&format!("IA {i}"), true).unwrap();
+            list.push(Bot::new(id, level));
+        }
+        (w, list)
+    }
+
+    fn run(w: &mut World, bots: &mut [Bot], ticks: u64) {
+        for _ in 0..ticks {
+            let mut cmds = vec![];
+            for b in bots.iter_mut() {
+                let p = b.player;
+                cmds.extend(b.think(w).into_iter().map(|c| (p, c)));
+            }
+            w.step(&cmds);
+            if w.winner().is_some() {
+                break;
+            }
+        }
+    }
 
     #[test]
     fn bot_expands() {
-        let m = programs::builtin("mineur").unwrap();
-        let mut w = World::new(5, &["A".into(), "Bot".into()], m.name, m.source);
-        let mut bot = Bot::new(1, Level::Normal);
-        for _ in 0..2500 {
-            let cmds: Vec<(u8, Command)> = bot.think(&w).into_iter().map(|c| (1, c)).collect();
-            w.step(&cmds);
-        }
-        assert!(w.factory_count(1) >= 2, "bot has {} factories", w.factory_count(1));
+        let (mut w, mut bots) = bot_world(Level::Normal, 1, false);
+        run(&mut w, &mut bots, 6000);
+        assert!(w.factory_count(0) >= 2, "bot has {} factories", w.factory_count(0));
     }
-}
 
-#[cfg(test)]
-mod bench {
-    use super::*;
-    use crate::programs;
-
-    /// `cargo test --release --lib bench_battle -- --ignored --nocapture`
+    /// `cargo test --release --lib bench_world -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn bench_battle() {
-        let m = programs::builtin("mineur").unwrap();
-        for (lvl, passive) in [(Level::Hard, false), (Level::Normal, true), (Level::Easy, true)] {
-            let mut w = World::new(9, &["A".into(), "B".into()], m.name, m.source);
-            let mut bots = [Bot::new(0, lvl), Bot::new(1, lvl)];
+    fn bench_world() {
+        for level in [Level::Easy, Level::Normal, Level::Hard] {
+            let (mut w, mut bots) = bot_world(level, 6, true);
             let t0 = std::time::Instant::now();
-            let mut max_drones = 0;
-            let mut ticks = 0;
-            for _ in 0..12000 {
-                let mut cmds = vec![];
-                for (i, b) in bots.iter_mut().enumerate() {
-                    if passive && i == 0 {
-                        continue;
-                    }
-                    let p = b.player;
-                    cmds.extend(b.think(&w).into_iter().map(|c| (p, c)));
-                }
-                w.step(&cmds);
-                ticks += 1;
-                max_drones = max_drones.max(w.drones.len());
-                if w.winner().is_some() {
-                    break;
+            let ticks = 30 * 60 * TICKS_PER_SEC as u64;
+            let mut human_out = None;
+            for _ in 0..ticks / 100 {
+                run(&mut w, &mut bots, 100);
+                if human_out.is_none() && !w.players[0].alive {
+                    human_out = Some(w.tick as f32 / TICKS_PER_SEC / 60.0);
                 }
             }
+            println!("  idle human eliminated at {human_out:?} min");
             let el = t0.elapsed();
+            let summary: Vec<String> = w
+                .players
+                .iter()
+                .map(|p| format!("{}:{}f/{}d{}", p.id, w.factory_count(p.id), w.drone_count(p.id), if p.alive { "" } else { "✗" }))
+                .collect();
             println!(
-                "{lvl:?} passive_p0={passive}: {ticks} ticks ({:.1} min game) in {:?} = {:.3} ms/tick, max drones {max_drones}, winner {:?}",
-                ticks as f32 / 8.0 / 60.0,
+                "{level:?}: {} ticks ({:.1} min) in {:?} = {:.3} ms/tick, {} drones; {}",
+                w.tick,
+                w.tick as f32 / TICKS_PER_SEC / 60.0,
                 el,
-                el.as_secs_f64() * 1000.0 / ticks as f64,
-                w.winner()
+                el.as_secs_f64() * 1000.0 / w.tick as f64,
+                w.drones.len(),
+                summary.join(" ")
             );
         }
     }

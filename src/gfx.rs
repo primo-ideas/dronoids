@@ -10,7 +10,6 @@ pub mod pal {
     use macroquad::prelude::Color;
 
     pub const BG: Color = Color::new(0.012, 0.016, 0.04, 1.0);
-    pub const GRID: Color = Color::new(0.25, 0.45, 1.0, 0.07);
     pub const WALL_FILL: Color = Color::new(0.06, 0.035, 0.14, 1.0);
     pub const WALL_EDGE: Color = Color::from_hex(0x8a4dff);
     pub const ORE: Color = Color::from_hex(0xffc23a);
@@ -28,13 +27,14 @@ pub mod pal {
     pub const PINK: Color = Color::from_hex(0xff5fd2);
 }
 
+/// Neon colors for up to 16 players (none of them amber, the ore color).
+const PLAYER_COLORS: [u32; 16] = [
+    0x00e5ff, 0xff2bd6, 0x7dff3a, 0xff8a1f, 0xa86bff, 0xff3b5c, 0x2bffc6, 0x4d9dff, 0xff7eb6, 0xc6ff3a, 0xff6a4d,
+    0xd0a0ff, 0x9dffd8, 0x5b6bff, 0xff4d9d, 0xe0f0ff,
+];
+
 pub fn player_color(id: u8) -> Color {
-    match id {
-        0 => Color::from_hex(0x00e5ff),
-        1 => Color::from_hex(0xff2bd6),
-        2 => Color::from_hex(0x7dff3a),
-        _ => Color::from_hex(0xff8a1f),
-    }
+    Color::from_hex(PLAYER_COLORS[id as usize % PLAYER_COLORS.len()])
 }
 
 pub fn with_alpha(c: Color, a: f32) -> Color {

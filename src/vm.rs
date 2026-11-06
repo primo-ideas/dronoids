@@ -5,11 +5,16 @@
 //! set by the last action, a tiny call stack and a private RNG. Each
 //! factory owns 16 cells of "hive memory" shared by the drones it spawned.
 //!
-//! Every tick a drone runs instructions until it reaches an *action*
-//! (MOVE, MINE, DROP, ATTACK, WAIT), which ends its turn. Sensors and
-//! arithmetic are free, up to `MAX_OPS_PER_TICK` instructions; past that the
-//! drone stalls for the tick.
+//! Directions are compass angles in degrees: 0 = north, 90 = east...
+//!
+//! When idle, a drone runs instructions until it reaches an *action*
+//! (MOVE, MINE, DROP, ATTACK, WAIT), which takes some time to complete.
+//! Sensors and arithmetic are instantaneous, up to `MAX_OPS_PER_TICK`
+//! instructions; past that the drone stalls for a moment.
 
+use serde::{Deserialize, Serialize};
+
+use crate::geo;
 use crate::rng::splitmix;
 use crate::rules::{CARGO_CAP, HIVE_MEM, MAX_OPS_PER_TICK, STACK_DEPTH};
 
@@ -18,9 +23,9 @@ use crate::rules::{CARGO_CAP, HIVE_MEM, MAX_OPS_PER_TICK, STACK_DEPTH};
 // ---------------------------------------------------------------------------
 
 pub const DIR_N: i32 = 0;
-pub const DIR_E: i32 = 1;
-pub const DIR_S: i32 = 2;
-pub const DIR_W: i32 = 3;
+pub const DIR_E: i32 = 90;
+pub const DIR_S: i32 = 180;
+pub const DIR_W: i32 = 270;
 pub const NONE: i32 = -1;
 
 /// What a tile contains, as seen by LOOK, and what SCAN / DIST... search for.
@@ -132,6 +137,8 @@ pub enum Sensor {
     Look,
     Cargo,
     Hp,
+    PosX,
+    PosY,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,6 +159,7 @@ pub enum Instr {
     Call(u16),
     Ret,
     Sense(Sensor, Reg, Val),
+    Angle(Reg, Val, Val),
     Peek(Reg, Val),
     Poke(Val, Val),
     Act(Action, Val),
@@ -213,21 +221,24 @@ pub const MNEMONICS: &[Mnemonic] = &[
     mn!("JGE", [V, V, L], Flow, "JGE x, y, lbl", "saute si x >= y"),
     mn!("CALL", [L], Flow, "CALL lbl", "appelle un sous-programme"),
     mn!("RET", [], Flow, "RET", "revient après le CALL"),
-    mn!("SCAN", [R, V], Sense, "SCAN r, chose", "r = direction de la chose la plus proche (NONE si rien)"),
-    mn!("DIST", [R, V], Sense, "DIST r, chose", "r = distance à la chose la plus proche (NONE si rien)"),
-    mn!("DX", [R, V], Sense, "DX r, chose", "r = écart horizontal vers la chose (+ = est)"),
-    mn!("DY", [R, V], Sense, "DY r, chose", "r = écart vertical vers la chose (+ = sud)"),
+    mn!("ANGLE", [R, V, V], Data, "ANGLE r, dx, dy", "r = angle (degrés) du vecteur dx, dy"),
+    mn!("SCAN", [R, V], Sense, "SCAN r, chose", "r = angle vers la chose la plus proche (NONE si rien)"),
+    mn!("DIST", [R, V], Sense, "DIST r, chose", "r = distance jusqu'à la chose la plus proche (NONE si rien)"),
+    mn!("DX", [R, V], Sense, "DX r, chose", "r = écart est-ouest vers la chose (+ = est)"),
+    mn!("DY", [R, V], Sense, "DY r, chose", "r = écart nord-sud vers la chose (+ = sud)"),
     mn!("COUNT", [R, V], Sense, "COUNT r, chose", "r = nombre de choses à portée"),
-    mn!("LOOK", [R, V], Sense, "LOOK r, dir", "r = ce qu'il y a sur la case voisine"),
+    mn!("LOOK", [R, V], Sense, "LOOK r, angle", "r = ce qu'il y a juste devant, dans cette direction"),
     mn!("CARGO", [R], Sense, "CARGO r", "r = minerai transporté"),
     mn!("HP", [R], Sense, "HP r", "r = points de vie"),
+    mn!("POSX", [R], Sense, "POSX r", "r = position est-ouest du drone"),
+    mn!("POSY", [R], Sense, "POSY r", "r = position nord-sud du drone"),
     mn!("PEEK", [R, V], Sense, "PEEK r, i", "r = mémoire de ruche[i]"),
     mn!("POKE", [V, V], Sense, "POKE i, v", "mémoire de ruche[i] = v"),
-    mn!("MOVE", [V], Action, "MOVE dir", "avance d'une case"),
-    mn!("MINE", [V], Action, "MINE dir", "extrait 1 minerai voisin"),
-    mn!("DROP", [V], Action, "DROP dir", "décharge dans une usine alliée voisine"),
-    mn!("ATTACK", [V], Action, "ATTACK dir", "frappe un ennemi voisin"),
-    mn!("WAIT", [], Action, "WAIT", "ne fait rien ce tour-ci"),
+    mn!("MOVE", [V], Action, "MOVE angle", "avance d'un pas dans cette direction"),
+    mn!("MINE", [], Action, "MINE", "extrait 1 cristal du gisement à portée"),
+    mn!("DROP", [], Action, "DROP", "décharge la soute dans une usine alliée à portée"),
+    mn!("ATTACK", [], Action, "ATTACK", "tire sur l'ennemi le plus proche à portée"),
+    mn!("WAIT", [], Action, "WAIT", "patiente un instant"),
 ];
 
 pub fn mnemonic(name: &str) -> Option<&'static Mnemonic> {
@@ -471,12 +482,15 @@ fn build(mn: &Mnemonic, args: &[&str], labels: &[(String, u16, usize)]) -> Resul
         "LOOK" => sense(Sensor::Look),
         "CARGO" => Ok(Instr::Sense(Sensor::Cargo, reg(0)?, Val::K(0))),
         "HP" => Ok(Instr::Sense(Sensor::Hp, reg(0)?, Val::K(0))),
+        "POSX" => Ok(Instr::Sense(Sensor::PosX, reg(0)?, Val::K(0))),
+        "POSY" => Ok(Instr::Sense(Sensor::PosY, reg(0)?, Val::K(0))),
+        "ANGLE" => Ok(Instr::Angle(reg(0)?, val(1)?, val(2)?)),
         "PEEK" => Ok(Instr::Peek(reg(0)?, val(1)?)),
         "POKE" => Ok(Instr::Poke(val(0)?, val(1)?)),
         "MOVE" => act(Action::Move),
-        "MINE" => act(Action::Mine),
-        "DROP" => act(Action::Drop),
-        "ATTACK" => act(Action::Attack),
+        "MINE" => Ok(Instr::Act(Action::Mine, Val::K(0))),
+        "DROP" => Ok(Instr::Act(Action::Drop, Val::K(0))),
+        "ATTACK" => Ok(Instr::Act(Action::Attack, Val::K(0))),
         "WAIT" => Ok(Instr::Act(Action::Wait, Val::K(0))),
         other => Err(format!("instruction non gérée {other}")),
     }
@@ -491,7 +505,7 @@ pub trait Senses {
     fn sense(&self, sensor: Sensor, arg: i32) -> i32;
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Vm {
     pub pc: u16,
     pub regs: [i32; 4],
@@ -635,6 +649,10 @@ impl Vm {
                 }
                 Instr::Sense(s, r, v) => {
                     let out = senses.sense(s, self.get(v));
+                    self.set(r, out);
+                }
+                Instr::Angle(r, dx, dy) => {
+                    let out = geo::compass(self.get(dx), self.get(dy));
                     self.set(r, out);
                 }
                 Instr::Peek(r, i) => {
@@ -796,6 +814,18 @@ mod tests {
         vm.run(&p, &Fake, &mut mem);
         assert_eq!(vm.regs[0], 3);
         assert_eq!(vm.regs[1], 0);
+    }
+
+    #[test]
+    fn angle_instruction() {
+        let p = assemble("t", "ANGLE a, 5, 5
+ANGLE b, -3, 0
+ANGLE c, 0, 0
+MINE").unwrap();
+        let mut vm = Vm::new(1);
+        let mut mem = [0; HIVE_MEM];
+        assert_eq!(vm.run(&p, &Fake, &mut mem), Some((Action::Mine, 0)));
+        assert_eq!(vm.regs[..3], [135, 270, NONE]);
     }
 
     #[test]

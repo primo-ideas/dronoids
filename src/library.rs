@@ -6,6 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use game_of_drones::programs::{BUILTINS, TEMPLATE};
+use game_of_drones::vm;
 
 pub struct Entry {
     pub name: String,
@@ -42,8 +43,16 @@ impl Library {
         }
         for b in BUILTINS {
             let p = lib.path(b.name);
-            if !p.exists() {
-                let _ = fs::write(&p, b.source);
+            match fs::read_to_string(&p) {
+                // Written for an older version of the language: keep it aside.
+                Ok(old) if vm::assemble(b.name, &old).is_err() => {
+                    let _ = fs::rename(&p, lib.path(&format!("{}-v1", b.name)));
+                    let _ = fs::write(&p, b.source);
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    let _ = fs::write(&p, b.source);
+                }
             }
         }
         lib.reload();

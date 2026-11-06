@@ -1,4 +1,5 @@
-//! Game of Drones — program drone swarms in a tiny assembly language.
+//! Game of Drones — program drone swarms in a tiny assembly language, in a
+//! large world shared with computer players or other humans.
 
 mod editor;
 mod fx;
@@ -12,6 +13,7 @@ mod view;
 use macroquad::prelude::*;
 
 use game::{Game, Outcome};
+use game_of_drones::ai::Level;
 use gfx::Bloom;
 use library::Library;
 use menu::{Menu, MenuOut};
@@ -34,31 +36,38 @@ fn window_conf() -> Conf {
 }
 
 /// Command-line switches, mostly for quick testing:
-/// `--solo [easy|normal|hard]`, `--sandbox`, `--seed N`,
-/// `--screenshot out.png --frames N`, `--editor`, `--debug-drone`,
-/// `--ticks N` (fast-forward the simulation before showing it),
-/// `--host`, `--join ADDR` (LAN game without going through the menu).
+/// `--solo [easy|normal|hard]`, `--ais N`, `--sandbox`, `--seed N`,
+/// `--ticks N` (fast-forward), `--zoom Z`, `--editor`, `--debug-drone`,
+/// `--help-screen`, `--build`, `--screenshot out.png [--frames N | --after SECS]`,
+/// `--host WORLD`, `--join ADDR`, `--name PSEUDO`.
+#[derive(Default)]
 struct Args {
-    solo: Option<Option<game_of_drones::ai::Level>>,
+    solo: Option<Level>,
+    ais: Option<usize>,
+    sandbox: bool,
     seed: Option<u64>,
     screenshot: Option<String>,
     frames: u32,
+    after: Option<f64>,
     editor: bool,
     debug_drone: bool,
     help: bool,
     build: bool,
     ticks: u64,
-    host: bool,
+    zoom: Option<f32>,
+    host: Option<String>,
     join: Option<String>,
+    name: Option<String>,
+    worlds: bool,
 }
 
 fn parse_args() -> Args {
-    use game_of_drones::ai::Level;
-    let mut a = Args { solo: None, seed: None, screenshot: None, frames: 60, editor: false, debug_drone: false, help: false, build: false, ticks: 0, host: false, join: None };
+    let mut a = Args { frames: 60, ..Default::default() };
     let v: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < v.len() {
         let next = v.get(i + 1).cloned().unwrap_or_default();
+        let mut take = true;
         match v[i].as_str() {
             "--solo" => {
                 let lvl = match next.as_str() {
@@ -67,40 +76,36 @@ fn parse_args() -> Args {
                     "normal" => Some(Level::Normal),
                     _ => None,
                 };
-                if lvl.is_some() {
-                    i += 1;
+                take = lvl.is_some();
+                a.solo = Some(lvl.unwrap_or(Level::Normal));
+            }
+            "--ais" => a.ais = next.parse().ok(),
+            "--sandbox" => {
+                a.sandbox = true;
+                take = false;
+            }
+            "--seed" => a.seed = next.parse().ok(),
+            "--screenshot" => a.screenshot = Some(next),
+            "--frames" => a.frames = next.parse().unwrap_or(60),
+            "--after" => a.after = next.parse().ok(),
+            "--ticks" => a.ticks = next.parse().unwrap_or(0),
+            "--zoom" => a.zoom = next.parse().ok(),
+            "--host" => a.host = Some(next),
+            "--join" => a.join = Some(next),
+            "--name" => a.name = Some(next),
+            flag => {
+                take = false;
+                match flag {
+                    "--editor" => a.editor = true,
+                    "--debug-drone" => a.debug_drone = true,
+                    "--help-screen" => a.help = true,
+                    "--build" => a.build = true,
+                    "--worlds" => a.worlds = true,
+                    _ => {}
                 }
-                a.solo = Some(Some(lvl.unwrap_or(Level::Normal)));
             }
-            "--sandbox" => a.solo = Some(None),
-            "--seed" => {
-                a.seed = next.parse().ok();
-                i += 1;
-            }
-            "--screenshot" => {
-                a.screenshot = Some(next);
-                i += 1;
-            }
-            "--frames" => {
-                a.frames = next.parse().unwrap_or(60);
-                i += 1;
-            }
-            "--ticks" => {
-                a.ticks = next.parse().unwrap_or(0);
-                i += 1;
-            }
-            "--editor" => a.editor = true,
-            "--debug-drone" => a.debug_drone = true,
-            "--help-screen" => a.help = true,
-            "--build" => a.build = true,
-            "--host" => a.host = true,
-            "--join" => {
-                a.join = Some(next);
-                i += 1;
-            }
-            _ => {}
         }
-        i += 1;
+        i += if take { 2 } else { 1 };
     }
     a
 }
@@ -113,28 +118,36 @@ async fn main() {
     let mut lib = Library::load();
     let mut ui = Ui::default();
 
-    let mut app = match args.solo {
-        Some(level) => {
-            let mut g = Game::solo(&lib, args.seed.unwrap_or_else(game::new_seed), level);
-            g.fast_forward(args.ticks);
-            if args.editor {
-                g.open_program_by_name(&lib, "mineur");
-            }
-            if args.debug_drone {
-                g.debug_first_drone();
-            }
-            g.set_overlays(args.help, args.build);
-            App::Game(Box::new(g))
+    let mut app = if args.solo.is_some() || args.sandbox {
+        let level = args.solo.unwrap_or(Level::Normal);
+        let ais = if args.sandbox { 0 } else { args.ais.unwrap_or(5) };
+        let mut g = Game::solo(&lib, args.seed.unwrap_or_else(game::new_seed), ais, level);
+        g.fast_forward(args.ticks);
+        if let Some(z) = args.zoom {
+            g.set_zoom(z);
         }
-        None => {
-            let mut m = Menu::new();
-            if args.host {
-                m.host();
-            } else if let Some(addr) = &args.join {
-                m.join(addr);
-            }
-            App::Menu(Box::new(m))
+        if args.editor {
+            g.open_program_by_name(&lib, "mineur");
         }
+        if args.debug_drone {
+            g.debug_first_drone();
+        }
+        g.set_overlays(args.help, args.build);
+        App::Game(Box::new(g))
+    } else {
+        let mut m = Menu::new();
+        if let Some(n) = &args.name {
+            m.set_player_name(n);
+        }
+        if args.worlds {
+            m.show_worlds();
+        }
+        if let Some(w) = &args.host {
+            m.host(w);
+        } else if let Some(addr) = &args.join {
+            m.connect(addr, None);
+        }
+        App::Menu(Box::new(m))
     };
 
     let mut frame = 0u32;
@@ -145,11 +158,15 @@ async fn main() {
             App::Menu(m) => match m.frame(&mut ui, &mut bloom) {
                 MenuOut::Stay => {}
                 MenuOut::Quit => break,
-                MenuOut::Solo(level) => {
-                    next = Some(App::Game(Box::new(Game::solo(&lib, game::new_seed(), level))));
+                MenuOut::Solo { ais, level } => {
+                    next = Some(App::Game(Box::new(Game::solo(&lib, game::new_seed(), ais, level))));
                 }
-                MenuOut::Net { peer, seed, names, me } => {
-                    next = Some(App::Game(Box::new(Game::net(&lib, seed, names, me, peer))));
+                MenuOut::Online { conn, me, world, name, server } => {
+                    let mut g = Game::online(&lib, conn, me, *world, name, server);
+                    if let Some(z) = args.zoom {
+                        g.set_zoom(z);
+                    }
+                    next = Some(App::Game(Box::new(g)));
                 }
             },
             App::Game(g) => {
@@ -163,15 +180,20 @@ async fn main() {
         }
 
         frame += 1;
+        let due = match args.after {
+            Some(secs) => get_time() >= secs,
+            None => frame >= args.frames,
+        };
         if let Some(path) = &args.screenshot
-            && frame >= args.frames {
-                let mut img = get_screen_data();
-                for px in img.bytes.chunks_mut(4) {
-                    px[3] = 255;
-                }
-                img.export_png(path);
-                break;
+            && due
+        {
+            let mut img = get_screen_data();
+            for px in img.bytes.chunks_mut(4) {
+                px[3] = 255;
             }
+            img.export_png(path);
+            break;
+        }
         next_frame().await;
     }
     if let App::Game(g) = &mut app {

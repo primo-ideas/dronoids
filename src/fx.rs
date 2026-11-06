@@ -95,20 +95,6 @@ impl Fx {
         self.push(Particle { pos: at, vel: Vec2::ZERO, life, max: life, color, size: radius, shape: Shape::Ring });
     }
 
-    pub fn trail(&mut self, at: Vec2, color: Color) {
-        if self.parts.len() < MAX_PARTICLES / 2 {
-            self.push(Particle {
-                pos: at,
-                vel: Vec2::ZERO,
-                life: 0.45,
-                max: 0.45,
-                color,
-                size: 0.05,
-                shape: Shape::Dot,
-            });
-        }
-    }
-
     pub fn beam(&mut self, a: Vec2, b: Vec2, color: Color, width: f32, life: f32) {
         if self.beams.len() < 2000 {
             self.beams.push(Beam { a, b, color, width, life, max: life });
