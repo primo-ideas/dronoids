@@ -7,8 +7,8 @@ use std::f32::consts::{PI, TAU};
 
 use macroquad::prelude::*;
 
-use game_of_drones::rules::*;
-use game_of_drones::sim::{ore_radius, Doing, Event, World};
+use dronoids::rules::*;
+use dronoids::sim::{ore_radius, Doing, Event, World};
 
 use crate::fx::Fx;
 use crate::gfx::{self, arc, mix, pal, player_color, poly_fill, poly_lines, regular, scale_rgb, with_alpha};
@@ -57,6 +57,130 @@ fn hash(a: u32, b: u32) -> f32 {
     (h & 0xffff) as f32 / 65535.0
 }
 
+/// What the local player can see right now, and has ever seen.
+/// The simulation is fully replicated on every client, so the fog of war is
+/// a matter of what we choose to draw.
+pub struct Sight {
+    me: Option<u8>,
+    /// Visible cells (`VIS_CELL` units) over the whole world.
+    vis: Vec<bool>,
+    n: i32,
+    /// The player's explored map (copied from the world).
+    explored: Vec<u64>,
+    fog_n: i32,
+    /// Vision circles: centre and radius, in world units.
+    pub sources: Vec<(Vec2, f32)>,
+}
+
+const VIS_CELL: f32 = 2.0;
+
+impl Sight {
+    /// No fog at all (title screen).
+    pub fn all() -> Sight {
+        Sight { me: None, vis: vec![], n: 0, explored: vec![], fog_n: 0, sources: vec![] }
+    }
+
+    pub fn of(world: &World, me: u8, alpha: f32) -> Sight {
+        let size = fp(world.size);
+        let n = (size / VIS_CELL).ceil() as i32;
+        let mut sources: Vec<(Vec2, f32)> = vec![];
+        for f in world.factories.iter().filter(|f| f.owner == me) {
+            sources.push((fpv(f.x, f.y), fp(VISION_FACTORY)));
+        }
+        let a = alpha.clamp(0.0, 1.0);
+        for d in world.drones.iter().filter(|d| d.owner == me) {
+            sources.push((fpv(d.prev_x, d.prev_y).lerp(fpv(d.x, d.y), a), fp(VISION_DRONE)));
+        }
+        if let Some(p) = world.players.get(me as usize)
+            && p.alive
+            && world.is_landing(me)
+        {
+            // Before landing, the arrival scan shows where to settle.
+            sources.push((fpv(p.home.0, p.home.1), fp(ARRIVAL_SCAN)));
+        }
+        let mut vis = vec![false; (n * n) as usize];
+        for (c, r) in &sources {
+            let (x0, x1) = (((c.x - r) / VIS_CELL).floor().max(0.0) as i32, ((c.x + r) / VIS_CELL).ceil().min(n as f32 - 1.0) as i32);
+            let (y0, y1) = (((c.y - r) / VIS_CELL).floor().max(0.0) as i32, ((c.y + r) / VIS_CELL).ceil().min(n as f32 - 1.0) as i32);
+            for cy in y0..=y1 {
+                for cx in x0..=x1 {
+                    let m = vec2((cx as f32 + 0.5) * VIS_CELL, (cy as f32 + 0.5) * VIS_CELL);
+                    if m.distance_squared(*c) <= r * r {
+                        vis[(cy * n + cx) as usize] = true;
+                    }
+                }
+            }
+        }
+        let explored = world.players.get(me as usize).map(|p| p.explored.clone()).unwrap_or_default();
+        Sight { me: Some(me), vis, n, explored, fog_n: world.fog_side(), sources }
+    }
+
+    pub fn me(&self) -> Option<u8> {
+        self.me
+    }
+
+    pub fn fogged(&self) -> bool {
+        self.me.is_some()
+    }
+
+    /// Seen right now.
+    pub fn visible(&self, p: Vec2) -> bool {
+        if self.me.is_none() {
+            return true;
+        }
+        let (cx, cy) = ((p.x / VIS_CELL).floor() as i32, (p.y / VIS_CELL).floor() as i32);
+        cx >= 0 && cy >= 0 && cx < self.n && cy < self.n && self.vis[(cy * self.n + cx) as usize]
+    }
+
+    /// Seen at some point (terrain is remembered).
+    pub fn explored(&self, p: Vec2) -> bool {
+        if self.me.is_none() || self.visible(p) {
+            return true;
+        }
+        self.explored_cell((p.x / fp(FOG_CELL)).floor() as i32, (p.y / fp(FOG_CELL)).floor() as i32)
+    }
+
+    pub fn explored_cell(&self, cx: i32, cy: i32) -> bool {
+        if cx < 0 || cy < 0 || cx >= self.fog_n || cy >= self.fog_n {
+            return false;
+        }
+        let i = (cy * self.fog_n + cx) as usize;
+        self.explored.get(i / 64).is_some_and(|w| w & (1 << (i % 64)) != 0)
+    }
+
+    /// Is this unit drawn? Our own always, others only in sight.
+    pub fn shows(&self, owner: u8, p: Vec2) -> bool {
+        self.me.is_none_or(|me| me == owner) || self.visible(p)
+    }
+
+    /// Paint the fog mask, in screen space: unknown space stays dark,
+    /// explored space is veiled, what we see right now is clear.
+    pub fn paint_mask(&self, cam: &Cam) {
+        let z = cam.zoom;
+        let cell = fp(FOG_CELL);
+        let tl = cam.s2w(vec2(0.0, 0.0));
+        let br = cam.s2w(vec2(screen_width(), screen_height()));
+        let (x0, y0) = (((tl.x / cell).floor() as i32 - 1).max(0), ((tl.y / cell).floor() as i32 - 1).max(0));
+        let (x1, y1) = (((br.x / cell).ceil() as i32 + 1).min(self.fog_n - 1), ((br.y / cell).ceil() as i32 + 1).min(self.fog_n - 1));
+        for cy in y0..=y1 {
+            for cx in x0..=x1 {
+                if self.explored_cell(cx, cy) {
+                    let c = cam.w2s(vec2((cx as f32 + 0.5) * cell, (cy as f32 + 0.5) * cell));
+                    draw_circle(c.x, c.y, cell * z * 0.78, FOG_EXPLORED);
+                }
+            }
+        }
+        for (c, r) in &self.sources {
+            let s = cam.w2s(*c);
+            draw_circle(s.x, s.y, r * z, WHITE);
+        }
+    }
+}
+
+/// How dark space is where we have never been, and how veiled where we have.
+pub const FOG_UNKNOWN: Color = Color::new(0.025, 0.03, 0.055, 1.0);
+pub const FOG_EXPLORED: Color = Color::new(0.33, 0.37, 0.52, 1.0);
+
 pub struct Highlight {
     pub factory: Option<u32>,
     pub drone: Option<u32>,
@@ -94,9 +218,26 @@ impl Default for WorldView {
 
 impl WorldView {
     /// Turn simulation events into eye candy.
-    pub fn on_events(&mut self, world: &World, speed: f32) {
+    pub fn on_events(&mut self, world: &World, speed: f32, sight: &Sight) {
         let heavy = speed > 4.0;
         for e in &world.events {
+            // Nothing to see behind the fog.
+            let seen = match *e {
+                Event::Spawn { x, y, .. }
+                | Event::DroneDestroyed { x, y, .. }
+                | Event::FactoryDestroyed { x, y, .. }
+                | Event::FactoryBuilt { x, y, .. }
+                | Event::OreGrown { x, y } => sight.visible(fpv(x, y)),
+                Event::Mine { tx, ty, .. } | Event::Drop { tx, ty, .. } => sight.visible(fpv(tx, ty)),
+                Event::Attack { x, y, tx, ty, .. } => sight.visible(fpv(x, y)) || sight.visible(fpv(tx, ty)),
+                Event::PlayerJoined { player } => {
+                    world.players.get(player as usize).is_some_and(|p| sight.visible(fpv(p.home.0, p.home.1)))
+                }
+                Event::PlayerEliminated { .. } => false,
+            };
+            if !seen {
+                continue;
+            }
             match *e {
                 Event::Spawn { owner, x, y } => {
                     self.fx.ring(fpv(x, y), player_color(owner), 0.8, 0.5);
@@ -223,7 +364,7 @@ impl WorldView {
         }
     }
 
-    pub fn draw(&self, world: &World, cam: &Cam, alpha: f32, hl: &Highlight) {
+    pub fn draw(&self, world: &World, cam: &Cam, alpha: f32, hl: &Highlight, sight: &Sight) {
         let z = cam.zoom;
         let t = self.time;
         let alpha = alpha.clamp(0.0, 1.0);
@@ -252,7 +393,7 @@ impl WorldView {
         for (i, r) in world.rocks.iter().enumerate() {
             let c = fpv(r.x, r.y);
             let rad = fp(r.r);
-            if !cam.visible(c, rad + 1.0) {
+            if !cam.visible(c, rad + 1.0) || !(sight.explored(c) || sight.explored(c + vec2(rad, 0.0)) || sight.explored(c - vec2(rad, 0.0)) || sight.explored(c + vec2(0.0, rad)) || sight.explored(c - vec2(0.0, rad))) {
                 continue;
             }
             let sc = cam.w2s(c);
@@ -278,7 +419,7 @@ impl WorldView {
         // Crystals.
         for o in &world.ores {
             let c = fpv(o.x, o.y);
-            if !cam.visible(c, 1.5) {
+            if !cam.visible(c, 1.5) || !sight.explored(c) {
                 continue;
             }
             let sc = cam.w2s(c);
@@ -309,7 +450,7 @@ impl WorldView {
         for d in &world.drones {
             if let Doing::Mine { tx, ty } = d.doing {
                 let p = fpv(d.x, d.y);
-                if !cam.visible(p, 3.0) {
+                if !cam.visible(p, 3.0) || !sight.shows(d.owner, p) {
                     continue;
                 }
                 let (s, e) = (cam.w2s(p), cam.w2s(fpv(tx, ty)));
@@ -321,7 +462,7 @@ impl WorldView {
         // Factories.
         for f in &world.factories {
             let c = fpv(f.x, f.y);
-            if !cam.visible(c, 4.0) {
+            if !cam.visible(c, 4.0) || !sight.shows(f.owner, c) {
                 continue;
             }
             let sc = cam.w2s(c);
@@ -360,7 +501,7 @@ impl WorldView {
         // Drones.
         for d in &world.drones {
             let p = fpv(d.prev_x, d.prev_y).lerp(fpv(d.x, d.y), alpha);
-            if !cam.visible(p, 1.0) {
+            if !cam.visible(p, 1.0) || !sight.shows(d.owner, p) {
                 continue;
             }
             let s = cam.w2s(p);
@@ -433,24 +574,37 @@ impl WorldView {
 }
 
 /// Overview of the whole world. Returns the clicked world position.
-pub fn draw_minimap(world: &World, cam: &Cam, r: Rect, me: u8, mouse: Vec2, clicked: bool) -> Option<Vec2> {
+pub fn draw_minimap(world: &World, cam: &Cam, r: Rect, sight: &Sight, mouse: Vec2, clicked: bool) -> Option<Vec2> {
+    let me = sight.me().unwrap_or(u8::MAX);
     draw_rectangle(r.x, r.y, r.w, r.h, pal::PANEL);
     let size = fp(world.size);
     let k = r.w.min(r.h) / size;
     let at = |x: i32, y: i32| vec2(r.x + fp(x) * k, r.y + fp(y) * k);
-    for rock in &world.rocks {
+    // Explored space shows as a faint wash; the rest stays black.
+    if sight.fogged() {
+        let cell = fp(FOG_CELL) * k;
+        let n = world.fog_side();
+        for cy in 0..n {
+            for cx in 0..n {
+                if sight.explored_cell(cx, cy) {
+                    draw_rectangle(r.x + cx as f32 * cell, r.y + cy as f32 * cell, cell + 0.3, cell + 0.3, Color::new(0.12, 0.16, 0.3, 0.55));
+                }
+            }
+        }
+    }
+    for rock in world.rocks.iter().filter(|k| sight.explored(fpv(k.x, k.y))) {
         let p = at(rock.x, rock.y);
         draw_circle(p.x, p.y, (fp(rock.r) * k).max(0.7), scale_rgb(pal::WALL_EDGE, 0.45));
     }
-    for o in &world.ores {
+    for o in world.ores.iter().filter(|o| sight.explored(fpv(o.x, o.y))) {
         let p = at(o.x, o.y);
         draw_rectangle(p.x, p.y, 1.2, 1.2, with_alpha(pal::ORE, 0.7));
     }
-    for d in &world.drones {
+    for d in world.drones.iter().filter(|d| sight.shows(d.owner, fpv(d.x, d.y))) {
         let p = at(d.x, d.y);
         draw_rectangle(p.x - 0.7, p.y - 0.7, 1.6, 1.6, player_color(d.owner));
     }
-    for f in &world.factories {
+    for f in world.factories.iter().filter(|f| sight.shows(f.owner, fpv(f.x, f.y))) {
         let p = at(f.x, f.y);
         let s = if f.owner == me { 5.0 } else { 4.0 };
         draw_rectangle(p.x - s / 2.0, p.y - s / 2.0, s, s, player_color(f.owner));
@@ -470,4 +624,41 @@ pub fn draw_minimap(world: &World, cam: &Cam, r: Rect, me: u8, mouse: Vec2, clic
         return Some(vec2((mouse.x - r.x) / k, (mouse.y - r.y) / k));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dronoids::programs;
+    use dronoids::sim::Command;
+
+    #[test]
+    fn enemies_only_show_within_sight() {
+        let mut w = World::new(4);
+        let m = programs::builtin("mineur").unwrap();
+        for name in ["moi", "autre"] {
+            let id = w.join(name, false).unwrap();
+            let (hx, hy) = w.players[id as usize].home;
+            w.step(&[(id, Command::PlaceFactory { x: hx, y: hy, name: m.name.into(), source: m.source.into() })]);
+        }
+        for _ in 0..5 {
+            w.step(&[]);
+        }
+        let mine = w.factories.iter().find(|f| f.owner == 0).unwrap().clone();
+        let theirs = w.factories.iter().find(|f| f.owner == 1).unwrap().clone();
+        let sight = Sight::of(&w, 0, 1.0);
+        assert!(sight.shows(0, fpv(mine.x, mine.y)));
+        assert!(!sight.shows(1, fpv(theirs.x, theirs.y)), "a far colony hides in the fog");
+        assert!(!sight.explored(fpv(theirs.x, theirs.y)));
+        // An enemy drone parked next to our factory is seen.
+        let di = w.drones.iter().position(|d| d.owner == 1).unwrap();
+        let near = fpv(mine.x + 5 * FP, mine.y);
+        w.drones[di].x = mine.x + 5 * FP;
+        w.drones[di].y = mine.y;
+        w.drones[di].prev_x = w.drones[di].x;
+        w.drones[di].prev_y = w.drones[di].y;
+        let sight = Sight::of(&w, 0, 1.0);
+        assert!(sight.shows(1, near));
+        assert!(Sight::all().shows(1, fpv(theirs.x, theirs.y)), "the title screen sees everything");
+    }
 }

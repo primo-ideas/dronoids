@@ -3,7 +3,7 @@
 
 use std::cell::RefCell;
 
-use macroquad::miniquad::{BlendFactor, BlendState, Equation};
+use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, Equation};
 use macroquad::prelude::*;
 
 pub mod pal {
@@ -352,6 +352,93 @@ impl Bloom {
             self.add.set_uniform("u_intensity", k * self.intensity);
             blit(&lv.a.texture, w, h, WHITE);
         }
+        gl_use_default_material();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fog of war
+// ---------------------------------------------------------------------------
+
+const MULTIPLY: &str = r#"#version 100
+precision highp float;
+varying vec2 uv;
+varying vec4 color;
+uniform sampler2D Texture;
+void main() {
+    gl_FragColor = vec4(texture2D(Texture, uv).rgb, 1.0);
+}
+"#;
+
+/// The mask is painted at a fraction of the screen resolution, blurred
+/// (soft edges for free), then multiplied over the scene before the bloom,
+/// so that hidden space neither shows nor glows.
+pub struct Fog {
+    size: (u32, u32),
+    a: RenderTarget,
+    b: RenderTarget,
+    blur: Material,
+    multiply: Material,
+}
+
+const FOG_DIV: u32 = 4;
+
+impl Fog {
+    pub fn new() -> Fog {
+        let blur = material(BLUR, vec![UniformDesc::new("u_dir", UniformType::Float2)], false);
+        let multiply = load_material(
+            ShaderSource::Glsl { vertex: VERTEX, fragment: MULTIPLY },
+            MaterialParams {
+                pipeline_params: PipelineParams {
+                    color_blend: Some(BlendState::new(
+                        Equation::Add,
+                        BlendFactor::Value(BlendValue::DestinationColor),
+                        BlendFactor::Zero,
+                    )),
+                    ..Default::default()
+                },
+                uniforms: vec![],
+                textures: vec![],
+            },
+        )
+        .expect("shader compiles");
+        Fog { size: (0, 0), a: make_rt(1, 1), b: make_rt(1, 1), blur, multiply }
+    }
+
+    fn resize(&mut self) {
+        let w = (screen_width().max(1.0) as u32 / FOG_DIV).max(1);
+        let h = (screen_height().max(1.0) as u32 / FOG_DIV).max(1);
+        if self.size != (w, h) {
+            self.size = (w, h);
+            self.a = make_rt(w, h);
+            self.b = make_rt(w, h);
+        }
+    }
+
+    /// `paint` draws the mask in screen coordinates over `unknown`: white
+    /// where we see, darker where we do not.
+    pub fn apply(&mut self, bloom: &Bloom, unknown: Color, paint: impl FnOnce()) {
+        self.resize();
+        let (mw, mh) = (self.size.0 as f32, self.size.1 as f32);
+        let mut cam = Camera2D::from_display_rect(Rect::new(0.0, 0.0, screen_width(), screen_height()));
+        cam.render_target = Some(self.a.clone());
+        set_camera(&cam);
+        clear_background(unknown);
+        paint();
+        for _ in 0..2 {
+            for (src, dst, dir) in [(&self.a, &self.b, vec2(1.0 / mw, 0.0)), (&self.b, &self.a, vec2(0.0, 1.0 / mh))] {
+                set_camera(&rt_camera(dst, mw, mh));
+                clear_background(BLACK);
+                self.blur.set_uniform("u_dir", dir);
+                gl_use_material(&self.blur);
+                blit(&src.texture, mw, mh, WHITE);
+                gl_use_default_material();
+            }
+        }
+        let (w, h) = (bloom.size.0 as f32, bloom.size.1 as f32);
+        set_camera(&rt_camera(&bloom.scene, w, h));
+        gl_use_material(&self.multiply);
+        blit(&self.a.texture, w, h, WHITE);
         gl_use_default_material();
     }
 }

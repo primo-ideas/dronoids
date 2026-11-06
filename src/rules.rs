@@ -84,5 +84,13 @@ pub const STACK_DEPTH: usize = 8;
 pub const ORE_MIN: i32 = 40;
 pub const ORE_MAX: i32 = 120;
 
+/// Fog of war: how far units see (players only see around their units).
+pub const VISION_DRONE: i32 = SENSOR_RANGE;
+pub const VISION_FACTORY: i32 = 18 * FP;
+/// On arrival, the area around the suggested landing place is scanned.
+pub const ARRIVAL_SCAN: i32 = 30 * FP;
+/// Resolution of each player's map of explored space.
+pub const FOG_CELL: i32 = 4 * FP;
+
 /// Number of possible starting places generated with the map.
 pub const SPAWN_SLOTS: usize = 24;

@@ -5,8 +5,8 @@
 
 use std::collections::BTreeMap;
 
-use game_of_drones::programs::{BUILTINS, TEMPLATE};
-use game_of_drones::vm;
+use dronoids::programs::{BUILTINS, TEMPLATE};
+use dronoids::vm;
 
 pub struct Entry {
     pub name: String,

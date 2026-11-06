@@ -5,7 +5,7 @@
 use macroquad::miniquad::window::{clipboard_get, clipboard_set};
 use macroquad::prelude::*;
 
-use game_of_drones::vm::{self, AsmError, Cat, TokKind};
+use dronoids::vm::{self, AsmError, Cat, TokKind};
 
 use crate::gfx::{self, pal, with_alpha};
 use crate::ui::Ui;

@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Game of Drones</title>
+    <title>Dronoids</title>
     <meta name="description" content="Un secteur partagé où vous programmez vos drones dans un petit assembleur.">
     <style>
         html, body {
@@ -36,14 +36,14 @@
     </style>
 </head>
 <body>
-    <div id="loading">GAME OF DRONES · chargement…</div>
+    <div id="loading">DRONOIDS · chargement…</div>
     <canvas id="glcanvas" tabindex="1"></canvas>
     <script src="mq_js_bundle.js"></script>
     <script src="god_net.js"></script>
     <script>
         // Right-drag moves the camera: no context menu on the game.
         document.getElementById("glcanvas").addEventListener("contextmenu", function (e) { e.preventDefault(); });
-        load("game_of_drones.wasm");
+        load("dronoids.wasm");
     </script>
 </body>
 </html>

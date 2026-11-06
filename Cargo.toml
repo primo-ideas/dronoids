@@ -1,8 +1,8 @@
 [package]
-name = "game_of_drones"
+name = "dronoids"
 version = "0.1.0"
 edition = "2024"
-default-run = "game_of_drones"
+default-run = "dronoids"
 
 [dependencies]
 bincode = "1"
@@ -15,7 +15,7 @@ serde_json = "1.0.154"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [[bin]]
-name = "god-server"
+name = "dronoids-server"
 path = "src/bin/server.rs"
 
 [profile.dev]

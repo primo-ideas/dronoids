@@ -1,4 +1,4 @@
-# Game of Drones
+# Dronoids
 
 Un secteur spatial partagé et persistant, vue du dessus, géométrique et néon.
 On y arrive **sans rien**, sinon de quoi bâtir une usine. L'usine fabrique des
@@ -6,7 +6,7 @@ On y arrive **sans rien**, sinon de quoi bâtir une usine. L'usine fabrique des
 ludique, **DASM**. Les programmes fournis sont volontairement naïfs : le jeu, c'est
 d'en écrire de meilleurs. Votre colonie continue de travailler quand vous partez.
 
-**Jouer : <https://primo-ideas.xyz/drones/>**
+**Jouer : <https://primo-ideas.xyz/dronoids/>**
 
 Inspiré de *Human Resource Machine* pour le langage et le débogueur pas à pas.
 
@@ -14,7 +14,7 @@ Inspiré de *Human Resource Machine* pour le langage et le débogueur pas à pas
 
 ```bash
 cargo run --release                                   # le jeu (bureau)
-cargo run --release --bin god-server                  # un secteur local, ws://127.0.0.1:8082/ws
+cargo run --release --bin dronoids-server                  # un secteur local, ws://127.0.0.1:8082/ws
 ./deploy/build-web.sh --serve                         # la version navigateur, http://127.0.0.1:8090
 ```
 
@@ -29,6 +29,12 @@ Rust stable récent (édition 2024). Dépendances : `macroquad` (rendu), `serde`
 - **Arrivée** : 170 cristaux, rien d'autre. On choisit où poser sa première usine
   (loin des autres colonies). Un **bouclier** protège les nouveaux venus 10 minutes :
   ils ne peuvent ni être attaqués, ni attaquer.
+- **Brouillard de guerre** : on ne voit qu'autour de ses usines (18 unités) et de
+  ses drones (12). L'espace déjà exploré reste en mémoire, voilé (astéroïdes et
+  cristaux, mais aucune unité étrangère) ; l'inconnu reste noir. La carte explorée
+  est propre à chaque joueur et persiste : vos drones cartographient aussi pendant
+  votre absence. (Chaque client rejoue tout le monde : le brouillard est un choix
+  d'affichage, pas une protection.)
 - **Rythme lent** : 4 ticks par seconde ; un pas prend 1 s, extraire un cristal 2 s,
   une usine produit un drone toutes les 30 s.
 - Les IA ne lancent de raids qu'autour de chez elles : s'installer loin d'elles,
@@ -87,7 +93,7 @@ que le mineur de base sur la durée (+20 % au bout d'une demi-heure).
 
 ## Comment marche le multijoueur
 
-Le serveur (`god-server`) possède le monde de référence et fait tourner les IA.
+Le serveur (`dronoids-server`) possède le monde de référence et fait tourner les IA.
 À chaque tick, il diffuse la liste ordonnée des commandes des joueurs ; chaque
 client rejoue ces commandes sur sa propre copie. La simulation est entièrement
 déterministe (entiers en virgule fixe, table de sinus, `atan2` et racines
@@ -117,7 +123,7 @@ La bibliothèque (sans graphismes, testable) :
   l'index spatial.
 - `src/ai.rs` : les colonies IA, qui jouent via les mêmes commandes qu'un humain.
 - `src/server.rs`, `src/net.rs` : serveur de monde, protocole WebSocket.
-- `src/bin/server.rs` : `god-server`.
+- `src/bin/server.rs` : `dronoids-server`.
 
 Le jeu : rendu néon avec bloom (`gfx.rs`), monde et particules (`view.rs`,
 `fx.rs`), interface (`ui.rs`, `game.rs`, `menu.rs`), éditeur (`editor.rs`),

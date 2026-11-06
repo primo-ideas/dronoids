@@ -1,4 +1,4 @@
-// Game of Drones: the bits of the browser the game needs, as a miniquad
+// Dronoids: the bits of the browser the game needs, as a miniquad
 // plugin. WebSockets (the game's only network), local storage (settings and
 // programs), the default server address and a good source of randomness.
 "use strict";
@@ -18,7 +18,7 @@
         return n;
     }
 
-    // Same host and directory as the page: https://site/drones/ -> wss://site/drones/ws.
+    // Same host and directory as the page: https://site/dronoids/ -> wss://site/dronoids/ws.
     // A page served locally talks to a local server; ?server= overrides both.
     function defaultServer() {
         const params = new URLSearchParams(window.location.search);
@@ -34,8 +34,20 @@
         return scheme + "//" + window.location.host + dir + "ws";
     }
 
+    // The game was called "Game of Drones" before: what it stored then
+    // (notably the secret that owns your name) is read back once and moved.
     function storageKey(ptr, len) {
-        return "game-of-drones." + readString(ptr, len);
+        const name = readString(ptr, len);
+        const key = "dronoids." + name;
+        try {
+            if (window.localStorage.getItem(key) === null) {
+                const old = window.localStorage.getItem("game-of-drones." + name);
+                if (old !== null) {
+                    window.localStorage.setItem(key, old);
+                }
+            }
+        } catch (e) { /* storage unavailable */ }
+        return key;
     }
 
     miniquad_add_plugin({

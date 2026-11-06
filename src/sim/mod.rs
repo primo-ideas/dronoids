@@ -5,15 +5,16 @@
 //! whole degrees: given the same seed and the same commands, every machine
 //! computes the exact same world, which is what multiplayer relies on.
 
+mod compat;
 pub mod grid;
 pub mod map;
+pub mod quests;
 
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use crate::geo::{self, compass, dir_vec, dist, dist2};
-#[cfg(test)]
 use crate::programs;
 use crate::rng::{mix, Fnv, Rng};
 use crate::rules::*;
@@ -61,6 +62,14 @@ pub struct Player {
     pub home: (i32, i32),
     /// Protected (can neither attack nor be attacked) until this tick.
     pub shield_until: u64,
+    /// Explored space, one bit per `FOG_CELL` square (row-major).
+    pub explored: Vec<u64>,
+    /// First-steps objectives completed (bit i = `quests::QUESTS[i]`).
+    #[serde(default)]
+    pub quests: u32,
+    /// Things done once that objectives care about (`quests::FLAG_*`).
+    #[serde(default)]
+    pub flags: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -136,6 +145,7 @@ pub enum Event {
     PlayerJoined { player: u8 },
     PlayerEliminated { player: u8 },
     OreGrown { x: i32, y: i32 },
+    QuestDone { player: u8, quest: u8, reward: i32 },
 }
 
 /// Player intents: the only way to influence the world.
@@ -264,6 +274,26 @@ impl World {
 
     pub fn from_bytes(bytes: &[u8]) -> Result<World, String> {
         let mut w: World = bincode::deserialize(bytes).map_err(|e| e.to_string())?;
+        w.rebuild_caches();
+        Ok(w)
+    }
+
+    /// For the server's save file: JSON, so that later versions can add
+    /// fields (with defaults) and still read it.
+    pub fn to_save(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("world serializes")
+    }
+
+    /// Read any save: JSON, or the bincode files of earlier versions.
+    pub fn from_save(bytes: &[u8]) -> Result<World, String> {
+        let mut w: World = if bytes.first() == Some(&b'{') {
+            serde_json::from_slice(bytes).map_err(|e| e.to_string())?
+        } else {
+            match bincode::deserialize(bytes) {
+                Ok(w) => w,
+                Err(_) => compat::from_v4(bytes)?,
+            }
+        };
         w.rebuild_caches();
         Ok(w)
     }
@@ -573,6 +603,8 @@ impl World {
             h.add(p.minerals as i64);
             h.add(p.alive as i64);
             h.add(p.shield_until as i64);
+            h.add(p.quests as i64);
+            h.add(p.flags as i64);
         }
         for f in &self.factories {
             for v in [f.id as i32, f.x, f.y, f.hp, f.timer, f.enabled as i32, f.quota as i32, f.prog as i32] {
@@ -617,7 +649,52 @@ impl World {
         id
     }
 
+    /// Cells per side of the explored maps.
+    pub fn fog_side(&self) -> i32 {
+        (self.size + FOG_CELL - 1) / FOG_CELL
+    }
+
+    fn fog_words(&self) -> usize {
+        let n = self.fog_side() as usize;
+        (n * n).div_ceil(64)
+    }
+
+    /// Has `owner` ever seen the point (x, y)?
+    pub fn explored(&self, owner: u8, x: i32, y: i32) -> bool {
+        let Some(p) = self.players.get(owner as usize) else { return false };
+        let n = self.fog_side();
+        let (cx, cy) = (x.div_euclid(FOG_CELL), y.div_euclid(FOG_CELL));
+        if cx < 0 || cy < 0 || cx >= n || cy >= n {
+            return false;
+        }
+        let i = (cy * n + cx) as usize;
+        p.explored.get(i / 64).is_some_and(|w| w & (1 << (i % 64)) != 0)
+    }
+
+    /// Mark everything within `r` of (x, y) as explored by `owner`.
+    fn reveal(&mut self, owner: u8, x: i32, y: i32, r: i32) {
+        let n = self.fog_side();
+        let words = self.fog_words();
+        let Some(p) = self.players.get_mut(owner as usize) else { return };
+        if p.explored.len() != words {
+            p.explored.resize(words, 0);
+        }
+        let r2 = r as i64 * r as i64;
+        let (x0, x1) = (((x - r) / FOG_CELL).max(0), ((x + r) / FOG_CELL).min(n - 1));
+        let (y0, y1) = (((y - r) / FOG_CELL).max(0), ((y + r) / FOG_CELL).min(n - 1));
+        for cy in y0..=y1 {
+            for cx in x0..=x1 {
+                let (mx, my) = (cx * FOG_CELL + FOG_CELL / 2, cy * FOG_CELL + FOG_CELL / 2);
+                if dist2(mx - x, my - y) <= r2 {
+                    let i = (cy * n + cx) as usize;
+                    p.explored[i / 64] |= 1 << (i % 64);
+                }
+            }
+        }
+    }
+
     fn add_factory(&mut self, owner: u8, x: i32, y: i32, prog: u32) -> u32 {
+        self.reveal(owner, x, y, VISION_FACTORY);
         let id = self.new_id();
         self.factories.push(Factory {
             id,
@@ -689,10 +766,14 @@ impl World {
                     kills: 0,
                     home,
                     shield_until,
+                    explored: vec![],
+                    quests: 0,
+                    flags: 0,
                 });
                 id
             }
         };
+        self.reveal(id, home.0, home.1, ARRIVAL_SCAN);
         // Newcomers own nothing: they choose where to land their first factory.
         self.events.push(Event::PlayerJoined { player: id });
         Some(id)
@@ -736,6 +817,14 @@ impl World {
         }
     }
 
+    /// Remember that a player runs a program of their own (not a built-in).
+    fn note_program(&mut self, player: u8, source: &str) {
+        let own = !programs::BUILTINS.iter().any(|b| b.source.trim() == source.trim());
+        if own && let Some(p) = self.players.get_mut(player as usize) {
+            p.flags |= quests::FLAG_OWN_PROGRAM;
+        }
+    }
+
     fn apply(&mut self, player: u8, cmd: &Command) {
         if let Command::Join { name, bot } = cmd {
             self.join(name, *bot);
@@ -749,7 +838,15 @@ impl World {
             Command::PlaceFactory { x, y, name, source } => {
                 if self.can_place_factory(player, *x, *y).is_ok() {
                     let Some(prog) = self.intern_program(name, source) else { return };
-                    self.players[player as usize].minerals -= FACTORY_COST;
+                    let landing = self.is_landing(player);
+                    let tick = self.tick;
+                    let p = &mut self.players[player as usize];
+                    p.minerals -= FACTORY_COST;
+                    if landing {
+                        // Newcomers are protected from the moment they settle.
+                        p.shield_until = p.shield_until.max(tick + SHIELD_TICKS);
+                    }
+                    self.note_program(player, source);
                     self.add_factory(player, *x, *y, prog);
                     self.events.push(Event::FactoryBuilt { owner: player, x: *x, y: *y });
                 }
@@ -760,6 +857,7 @@ impl World {
                     return;
                 }
                 let Some(prog) = self.intern_program(name, source) else { return };
+                self.note_program(player, source);
                 self.factories[fi].prog = prog;
                 for d in self.drones.iter_mut().filter(|d| d.factory == *factory) {
                     d.prog = prog;
@@ -768,6 +866,7 @@ impl World {
             }
             Command::UpdateProgram { name, source } => {
                 let Some(prog) = self.intern_program(name, source) else { return };
+                self.note_program(player, source);
                 let same_name: Vec<bool> = self.programs.iter().map(|p| p.name == *name).collect();
                 for f in self.factories.iter_mut().filter(|f| f.owner == player && same_name[f.prog as usize]) {
                     f.prog = prog;
@@ -830,8 +929,14 @@ impl World {
         self.drones.retain(|d| d.hp > 0);
         self.factories.retain(|f| f.hp > 0);
         self.ores.retain(|o| o.amount > 0);
+        // Fog of war: drones map what they pass by, for their owner.
+        for i in 0..self.drones.len() {
+            let (o, x, y) = (self.drones[i].owner, self.drones[i].x, self.drones[i].y);
+            self.reveal(o, x, y, VISION_DRONE);
+        }
         self.regrow();
         self.check_players();
+        self.check_quests();
         self.tick += 1;
     }
 
@@ -869,7 +974,8 @@ impl World {
 
             let id = self.new_id();
             let f = &mut self.factories[fi];
-            f.timer = SPAWN_TICKS;
+            // A new factory gets its first drones out quickly.
+            f.timer = if f.spawned < 2 { SPAWN_TICKS / 4 } else { SPAWN_TICKS };
             f.spawned += 1;
             let prog = f.prog;
             self.players[owner].minerals -= DRONE_COST;
@@ -1172,6 +1278,28 @@ pub(crate) mod tests {
         assert_eq!(w.factory_count(id), 1);
         // The new factory spends on its first drone right away.
         assert_eq!(w.players[0].minerals, START_MINERALS - FACTORY_COST - DRONE_COST);
+    }
+
+    #[test]
+    fn exploration_is_remembered_per_player() {
+        let mut w = world_with(&["a", "b"]);
+        let (ax, ay) = w.players[0].home;
+        let (bx, by) = w.players[1].home;
+        assert!(w.explored(0, ax, ay), "arrival scan");
+        assert!(!w.explored(0, bx, by), "the other colony is far away and unknown");
+        // A drone far from home maps what it passes by.
+        let far = (ax + if ax < w.size / 2 { 80 } else { -80 } * FP, ay);
+        assert!(!w.explored(0, far.0, far.1));
+        let di = w.drones.iter().position(|d| d.owner == 0).expect("a drone");
+        w.drones[di].x = far.0;
+        w.drones[di].y = far.1;
+        w.step(&[]);
+        assert!(w.explored(0, far.0, far.1));
+        assert!(w.explored(0, far.0 + VISION_DRONE / 2, far.1));
+        assert!(!w.explored(1, far.0, far.1), "exploration is per player");
+        let copy = World::from_bytes(&w.to_bytes()).unwrap();
+        assert_eq!(copy.players[0].explored, w.players[0].explored);
+        assert!(!w.explored(0, -5, 3) && !w.explored(0, w.size + 9, 0));
     }
 
     #[test]

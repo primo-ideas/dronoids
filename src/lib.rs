@@ -1,4 +1,4 @@
-//! Game of Drones — simulation core (no graphics).
+//! Dronoids — simulation core (no graphics).
 //!
 //! Everything in this crate root is deterministic and headless so it can be
 //! unit-tested, run by a dedicated server, and replayed identically by

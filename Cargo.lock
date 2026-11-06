@@ -145,6 +145,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dronoids"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "macroquad",
+ "serde",
+ "serde_json",
+ "tungstenite",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -184,17 +195,6 @@ checksum = "e796cb6894e6418daacea84b28dd4f98d3b32c74d5bb452ba1ecfbf5ad8e84ca"
 dependencies = [
  "hashbrown",
  "ttf-parser",
-]
-
-[[package]]
-name = "game_of_drones"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "macroquad",
- "serde",
- "serde_json",
- "tungstenite",
 ]
 
 [[package]]

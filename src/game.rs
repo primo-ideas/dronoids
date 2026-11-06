@@ -6,19 +6,19 @@ use std::collections::VecDeque;
 
 use macroquad::prelude::*;
 
-use game_of_drones::ai::{Bot, Level};
-use game_of_drones::net::{ClientMsg, Conn, NetEvent, ServerMsg};
-use game_of_drones::programs;
-use game_of_drones::rules::*;
-use game_of_drones::sim::{Command, Doing, Event, World};
-use game_of_drones::vm::{self, Cat, Reg};
+use dronoids::ai::{Bot, Level};
+use dronoids::net::{ClientMsg, Conn, NetEvent, ServerMsg};
+use dronoids::programs;
+use dronoids::rules::*;
+use dronoids::sim::{Command, Doing, Event, World};
+use dronoids::vm::{self, Cat, Reg};
 
 use crate::editor::{token_color, Editor};
-use crate::gfx::{self, mix, pal, player_color, with_alpha, Bloom};
+use crate::gfx::{self, mix, pal, player_color, with_alpha, Bloom, Fog};
 use crate::library::{self, Library};
 use crate::platform::Settings;
 use crate::ui::{TextField, Ui};
-use crate::view::{draw_minimap, fp, fpv, Cam, Highlight, WorldView};
+use crate::view::{draw_minimap, fp, fpv, Cam, Highlight, Sight, WorldView, FOG_UNKNOWN};
 
 /// Hash checks happen this often (must match the server).
 const HASH_EVERY: u64 = 50;
@@ -131,6 +131,9 @@ pub struct Game {
     step_once: bool,
     right_drag: Option<(Vec2, Vec2)>,
     settings: Settings,
+    /// What we can see (fog of war), refreshed every frame.
+    sight: Sight,
+    fog: Fog,
 }
 
 impl Game {
@@ -139,6 +142,7 @@ impl Game {
         let first = world.factories.iter().find(|f| f.owner == me);
         let center = first.map(|f| fpv(f.x, f.y)).unwrap_or(home);
         let start = first.map(|f| f.id);
+        let sight = Sight::of(&world, me, 0.0);
         let mut g = Game {
             world,
             me,
@@ -165,6 +169,8 @@ impl Game {
             step_once: false,
             right_drag: None,
             settings,
+            sight,
+            fog: Fog::new(),
         };
         // A returning player's factory runs their own version of "mineur".
         if let (Some(fid), Some(src)) = (start, lib.source_or_builtin("mineur"))
@@ -255,7 +261,7 @@ impl Game {
                         cmds.extend(b.think(&self.world).into_iter().map(|c| (p, c)));
                     }
                     self.world.step(&cmds);
-                    self.view.on_events(&self.world, self.speed);
+                    self.view.on_events(&self.world, self.speed, &self.sight);
                     notes.extend(self.world.events.iter().filter(|e| keep(e)).cloned());
                     self.acc -= 1.0;
                     n += 1;
@@ -316,7 +322,7 @@ impl Game {
                         break;
                     }
                     self.world.step(&cmds);
-                    self.view.on_events(&self.world, 1.0);
+                    self.view.on_events(&self.world, 1.0, &self.sight);
                     notes.extend(self.world.events.iter().filter(|e| keep(e)).cloned());
                     if self.world.tick.is_multiple_of(HASH_EVERY) {
                         conn.send(&ClientMsg::Hash { tick: self.world.tick, hash: self.world.state_hash() });
@@ -374,9 +380,12 @@ impl Game {
         }
         self.cam.shake = self.view.shake_offset();
 
+        self.sight = Sight::of(&self.world, self.me, self.alpha());
         bloom.begin();
         let hl = self.highlight(ui);
-        self.view.draw(&self.world, &self.cam, self.alpha(), &hl);
+        self.view.draw(&self.world, &self.cam, self.alpha(), &hl, &self.sight);
+        let (sight, cam) = (&self.sight, &self.cam);
+        self.fog.apply(bloom, FOG_UNKNOWN, || sight.paint_mask(cam));
         bloom.finish();
 
         let mut acts = vec![];
@@ -394,7 +403,7 @@ impl Game {
                 let s = 190.0;
                 let mm = Rect::new(screen_width() - s - 12.0, screen_height() - s - 12.0, s, s);
                 ui.block(mm);
-                if let Some(p) = draw_minimap(&self.world, &self.cam, mm, self.me, ui.mouse, ui.pressed || (ui.down && ui.hover(mm))) {
+                if let Some(p) = draw_minimap(&self.world, &self.cam, mm, &self.sight, ui.mouse, ui.pressed || (ui.down && ui.hover(mm))) {
                     ui.pressed = false;
                     acts.push(Act::CenterOn(p));
                 }
@@ -420,6 +429,15 @@ impl Game {
     }
 
     fn validate_selection(&mut self) {
+        // Someone else's unit that slips into the fog is no longer selected.
+        let lost = match self.sel {
+            Sel::Factory(id) => self.world.factory(id).is_some_and(|f| !self.sight.shows(f.owner, fpv(f.x, f.y))),
+            Sel::Drone(id) => self.world.drone(id).is_some_and(|d| !self.sight.shows(d.owner, fpv(d.x, d.y))),
+            Sel::None => false,
+        };
+        if lost {
+            self.sel = Sel::None;
+        }
         match self.sel {
             Sel::Factory(id) if self.world.factory(id).is_none() => self.sel = Sel::None,
             Sel::Drone(id) if self.world.drone(id).is_none() => {
@@ -1281,14 +1299,14 @@ impl Game {
             .drones
             .iter()
             .filter_map(|d| WorldView::drone_pos(&self.world, d.id, alpha).map(|p| (d.id, p.distance(wp))))
-            .filter(|(_, dist)| *dist < pick)
+            .filter(|(id, dist)| *dist < pick && self.world.drone(*id).is_some_and(|d| self.sight.shows(d.owner, fpv(d.x, d.y))))
             .min_by(|a, b| a.1.total_cmp(&b.1));
         let factory = self
             .world
             .factories
             .iter()
             .map(|f| (f.id, fpv(f.x, f.y).distance(wp)))
-            .filter(|(_, d)| *d < fp(FACTORY_RADIUS) + 0.4)
+            .filter(|(id, d)| *d < fp(FACTORY_RADIUS) + 0.4 && self.world.factory(*id).is_some_and(|f| self.sight.shows(f.owner, fpv(f.x, f.y))))
             .min_by(|a, b| a.1.total_cmp(&b.1));
         let sel = match (drone, factory) {
             (_, Some((id, _))) if drone.is_none_or(|d| d.1 > 0.5) => Sel::Factory(id),
@@ -1414,7 +1432,7 @@ impl Game {
         if let Some(p) = (0..10)
             .flat_map(|r| (0..360).step_by(30).map(move |a| (r, a)))
             .map(|(r, a)| {
-                let (dx, dy) = game_of_drones::geo::dir_vec(a, r * 3 * FP);
+                let (dx, dy) = dronoids::geo::dir_vec(a, r * 3 * FP);
                 (hx + dx, hy + dy)
             })
             .find(|p| self.world.can_place_factory(self.me, p.0, p.1).is_ok())

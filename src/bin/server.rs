@@ -1,7 +1,7 @@
 //! Dedicated, headless world server.
 //!
 //! ```text
-//! god-server [--name primo] [--bind 0.0.0.0] [--port 8082] [--bots 6]
+//! dronoids-server [--name primo] [--bind 0.0.0.0] [--port 8082] [--bots 6]
 //!            [--level easy|normal|hard] [--seed N] [--save worlds/primo.world]
 //! ```
 //! Clients connect over WebSocket (`ws://host:port/ws`). The world is saved
@@ -13,15 +13,15 @@ fn main() {
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
-    use game_of_drones::ai::Level;
-    use game_of_drones::net::DEFAULT_PORT;
-    use game_of_drones::server::{Server, ServerConfig};
+    use dronoids::ai::Level;
+    use dronoids::net::DEFAULT_PORT;
+    use dronoids::server::{Server, ServerConfig};
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let get = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "god-server [--name NOM] [--bind 0.0.0.0] [--port {DEFAULT_PORT}] [--bots 6] [--level easy|normal|hard] [--seed N] [--save FICHIER]"
+            "dronoids-server [--name NOM] [--bind 0.0.0.0] [--port {DEFAULT_PORT}] [--bots 6] [--level easy|normal|hard] [--seed N] [--save FICHIER]"
         );
         return;
     }
@@ -42,7 +42,7 @@ fn main() {
         save: Some(get("--save").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("worlds").join(format!("{name}.world")))),
         name,
     };
-    let server = match Server::new(cfg.clone()) {
+    let mut server = match Server::new(cfg.clone()) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("impossible de démarrer : {e}");
@@ -58,7 +58,7 @@ fn main() {
         level.label(),
         cfg.save.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
     );
-    for l in &server.log {
+    for l in server.log.drain(..) {
         println!("{l}");
     }
     server.run(Arc::new(AtomicBool::new(false)), |l| println!("{l}"));

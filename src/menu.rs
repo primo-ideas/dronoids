@@ -4,16 +4,16 @@ use std::f32::consts::PI;
 
 use macroquad::prelude::*;
 
-use game_of_drones::ai::{Bot, Level};
-use game_of_drones::net::{ClientMsg, Conn, Connecting, NetEvent, ServerMsg, PROTOCOL_VERSION};
-use game_of_drones::rules::TICKS_PER_SEC;
-use game_of_drones::sim::{Command, World};
+use dronoids::ai::{Bot, Level};
+use dronoids::net::{ClientMsg, Conn, Connecting, NetEvent, ServerMsg, PROTOCOL_VERSION};
+use dronoids::rules::TICKS_PER_SEC;
+use dronoids::sim::{Command, World};
 
 use crate::game::bot_name;
 use crate::gfx::{self, mix, pal, player_color, poly_lines, regular, with_alpha, Bloom};
 use crate::platform::{self, Settings};
 use crate::ui::{TextField, Ui};
-use crate::view::{fp, Cam, Highlight, WorldView};
+use crate::view::{fp, Cam, Highlight, Sight, WorldView};
 
 pub enum MenuOut {
     Stay,
@@ -119,7 +119,7 @@ impl Menu {
                 cmds.extend(b.think(&self.demo).into_iter().map(|c| (p, c)));
             }
             self.demo.step(&cmds);
-            self.view.on_events(&self.demo, 3.0);
+            self.view.on_events(&self.demo, 3.0, &Sight::all());
             self.acc -= 1.0;
             n += 1;
         }
@@ -139,7 +139,7 @@ impl Menu {
         let center = focus + vec2(40.0 * t.sin(), 25.0 * (t * 0.7).cos());
         let cam = Cam { center, zoom: 11.0, shake: Vec2::ZERO };
         let hl = Highlight { factory: None, drone: None, ghost: None, build_range_for: None, target: None, landing: None, me: 0 };
-        self.view.draw(&self.demo, &cam, self.acc.clamp(0.0, 1.0), &hl);
+        self.view.draw(&self.demo, &cam, self.acc.clamp(0.0, 1.0), &hl, &Sight::all());
         draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.01, 0.012, 0.03, 0.62));
         let ty = sh * 0.16;
         for i in 0..3 {
@@ -147,7 +147,7 @@ impl Menu {
             let col = if i == 1 { pal::ORE } else { player_color(if i == 0 { 0 } else { 1 }) };
             poly_lines(&regular(c, 11.0, 6, PI / 6.0 + self.view.time * 0.4 * (i as f32 - 1.0)), 2.0, with_alpha(col, 0.85));
         }
-        gfx::text_centered("GAME OF DRONES", sw / 2.0, ty, 54.0, mix(pal::ACCENT, WHITE, 0.2));
+        gfx::text_centered("DRONOIDS", sw / 2.0, ty, 54.0, mix(pal::ACCENT, WHITE, 0.2));
         gfx::text_centered("un secteur partagé · des drones que vous programmez", sw / 2.0, ty + 66.0, 15.0, with_alpha(pal::PINK, 0.85));
         bloom.finish();
 

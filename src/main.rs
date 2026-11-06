@@ -1,4 +1,4 @@
-//! Game of Drones — program drone colonies in a tiny assembly language, in
+//! Dronoids — program drone colonies in a tiny assembly language, in
 //! a shared, persistent sector (or offline, for practice).
 
 mod editor;
@@ -14,7 +14,7 @@ mod view;
 use macroquad::prelude::*;
 
 use game::{Game, Outcome};
-use game_of_drones::ai::Level;
+use dronoids::ai::Level;
 use gfx::Bloom;
 use library::Library;
 use menu::{Menu, MenuOut};
@@ -35,7 +35,7 @@ enum App {
 
 fn window_conf() -> Conf {
     Conf {
-        window_title: "Game of Drones".to_owned(),
+        window_title: "Dronoids".to_owned(),
         window_width: 1600,
         window_height: 900,
         window_resizable: true,

@@ -97,7 +97,7 @@ impl Server {
 
         let mut log = vec![];
         let loaded = cfg.save.as_ref().filter(|p| p.exists()).and_then(|p| match std::fs::read(p) {
-            Ok(bytes) => match World::from_bytes(&bytes) {
+            Ok(bytes) => match World::from_save(&bytes) {
                 Ok(w) => {
                     log.push(format!("monde chargé depuis {}", p.display()));
                     Some(w)
@@ -277,7 +277,7 @@ impl Server {
             let tmp = path.with_extension("tmp");
             std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, path))
         };
-        if let Err(e) = write(path, &self.world.to_bytes()) {
+        if let Err(e) = write(path, &self.world.to_save()) {
             self.log.push(format!("sauvegarde impossible : {e}"));
         }
         if let Some(ap) = accounts_path(&self.cfg.save)
