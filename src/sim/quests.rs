@@ -76,3 +76,110 @@ impl World {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geo::dir_vec;
+    use crate::programs;
+    use crate::rules::{FACTORY_COST, FP};
+    use crate::sim::tests::land;
+    use crate::sim::Command;
+
+    fn done(w: &World, player: u8) -> Vec<usize> {
+        (0..QUESTS.len()).filter(|i| w.players[player as usize].quests & (1 << i) != 0).collect()
+    }
+
+    fn completed(w: &World) -> Vec<Event> {
+        w.events.iter().filter(|e| matches!(e, Event::QuestDone { .. })).cloned().collect()
+    }
+
+    /// Step until an objective is completed, checking they come one at a time.
+    fn next_quest(w: &mut World) -> Event {
+        for _ in 0..2 * CHECK_EVERY {
+            w.step(&[]);
+            let mut done = completed(w);
+            assert!(done.len() <= 1, "one objective at a time: {done:?}");
+            if let Some(e) = done.pop() {
+                return e;
+            }
+        }
+        panic!("no objective completed");
+    }
+
+    fn idle(w: &mut World) {
+        for _ in 0..2 * CHECK_EVERY {
+            w.step(&[]);
+            assert_eq!(completed(w), vec![]);
+        }
+    }
+
+    #[test]
+    fn first_steps_come_one_at_a_time_with_their_reward() {
+        let mut w = World::new(5);
+        let me = w.join("ana", false).unwrap();
+        let bot = w.join("IA Vega", true).unwrap();
+        assert_eq!(current(&w, me), Some(0));
+        assert_eq!(current(&w, bot), None, "computer colonies have no objectives");
+        // Already true, but objectives go in order: landing first.
+        w.players[me as usize].mined = MINED_GOAL;
+        idle(&mut w);
+
+        let mineur = programs::builtin("mineur").unwrap();
+        land(&mut w, me, mineur.source);
+        land(&mut w, bot, mineur.source);
+        while done(&w, me).is_empty() {
+            next_quest(&mut w);
+        }
+        assert_eq!(done(&w, me), vec![0]);
+        let before = w.players[me as usize].minerals;
+        assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 1, reward: QUESTS[1].reward });
+        assert!(w.players[me as usize].minerals >= before + QUESTS[1].reward);
+
+        // A built-in program does not count as one of our own.
+        w.step(&[(me, Command::UpdateProgram { name: "mineur".into(), source: mineur.source.into() })]);
+        idle(&mut w);
+        assert_eq!(current(&w, me), Some(2));
+        let own = format!("; à ma façon\n{}", mineur.source);
+        w.step(&[(me, Command::UpdateProgram { name: "mineur".into(), source: own })]);
+        assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 2, reward: QUESTS[2].reward });
+
+        assert!(progress(&w, me, 3).0 < MAPPED_GOAL, "the arrival scan alone is not enough");
+        // A scout goes further and further out.
+        let (hx, hy) = w.players[me as usize].home;
+        let mut far = 30;
+        while progress(&w, me, 3).0 < MAPPED_GOAL {
+            assert!(far < 300, "the sector is big enough");
+            for k in 0..8 {
+                let (dx, dy) = dir_vec(k * 45, far * FP);
+                w.reveal(me, hx + dx, hy + dy, 12 * FP);
+            }
+            far += 20;
+        }
+        assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 3, reward: QUESTS[3].reward });
+
+        let f = w.factories.iter().find(|f| f.owner == me).unwrap();
+        let (fx, fy) = (f.x, f.y);
+        w.players[me as usize].minerals += FACTORY_COST;
+        let spot = (2..12)
+            .flat_map(|r| (0..360).step_by(30).map(move |a| (r, a)))
+            .map(|(r, a)| {
+                let (dx, dy) = dir_vec(a, r * 2 * FP);
+                (fx + dx, fy + dy)
+            })
+            .find(|p| w.can_place_factory(me, p.0, p.1).is_ok())
+            .expect("room for a second factory");
+        w.step(&[(me, Command::PlaceFactory { x: spot.0, y: spot.1, name: "mineur".into(), source: mineur.source.into() })]);
+        assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 4, reward: QUESTS[4].reward });
+        assert_eq!(current(&w, me), None);
+        idle(&mut w);
+        assert_eq!(w.players[bot as usize].quests, 0);
+
+        // Progress travels with the world (snapshots and saves).
+        let copy = World::from_bytes(&w.to_bytes()).unwrap();
+        assert_eq!(copy.players[me as usize].quests, w.players[me as usize].quests);
+        let saved = World::from_save(&w.to_save()).unwrap();
+        assert_eq!((saved.players[me as usize].quests, saved.players[me as usize].flags), (0b11111, FLAG_OWN_PROGRAM));
+        assert_eq!(saved.state_hash(), w.state_hash());
+    }
+}

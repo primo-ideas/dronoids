@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
@@ -77,6 +77,42 @@ fn accounts_path(save: &Option<PathBuf>) -> Option<PathBuf> {
     save.as_ref().map(|p| p.with_extension("accounts.json"))
 }
 
+/// Load the persistent sector. The save is about to be overwritten every
+/// 30 s, so a file in an earlier format is copied aside first, and one that
+/// cannot be read is moved aside rather than lost under a new world.
+fn load_world(path: &Path, log: &mut Vec<String>) -> Option<World> {
+    let aside = |what: &str| path.with_extension(format!("{what}.world"));
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            log.push(format!("lecture de {} impossible : {e}", path.display()));
+            return None;
+        }
+    };
+    match World::from_save(&bytes) {
+        Ok(w) => {
+            log.push(format!("monde chargé depuis {}", path.display()));
+            if World::is_old_save(&bytes) {
+                let copy = aside("old");
+                match std::fs::write(&copy, &bytes) {
+                    Ok(()) => log.push(format!("ancien format converti, l'original est gardé dans {}", copy.display())),
+                    Err(e) => log.push(format!("copie de l'ancien format impossible ({e})")),
+                }
+            }
+            Some(w)
+        }
+        Err(e) => {
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let moved = aside(&format!("unreadable-{stamp}"));
+            match std::fs::rename(path, &moved) {
+                Ok(()) => log.push(format!("sauvegarde illisible ({e}), mise de côté dans {} ; nouveau monde", moved.display())),
+                Err(m) => log.push(format!("sauvegarde illisible ({e}) et impossible à déplacer ({m}) ; nouveau monde")),
+            }
+            None
+        }
+    }
+}
+
 impl Server {
     pub fn new(cfg: ServerConfig) -> io::Result<Server> {
         let listener = TcpListener::bind((cfg.bind.as_str(), cfg.port))?;
@@ -96,19 +132,7 @@ impl Server {
         });
 
         let mut log = vec![];
-        let loaded = cfg.save.as_ref().filter(|p| p.exists()).and_then(|p| match std::fs::read(p) {
-            Ok(bytes) => match World::from_save(&bytes) {
-                Ok(w) => {
-                    log.push(format!("monde chargé depuis {}", p.display()));
-                    Some(w)
-                }
-                Err(e) => {
-                    log.push(format!("sauvegarde illisible ({e}), nouveau monde"));
-                    None
-                }
-            },
-            Err(_) => None,
-        });
+        let loaded = cfg.save.as_ref().filter(|p| p.exists()).and_then(|p| load_world(p, &mut log));
         let world = loaded.unwrap_or_else(|| {
             let mut w = World::new(cfg.seed);
             for i in 0..cfg.bots {
@@ -466,5 +490,46 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(welcome && frames >= 8, "welcome {welcome}, frames {frames}");
+    }
+
+    /// The save is the persistent sector: converted from older formats with
+    /// the original kept, and never overwritten when it cannot be read.
+    #[test]
+    fn saves_survive_format_changes() {
+        let dir = std::env::temp_dir().join(format!("dronoids-save-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("primo.world");
+        let with_save = || ServerConfig { save: Some(path.clone()), ..cfg(2) };
+
+        // A bincode file, as written before protocol 5.
+        let mut w = World::new(9);
+        w.join("ana", false);
+        w.step(&[]);
+        let old = w.to_bytes();
+        std::fs::write(&path, &old).unwrap();
+        let mut server = Server::new(with_save()).unwrap();
+        assert_eq!(server.world.state_hash(), w.state_hash());
+        assert_eq!(std::fs::read(dir.join("primo.old.world")).unwrap(), old, "the original is kept");
+        server.save();
+        let saved = std::fs::read(&path).unwrap();
+        assert!(!World::is_old_save(&saved));
+        assert_eq!(World::from_save(&saved).unwrap().state_hash(), w.state_hash());
+        drop(server);
+
+        // Garbage: set aside, then a new world.
+        std::fs::write(&path, b"\x00\x01 abime").unwrap();
+        let server = Server::new(with_save()).unwrap();
+        assert!(!path.exists(), "the unreadable file was moved, not left to be overwritten");
+        let aside: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains("unreadable"))
+            .collect();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(std::fs::read(aside[0].path()).unwrap(), b"\x00\x01 abime");
+        assert_eq!(server.world.players.len(), 2, "a fresh sector with its bots");
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

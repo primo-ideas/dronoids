@@ -11,8 +11,6 @@ pub struct Settings {
     pub token: String,
     /// Empty: the default server.
     pub server: String,
-    /// The onboarding hints already seen.
-    pub tutorial_done: bool,
 }
 
 impl Settings {
@@ -68,9 +66,11 @@ mod imp {
         let _ = std::fs::write(p, value);
     }
 
-    /// `GOD_SERVER` overrides the local default.
+    /// `DRONOIDS_SERVER` (formerly `GOD_SERVER`) overrides the local default.
     pub fn default_server() -> String {
-        std::env::var("GOD_SERVER").unwrap_or_else(|_| "ws://127.0.0.1:8082/ws".into())
+        std::env::var("DRONOIDS_SERVER")
+            .or_else(|_| std::env::var("GOD_SERVER"))
+            .unwrap_or_else(|_| "ws://127.0.0.1:8082/ws".into())
     }
 
     pub fn default_name() -> String {
@@ -114,7 +114,7 @@ mod imp {
         unsafe { god_storage_write(key.as_ptr(), key.len(), value.as_ptr(), value.len()) };
     }
 
-    /// Same host and directory as the page: `wss://site/drones/ws`.
+    /// Same host and directory as the page: `wss://site/dronoids/ws`.
     pub fn default_server() -> String {
         let mut buf = vec![0u8; 512];
         let n = unsafe { god_default_server(buf.as_mut_ptr(), buf.len()) };

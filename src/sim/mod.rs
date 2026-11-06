@@ -284,18 +284,22 @@ impl World {
         serde_json::to_vec(self).expect("world serializes")
     }
 
-    /// Read any save: JSON, or the bincode files of earlier versions.
+    /// Read any save: JSON, or the bincode files of earlier versions
+    /// (see [`World::is_old_save`]).
     pub fn from_save(bytes: &[u8]) -> Result<World, String> {
-        let mut w: World = if bytes.first() == Some(&b'{') {
-            serde_json::from_slice(bytes).map_err(|e| e.to_string())?
+        let mut w: World = if Self::is_old_save(bytes) {
+            compat::from_bincode(bytes)?.0
         } else {
-            match bincode::deserialize(bytes) {
-                Ok(w) => w,
-                Err(_) => compat::from_v4(bytes)?,
-            }
+            serde_json::from_slice(bytes).map_err(|e| e.to_string())?
         };
         w.rebuild_caches();
         Ok(w)
+    }
+
+    /// Written before protocol 5 (bincode): worth keeping a copy of before
+    /// it is replaced by the current format.
+    pub fn is_old_save(bytes: &[u8]) -> bool {
+        bytes.first() != Some(&b'{')
     }
 
     fn index_drones(&mut self) {

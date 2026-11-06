@@ -396,6 +396,6 @@ mod tests {
     fn urls() {
         assert_eq!(normalize_url("example.org"), "ws://example.org:8082/ws");
         assert_eq!(normalize_url("10.0.0.2:9000"), "ws://10.0.0.2:9000/ws");
-        assert_eq!(normalize_url("wss://a.b/drones/ws"), "wss://a.b/drones/ws");
+        assert_eq!(normalize_url("wss://a.b/dronoids/ws"), "wss://a.b/dronoids/ws");
     }
 }

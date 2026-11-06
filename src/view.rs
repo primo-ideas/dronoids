@@ -234,6 +234,7 @@ impl WorldView {
                     world.players.get(player as usize).is_some_and(|p| sight.visible(fpv(p.home.0, p.home.1)))
                 }
                 Event::PlayerEliminated { .. } => false,
+                Event::QuestDone { player, .. } => sight.me() == Some(player),
             };
             if !seen {
                 continue;
@@ -284,6 +285,16 @@ impl WorldView {
                     }
                 }
                 Event::PlayerEliminated { .. } => {}
+                Event::QuestDone { player, reward, .. } => {
+                    // The reward lands at home.
+                    if let Some(f) = world.factories.iter().find(|f| f.owner == player) {
+                        let at = fpv(f.x, f.y);
+                        self.fx.ring(at, pal::ORE, 6.0, 1.4);
+                        if reward > 0 {
+                            self.fx.dots(at, pal::ORE_CORE, 30, 3.5, 1.2);
+                        }
+                    }
+                }
                 Event::OreGrown { x, y } => {
                     self.fx.ring(fpv(x, y), pal::ORE, 5.0, 2.5);
                     self.fx.dots(fpv(x, y), pal::ORE_CORE, 18, 2.0, 1.6);

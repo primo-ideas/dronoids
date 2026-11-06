@@ -18,7 +18,7 @@ use crate::view::{fp, Cam, Highlight, Sight, WorldView};
 pub enum MenuOut {
     Stay,
     Offline { ais: usize, level: Level, settings: Settings },
-    Online { conn: Conn<ServerMsg>, me: u8, world: Box<World>, name: String, settings: Settings },
+    Online { conn: Conn<ServerMsg>, me: u8, world: Box<World>, name: String },
     Quit,
 }
 
@@ -240,7 +240,6 @@ impl Menu {
         ui.panel(r);
         let name = self.settings.name.clone();
         let token = self.settings.token.clone();
-        let settings = self.settings.clone();
         let Screen::Connecting { connecting, conn, status, error } = &mut self.screen else { return MenuOut::Stay };
         if let Some(c) = connecting
             && let Some(res) = c.poll()
@@ -265,7 +264,7 @@ impl Menu {
                     NetEvent::Msg(ServerMsg::Welcome { player, world, snapshot }) => match World::from_bytes(&snapshot) {
                         Ok(w) => {
                             let conn = conn.take().unwrap();
-                            return MenuOut::Online { conn, me: player, world: Box::new(w), name: world, settings };
+                            return MenuOut::Online { conn, me: player, world: Box::new(w), name: world };
                         }
                         Err(e) => {
                             *status = format!("Secteur illisible : {e}");

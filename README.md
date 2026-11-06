@@ -13,9 +13,9 @@ Inspiré de *Human Resource Machine* pour le langage et le débogueur pas à pas
 ## Lancer en local
 
 ```bash
-cargo run --release                                   # le jeu (bureau)
-cargo run --release --bin dronoids-server                  # un secteur local, ws://127.0.0.1:8082/ws
-./deploy/build-web.sh --serve                         # la version navigateur, http://127.0.0.1:8090
+cargo run --release                          # le jeu (bureau)
+cargo run --release --bin dronoids-server    # un secteur local, ws://127.0.0.1:8082/ws
+./deploy/build-web.sh --serve                # la version navigateur, http://127.0.0.1:8090
 ```
 
 Rust stable récent (édition 2024). Dépendances : `macroquad` (rendu), `serde`,
@@ -27,8 +27,13 @@ Rust stable récent (édition 2024). Dépendances : `macroquad` (rendu), `serde`
   cristaux qui **repoussent** ailleurs à mesure qu'on les épuise, et des colonies IA
   qui vivent leur vie.
 - **Arrivée** : 170 cristaux, rien d'autre. On choisit où poser sa première usine
-  (loin des autres colonies). Un **bouclier** protège les nouveaux venus 10 minutes :
-  ils ne peuvent ni être attaqués, ni attaquer.
+  (loin des autres colonies). Un **bouclier** protège les nouveaux venus 10 minutes
+  à partir du moment où ils se posent : ils ne peuvent ni être attaqués, ni attaquer.
+  Une usine neuve sort ses deux premiers drones vite.
+- **Premiers pas** : cinq objectifs, l'un après l'autre (se poser, extraire 100
+  cristaux, appliquer un programme de son cru, cartographier les environs, fonder une
+  deuxième usine), chacun avec sa petite récompense en cristaux. Ils font partie du
+  monde : la progression suit le joueur d'une session et d'un appareil à l'autre.
 - **Brouillard de guerre** : on ne voit qu'autour de ses usines (18 unités) et de
   ses drones (12). L'espace déjà exploré reste en mémoire, voilé (astéroïdes et
   cristaux, mais aucune unité étrangère) ; l'inconnu reste noir. La carte explorée
@@ -36,7 +41,7 @@ Rust stable récent (édition 2024). Dépendances : `macroquad` (rendu), `serde`
   votre absence. (Chaque client rejoue tout le monde : le brouillard est un choix
   d'affichage, pas une protection.)
 - **Rythme lent** : 4 ticks par seconde ; un pas prend 1 s, extraire un cristal 2 s,
-  une usine produit un drone toutes les 30 s.
+  une usine produit ensuite un drone toutes les 30 s.
 - Les IA ne lancent de raids qu'autour de chez elles : s'installer loin d'elles,
   c'est grandir en paix.
 - Votre pseudo est protégé par un jeton secret gardé par votre navigateur (ou
@@ -58,8 +63,8 @@ Rust stable récent (édition 2024). Dépendances : `macroquad` (rendu), `serde`
 | Hors ligne | `Espace` pause, `1`-`4` vitesse, `N` tick suivant |
 
 L'écran reste volontairement épuré : une ligne d'état en haut à gauche, un dock en
-bas, et une seule ligne d'objectif quand elle est utile. Carte et colonies
-s'ouvrent à la demande.
+bas, et une seule ligne d'objectif (l'outil en cours, sinon le prochain premier pas).
+Carte et colonies s'ouvrent à la demande.
 
 ## DASM en bref
 
@@ -119,8 +124,9 @@ La bibliothèque (sans graphismes, testable) :
 
 - `src/vm.rs` : DASM, assembleur, interpréteur, coloration syntaxique.
 - `src/geo.rs` : géométrie entière déterministe.
-- `src/sim/` : le monde (atterrissage, bouclier, repousse des cristaux), la carte,
-  l'index spatial.
+- `src/sim/` : le monde (atterrissage, bouclier, repousse des cristaux, carte
+  explorée de chaque joueur), la carte, l'index spatial, les premiers pas
+  (`quests.rs`) et la lecture des sauvegardes d'anciennes versions (`compat.rs`).
 - `src/ai.rs` : les colonies IA, qui jouent via les mêmes commandes qu'un humain.
 - `src/server.rs`, `src/net.rs` : serveur de monde, protocole WebSocket.
 - `src/bin/server.rs` : `dronoids-server`.

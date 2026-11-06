@@ -168,8 +168,8 @@ async fn main() {
                 MenuOut::Offline { ais, level, settings } => {
                     next = Some(App::Game(Box::new(Game::offline(&lib, settings, platform::seed(), ais, level))));
                 }
-                MenuOut::Online { conn, me, world, name, settings } => {
-                    let mut g = Game::online(&lib, settings, conn, me, *world, name);
+                MenuOut::Online { conn, me, world, name } => {
+                    let mut g = Game::online(&lib, conn, me, *world, name);
                     if let Some(z) = args.zoom {
                         g.set_zoom(z);
                     }

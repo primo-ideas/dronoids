@@ -10,6 +10,7 @@ use dronoids::ai::{Bot, Level};
 use dronoids::net::{ClientMsg, Conn, NetEvent, ServerMsg};
 use dronoids::programs;
 use dronoids::rules::*;
+use dronoids::sim::quests::{self, QUESTS};
 use dronoids::sim::{Command, Doing, Event, World};
 use dronoids::vm::{self, Cat, Reg};
 
@@ -130,14 +131,13 @@ pub struct Game {
     over_dismissed: bool,
     step_once: bool,
     right_drag: Option<(Vec2, Vec2)>,
-    settings: Settings,
     /// What we can see (fog of war), refreshed every frame.
     sight: Sight,
     fog: Fog,
 }
 
 impl Game {
-    fn new(world: World, me: u8, driver: Driver, lib: &Library, settings: Settings) -> Game {
+    fn new(world: World, me: u8, driver: Driver, lib: &Library) -> Game {
         let home = world.players.get(me as usize).map(|p| fpv(p.home.0, p.home.1)).unwrap_or(Vec2::splat(fp(world.size) / 2.0));
         let first = world.factories.iter().find(|f| f.owner == me);
         let center = first.map(|f| fpv(f.x, f.y)).unwrap_or(home);
@@ -168,7 +168,6 @@ impl Game {
             over_dismissed: false,
             step_once: false,
             right_drag: None,
-            settings,
             sight,
             fog: Fog::new(),
         };
@@ -191,10 +190,10 @@ impl Game {
             .filter_map(|i| world.join(&bot_name(i), true))
             .map(|id| Bot::new(id, level))
             .collect();
-        Game::new(world, me, Driver::Offline { bots, pending: vec![] }, lib, settings)
+        Game::new(world, me, Driver::Offline { bots, pending: vec![] }, lib)
     }
 
-    pub fn online(lib: &Library, settings: Settings, conn: Conn<ServerMsg>, me: u8, world: World, world_name: String) -> Game {
+    pub fn online(lib: &Library, conn: Conn<ServerMsg>, me: u8, world: World, world_name: String) -> Game {
         let driver = Driver::Online {
             conn,
             frames: VecDeque::new(),
@@ -203,7 +202,7 @@ impl Game {
             online: vec![me],
             asked_snapshot: false,
         };
-        Game::new(world, me, driver, lib, settings)
+        Game::new(world, me, driver, lib)
     }
 
     fn is_online(&self) -> bool {
@@ -242,7 +241,12 @@ impl Game {
 
     fn advance(&mut self, dt: f32) {
         let mut notes: Vec<Event> = vec![];
-        let keep = |e: &Event| matches!(e, Event::PlayerJoined { .. } | Event::PlayerEliminated { .. } | Event::FactoryDestroyed { .. });
+        let keep = |e: &Event| {
+            matches!(
+                e,
+                Event::PlayerJoined { .. } | Event::PlayerEliminated { .. } | Event::FactoryDestroyed { .. } | Event::QuestDone { .. }
+            )
+        };
         match &mut self.driver {
             Driver::Offline { bots, pending } => {
                 if self.speed <= 0.0 && !self.step_once {
@@ -342,6 +346,11 @@ impl Game {
                 }
                 Event::FactoryDestroyed { owner, .. } if owner == self.me => {
                     self.toast("Une de vos usines a été détruite", pal::BAD);
+                }
+                Event::QuestDone { player, quest, reward } if player == self.me => {
+                    let title = QUESTS.get(quest as usize).map_or("", |q| q.title);
+                    let gain = if reward > 0 { format!(" · +{reward} cristaux") } else { String::new() };
+                    self.toast(format!("Objectif atteint : {title}{gain}"), pal::ORE);
                 }
                 _ => {}
             }
@@ -599,10 +608,6 @@ impl Game {
         self.editor_open = true;
         self.editor.focused = true;
         self.tool = Tool::None;
-        if !self.settings.tutorial_done {
-            self.settings.tutorial_done = true;
-            self.settings.save();
-        }
     }
 
     fn open_debug(&mut self, id: u32) {
@@ -944,25 +949,41 @@ impl Game {
         }
     }
 
-    /// One discreet line of guidance, only when it is useful.
+    /// One discreet line of guidance, only when it is useful: what the
+    /// current tool expects, or else the next first-steps objective.
     fn objective(&self) {
-        let text = if self.landing() {
-            "Posez votre première usine : cliquez sur un espace libre (le cercle est un bon endroit)"
-        } else if !self.settings.tutorial_done && self.world.factory_count(self.me) > 0 {
-            "Vos drones suivent le programme de leur usine : ouvrez-le avec « Programme » (E)"
-        } else {
-            match self.tool {
-                Tool::Build => "Nouvelle usine : près de vos unités · clic droit pour annuler",
-                Tool::Target(_) => "Cible : cliquez sur la carte · clic droit pour annuler",
-                Tool::None => return,
+        let pulse = with_alpha(pal::TEXT, 0.75 + 0.25 * (get_time() as f32 * 2.0).sin());
+        let parts: Vec<(String, Color)> = match self.tool {
+            Tool::Build => vec![("Nouvelle usine : près de vos unités · clic droit pour annuler".into(), pulse)],
+            Tool::Target(_) => vec![("Cible : cliquez sur la carte · clic droit pour annuler".into(), pulse)],
+            Tool::None if self.landing() => {
+                vec![("Posez votre première usine : cliquez sur un espace libre (le cercle est un bon endroit)".into(), pulse)]
+            }
+            Tool::None => {
+                let Some(i) = quests::current(&self.world, self.me) else { return };
+                let q = &QUESTS[i];
+                let (done, goal) = quests::progress(&self.world, self.me, i);
+                let mut parts = vec![("Objectif  ".to_string(), pal::DIM), (q.title.to_string(), pal::TEXT)];
+                if goal > 100 {
+                    parts.push((format!("  {} %", done * 100 / goal), pal::ACCENT));
+                } else if goal > 1 {
+                    parts.push((format!("  {done}/{goal}"), pal::ACCENT));
+                }
+                parts.push((format!("  ·  {}", q.hint), pal::DIM));
+                if q.reward > 0 {
+                    parts.push((format!("  +{}", q.reward), pal::ORE));
+                }
+                parts
             }
         };
         let size = 14.0;
-        let w = gfx::text_width(text, size);
-        let x = screen_width() / 2.0 - w / 2.0;
-        let pulse = 0.75 + 0.25 * (get_time() as f32 * 2.0).sin();
+        let w: f32 = parts.iter().map(|(t, _)| gfx::text_width(t, size)).sum();
+        let mut x = screen_width() / 2.0 - w / 2.0;
         draw_rectangle(x - 14.0, 56.0, w + 28.0, 26.0, with_alpha(pal::PANEL, 0.6));
-        gfx::text(text, x, 61.0, size, with_alpha(pal::TEXT, pulse));
+        for (t, c) in &parts {
+            gfx::text(t, x, 61.0, size, *c);
+            x += gfx::text_width(t, size);
+        }
     }
 
     /// Bottom-centre: a handful of quiet buttons.
