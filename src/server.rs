@@ -1,28 +1,31 @@
 //! World server. It owns the authoritative world, runs the computer
-//! players, and each tick broadcasts the ordered list of commands; clients
+//! colonies, and each tick broadcasts the ordered list of commands; clients
 //! replay them on their own copy (deterministic simulation), so only
 //! commands travel — never the thousands of drones. A newcomer receives a
 //! snapshot, then the frames. Clients report hashes; a client that drifts
-//! is sent a fresh snapshot.
+//! (or falls behind, like a hidden browser tab) gets a fresh snapshot.
 //!
-//! Runs inside the game ("Héberger un monde") or headless (`god-server`).
+//! Names are protected by a secret token the client keeps: the first
+//! connection with a name claims it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::ai::{Bot, Level};
-use crate::net::{ClientMsg, Conn, NetEvent, Responder, ServerMsg, WorldInfo, PROTOCOL_VERSION};
+use crate::net::{ClientMsg, Conn, NetEvent, ServerMsg, PROTOCOL_VERSION};
 use crate::rules::TICKS_PER_SEC;
 use crate::sim::{Command, World};
 
 pub const HASH_EVERY: u64 = 50;
-const SAVE_EVERY: Duration = Duration::from_secs(60);
+const SAVE_EVERY: Duration = Duration::from_secs(30);
+const PRESENCE_EVERY: u64 = 20;
 
 pub const BOT_NAMES: &[&str] = &[
     "Orion", "Vega", "Lyra", "Rigel", "Deneb", "Sirius", "Altaïr", "Antarès", "Castor", "Pollux", "Capella", "Mira",
@@ -31,6 +34,8 @@ pub const BOT_NAMES: &[&str] = &[
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
     pub name: String,
+    /// Address to listen on ("127.0.0.1" behind a reverse proxy).
+    pub bind: String,
     pub port: u16,
     pub seed: u64,
     pub bots: usize,
@@ -51,11 +56,14 @@ pub struct Server {
     cfg: ServerConfig,
     pub world: World,
     bots: Vec<Bot>,
-    listener: TcpListener,
+    port: u16,
+    incoming: Receiver<Conn<ClientMsg>>,
     clients: Vec<Client>,
     pending: Vec<(u8, Command)>,
     hashes: BTreeMap<u64, u64>,
-    responder: Option<Responder>,
+    /// name -> secret token.
+    accounts: HashMap<String, String>,
+    online: BTreeSet<u8>,
     last_save: Instant,
     pub log: Vec<String>,
 }
@@ -65,10 +73,28 @@ pub fn bot_name(i: usize) -> String {
     if i < BOT_NAMES.len() { format!("IA {base}") } else { format!("IA {base} {}", i / BOT_NAMES.len() + 1) }
 }
 
+fn accounts_path(save: &Option<PathBuf>) -> Option<PathBuf> {
+    save.as_ref().map(|p| p.with_extension("accounts.json"))
+}
+
 impl Server {
     pub fn new(cfg: ServerConfig) -> io::Result<Server> {
-        let listener = TcpListener::bind(("0.0.0.0", cfg.port))?;
-        listener.set_nonblocking(true)?;
+        let listener = TcpListener::bind((cfg.bind.as_str(), cfg.port))?;
+        let port = listener.local_addr()?.port();
+        // Handshakes happen on their own threads: a slow or bogus client
+        // never stalls the world.
+        let (tx, incoming) = mpsc::channel();
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let tx = tx.clone();
+                thread::spawn(move || {
+                    if let Ok(conn) = Conn::<ClientMsg>::accept(stream) {
+                        let _ = tx.send(conn);
+                    }
+                });
+            }
+        });
+
         let mut log = vec![];
         let loaded = cfg.save.as_ref().filter(|p| p.exists()).and_then(|p| match std::fs::read(p) {
             Ok(bytes) => match World::from_bytes(&bytes) {
@@ -91,68 +117,65 @@ impl Server {
             w
         });
         let bots = world.players.iter().filter(|p| p.bot).map(|p| Bot::new(p.id, cfg.level)).collect();
-        let responder = Responder::bind().ok();
-        if responder.is_none() {
-            log.push("découverte LAN indisponible (port déjà pris ?)".into());
-        }
+        let accounts = accounts_path(&cfg.save)
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
         Ok(Server {
             cfg,
             world,
             bots,
-            listener,
+            port,
+            incoming,
             clients: vec![],
             pending: vec![],
             hashes: BTreeMap::new(),
-            responder,
+            accounts,
+            online: BTreeSet::new(),
             last_save: Instant::now(),
             log,
         })
     }
 
     pub fn port(&self) -> u16 {
-        self.listener.local_addr().map(|a| a.port()).unwrap_or(self.cfg.port)
-    }
-
-    pub fn info(&self) -> WorldInfo {
-        WorldInfo {
-            name: self.cfg.name.clone(),
-            port: self.port(),
-            players: self.world.players.iter().filter(|p| !p.bot).count() as u32,
-            online: self.clients.iter().filter(|c| c.player.is_some()).count() as u32,
-            bots: self.bots.len() as u32,
-            tick: self.world.tick,
-            version: PROTOCOL_VERSION,
-        }
+        self.port
     }
 
     fn handle_messages(&mut self) {
-        while let Ok((stream, addr)) = self.listener.accept() {
-            match Conn::new(stream) {
-                Ok(conn) => {
-                    self.log.push(format!("connexion de {addr}"));
-                    self.clients.push(Client { conn, name: None, player: None, joining: false, gone: false });
-                }
-                Err(e) => self.log.push(format!("connexion refusée : {e}")),
-            }
+        while let Ok(conn) = self.incoming.try_recv() {
+            self.clients.push(Client { conn, name: None, player: None, joining: false, gone: false });
         }
         for ci in 0..self.clients.len() {
             while let Some(ev) = self.clients[ci].conn.poll_one() {
                 match ev {
-                    NetEvent::Msg(ClientMsg::Hello { version, name }) => {
-                        let name: String = name.trim().chars().filter(|c| !c.is_control()).take(24).collect();
-                        let taken = self.clients.iter().any(|c| c.name.as_deref() == Some(name.as_str()) && !c.gone)
-                            || self.world.player_by_name(&name).is_some_and(|p| p.bot);
+                    NetEvent::Msg(ClientMsg::Hello { version, name, token }) => {
+                        let name: String = name.trim().chars().filter(|c| !c.is_control()).take(20).collect();
+                        let connected = self.clients.iter().any(|c| c.name.as_deref() == Some(name.as_str()) && !c.gone);
+                        let is_bot = self.world.player_by_name(&name).is_some_and(|p| p.bot);
+                        let owned_by_other = self.accounts.get(&name).is_some_and(|t| *t != token);
                         let c = &mut self.clients[ci];
-                        if version != PROTOCOL_VERSION {
-                            c.conn.send(&ServerMsg::Refused("version du jeu différente".into()));
-                            c.gone = true;
-                        } else if name.is_empty() || taken {
-                            c.conn.send(&ServerMsg::Refused(format!("le nom « {name} » est déjà utilisé")));
-                            c.gone = true;
+                        let refuse = if version != PROTOCOL_VERSION {
+                            Some("version du jeu différente : rechargez la page".to_string())
+                        } else if name.is_empty() || token.len() < 8 {
+                            Some("nom invalide".into())
+                        } else if is_bot || owned_by_other {
+                            Some(format!("le nom « {name} » appartient déjà à quelqu'un"))
+                        } else if connected {
+                            Some(format!("« {name} » est déjà connecté"))
                         } else {
-                            c.name = Some(name.clone());
-                            c.joining = true;
-                            self.pending.push((0, Command::Join { name, bot: false }));
+                            None
+                        };
+                        match refuse {
+                            Some(why) => {
+                                c.conn.send(&ServerMsg::Refused(why));
+                                c.gone = true;
+                            }
+                            None => {
+                                self.accounts.entry(name.clone()).or_insert(token);
+                                c.name = Some(name.clone());
+                                c.joining = true;
+                                self.pending.push((0, Command::Join { name, bot: false }));
+                            }
                         }
                     }
                     NetEvent::Msg(ClientMsg::Cmd(cmd)) => {
@@ -168,11 +191,18 @@ impl Server {
                     }
                     NetEvent::Msg(ClientMsg::Hash { tick, hash }) => {
                         if let Some(&mine) = self.hashes.get(&tick)
-                            && mine != hash {
-                                let c = &mut self.clients[ci];
-                                self.log.push(format!("{} désynchronisé au tick {tick}, renvoi du monde", c.name.clone().unwrap_or_default()));
-                                c.conn.send(&ServerMsg::Resync { snapshot: self.world.to_bytes() });
-                            }
+                            && mine != hash
+                        {
+                            let c = &mut self.clients[ci];
+                            self.log.push(format!("{} désynchronisé au tick {tick}", c.name.clone().unwrap_or_default()));
+                            c.conn.send(&ServerMsg::Resync { snapshot: self.world.to_bytes() });
+                        }
+                    }
+                    NetEvent::Msg(ClientMsg::WantSnapshot) => {
+                        if self.clients[ci].player.is_some() {
+                            let snap = self.world.to_bytes();
+                            self.clients[ci].conn.send(&ServerMsg::Resync { snapshot: snap });
+                        }
                     }
                     NetEvent::Msg(ClientMsg::Bye) | NetEvent::Closed(_) => {
                         self.clients[ci].gone = true;
@@ -181,11 +211,10 @@ impl Server {
                 }
             }
         }
-        let before = self.clients.len();
-        self.clients.retain(|c| !c.gone);
-        if self.clients.len() != before {
-            self.log.push(format!("{} joueur(s) connecté(s)", self.clients.len()));
+        for c in self.clients.iter().filter(|c| c.gone && c.player.is_some()) {
+            self.log.push(format!("{} se déconnecte", c.name.clone().unwrap_or_default()));
         }
+        self.clients.retain(|c| !c.gone);
     }
 
     /// One server tick.
@@ -225,8 +254,13 @@ impl Server {
                 }
             }
         }
-        if let Some(r) = &self.responder {
-            r.poll(&self.info());
+        let online: BTreeSet<u8> = self.clients.iter().filter_map(|c| c.player).collect();
+        if online != self.online || self.world.tick.is_multiple_of(PRESENCE_EVERY) {
+            self.online = online;
+            let msg = ServerMsg::Online { players: self.online.iter().copied().collect() };
+            for c in self.clients.iter_mut().filter(|c| c.player.is_some()) {
+                c.conn.send(&msg);
+            }
         }
         if self.last_save.elapsed() >= SAVE_EVERY {
             self.save();
@@ -235,15 +269,21 @@ impl Server {
 
     pub fn save(&mut self) {
         self.last_save = Instant::now();
-        if let Some(path) = &self.cfg.save {
-            if let Some(dir) = path.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
+        let Some(path) = &self.cfg.save else { return };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let write = |path: &PathBuf, bytes: &[u8]| {
             let tmp = path.with_extension("tmp");
-            let r = std::fs::write(&tmp, self.world.to_bytes()).and_then(|_| std::fs::rename(&tmp, path));
-            if let Err(e) = r {
-                self.log.push(format!("sauvegarde impossible : {e}"));
-            }
+            std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, path))
+        };
+        if let Err(e) = write(path, &self.world.to_bytes()) {
+            self.log.push(format!("sauvegarde impossible : {e}"));
+        }
+        if let Some(ap) = accounts_path(&self.cfg.save)
+            && let Ok(json) = serde_json::to_vec(&self.accounts)
+        {
+            let _ = write(&ap, &json);
         }
     }
 
@@ -300,35 +340,37 @@ mod tests {
     use super::*;
     use crate::net::Connecting;
 
-    /// A real client joins a server with bots, replays frames and stays in
+    fn cfg(bots: usize) -> ServerConfig {
+        ServerConfig { name: "test".into(), bind: "127.0.0.1".into(), port: 0, seed: 3, bots, level: Level::Hard, save: None }
+    }
+
+    fn connect(port: u16, name: &str, token: &str) -> Conn<ServerMsg> {
+        let mut c = Connecting::<ServerMsg>::start(&format!("127.0.0.1:{port}"));
+        let mut conn = loop {
+            if let Some(r) = c.poll() {
+                break r.unwrap();
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        conn.send(&ClientMsg::Hello { version: PROTOCOL_VERSION, name: name.into(), token: token.into() });
+        conn
+    }
+
+    /// Real clients join a server with bots, replay frames and stay in
     /// sync; a second client joins later from a snapshot.
     #[test]
     fn clients_follow_the_server() {
-        let cfg = ServerConfig { name: "test".into(), port: 0, seed: 3, bots: 2, level: Level::Hard, save: None };
-        let mut server = Server::new(cfg).unwrap();
+        let mut server = Server::new(cfg(2)).unwrap();
         let port = server.port();
-
-        let connect = |name: &str| {
-            let c = Connecting::start(&format!("127.0.0.1:{port}"));
-            let stream = loop {
-                if let Some(r) = c.poll() {
-                    break r.unwrap();
-                }
-                thread::sleep(Duration::from_millis(5));
-            };
-            let mut conn: Conn<ServerMsg> = Conn::new(stream).unwrap();
-            conn.send(&ClientMsg::Hello { version: PROTOCOL_VERSION, name: name.into() });
-            conn
-        };
         struct Cl {
             conn: Conn<ServerMsg>,
             world: Option<World>,
             me: u8,
         }
-        let mut clients = vec![Cl { conn: connect("alice"), world: None, me: 0 }];
+        let mut clients = vec![Cl { conn: connect(port, "alice", "secret-alice"), world: None, me: 0 }];
         for t in 0..1200 {
             if t == 500 {
-                clients.push(Cl { conn: connect("bob"), world: None, me: 0 });
+                clients.push(Cl { conn: connect(port, "bob", "secret-bob"), world: None, me: 0 });
             }
             server.tick();
             thread::sleep(Duration::from_millis(1));
@@ -343,19 +385,25 @@ mod tests {
                             let w = c.world.as_mut().expect("welcome first");
                             assert_eq!(w.tick, tick);
                             w.step(&cmds);
-                            if t == 300 && c.me == 2 {
-                                let f = w.factories.iter().find(|f| f.owner == c.me).unwrap().id;
-                                c.conn.send(&ClientMsg::Cmd(Command::SetQuota { factory: f, quota: 3 }));
+                            if w.is_landing(c.me) && w.players[c.me as usize].minerals >= crate::rules::FACTORY_COST {
+                                let (hx, hy) = w.players[c.me as usize].home;
+                                let m = crate::programs::builtin("mineur").unwrap();
+                                c.conn.send(&ClientMsg::Cmd(Command::PlaceFactory {
+                                    x: hx,
+                                    y: hy,
+                                    name: m.name.into(),
+                                    source: m.source.into(),
+                                }));
                             }
                         }
+                        NetEvent::Msg(ServerMsg::Online { .. }) => {}
                         NetEvent::Msg(other) => panic!("unexpected {other:?}"),
                         NetEvent::Closed(e) => panic!("closed: {e}"),
                     }
                 }
             }
         }
-        // Drain what is still in flight.
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(80));
         for c in &mut clients {
             for ev in c.conn.poll() {
                 if let NetEvent::Msg(ServerMsg::Frame { cmds, .. }) = ev {
@@ -367,48 +415,56 @@ mod tests {
             assert_eq!(w.state_hash(), server.world.state_hash());
         }
         assert_eq!(server.world.players.len(), 4);
-        assert_eq!(clients[0].me, 2);
-        assert_eq!(clients[1].me, 3);
+        assert_eq!((clients[0].me, clients[1].me), (2, 3));
+        assert!(server.world.factory_count(2) >= 1 && server.world.factory_count(3) >= 1, "both landed");
     }
-}
 
-#[cfg(test)]
-mod threaded {
-    use super::*;
-    use crate::net::Connecting;
+    #[test]
+    fn names_are_protected_by_their_token() {
+        let mut server = Server::new(cfg(0)).unwrap();
+        let port = server.port();
+        let mut first = connect(port, "zoe", "token-one-1234");
+        let mut got_welcome = false;
+        for _ in 0..200 {
+            server.tick();
+            thread::sleep(Duration::from_millis(2));
+            if first.poll().iter().any(|e| matches!(e, NetEvent::Msg(ServerMsg::Welcome { .. }))) {
+                got_welcome = true;
+                break;
+            }
+        }
+        assert!(got_welcome);
+        drop(first);
+        let mut thief = connect(port, "zoe", "another-token-99");
+        let mut refused = false;
+        for _ in 0..200 {
+            server.tick();
+            thread::sleep(Duration::from_millis(2));
+            if thief.poll().iter().any(|e| matches!(e, NetEvent::Msg(ServerMsg::Refused(_)))) {
+                refused = true;
+                break;
+            }
+        }
+        assert!(refused, "someone else's name must be refused");
+    }
 
     #[test]
     fn threaded_server_streams_frames() {
-        let cfg = ServerConfig { name: "t".into(), port: 0, seed: 1, bots: 2, level: Level::Normal, save: None };
-        let h = ServerHandle::spawn(cfg).unwrap();
-        let c = Connecting::start(&format!("127.0.0.1:{}", h.port));
-        let stream = loop {
-            if let Some(r) = c.poll() {
-                break r.unwrap();
-            }
-            thread::sleep(Duration::from_millis(5));
-        };
-        let mut conn: Conn<ServerMsg> = Conn::new(stream).unwrap();
-        conn.send(&ClientMsg::Hello { version: PROTOCOL_VERSION, name: "zed".into() });
+        let h = ServerHandle::spawn(ServerConfig { bots: 2, ..cfg(0) }).unwrap();
+        let mut conn = connect(h.port, "zed", "secret-zed-123");
         let t0 = Instant::now();
-        let (mut welcome, mut frames) = (None, 0);
-        while t0.elapsed() < Duration::from_secs(2) {
+        let (mut welcome, mut frames) = (false, 0);
+        while t0.elapsed() < Duration::from_secs(3) {
             for ev in conn.poll() {
                 match ev {
-                    NetEvent::Msg(ServerMsg::Welcome { snapshot, .. }) => welcome = Some(World::from_bytes(&snapshot).unwrap().tick),
-                    NetEvent::Msg(ServerMsg::Frame { tick, .. }) => {
-                        if frames == 0 {
-                            println!("first frame tick {tick}, welcome tick {welcome:?}");
-                        }
-                        frames += 1;
-                    }
-                    NetEvent::Msg(m) => println!("other {m:?}"),
+                    NetEvent::Msg(ServerMsg::Welcome { .. }) => welcome = true,
+                    NetEvent::Msg(ServerMsg::Frame { .. }) => frames += 1,
+                    NetEvent::Msg(_) => {}
                     NetEvent::Closed(e) => panic!("closed {e}"),
                 }
             }
             thread::sleep(Duration::from_millis(10));
         }
-        println!("welcome {welcome:?}, frames {frames}");
-        assert!(welcome.is_some() && frames > 10);
+        assert!(welcome && frames >= 8, "welcome {welcome}, frames {frames}");
     }
 }

@@ -10,6 +10,7 @@ pub mod net;
 pub mod programs;
 pub mod rng;
 pub mod rules;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod server;
 pub mod sim;
 pub mod vm;

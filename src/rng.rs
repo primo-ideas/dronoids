@@ -1,7 +1,9 @@
 //! Tiny deterministic RNG (splitmix64). The simulation must never use a
-//! platform RNG: lockstep multiplayer relies on bit-identical runs.
+//! platform RNG: multiplayer relies on bit-identical runs.
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rng {
     state: u64,
 }
@@ -11,6 +13,10 @@ impl Rng {
         let mut r = Rng { state: seed ^ 0x2545_F491_4F6C_DD1D };
         r.next_u64();
         r
+    }
+
+    pub fn state(&self) -> u64 {
+        self.state
     }
 
     pub fn next_u64(&mut self) -> u64 {

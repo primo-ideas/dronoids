@@ -8,23 +8,24 @@
 pub const FP: i32 = 1024;
 
 /// The world is a square of this many units.
-pub const WORLD_SIZE: i32 = 512;
+pub const WORLD_SIZE: i32 = 768;
 
-/// Simulation speed at "x1".
-pub const TICKS_PER_SEC: f32 = 10.0;
+/// Simulation speed at "x1". Slow on purpose: a persistent world where
+/// drones work while you think (and while you are away).
+pub const TICKS_PER_SEC: f32 = 4.0;
 
 pub const DRONE_RADIUS: i32 = FP * 35 / 100;
 pub const FACTORY_RADIUS: i32 = FP * 12 / 10;
 
 /// Length of one MOVE, and how long actions take (in ticks).
 pub const STEP: i32 = FP;
-pub const MOVE_TICKS: i32 = 6;
-pub const MINE_TICKS: i32 = 12;
-pub const DROP_TICKS: i32 = 6;
-pub const ATTACK_TICKS: i32 = 8;
-pub const WAIT_TICKS: i32 = 5;
-pub const FAIL_TICKS: i32 = 3;
-pub const STALL_TICKS: i32 = 2;
+pub const MOVE_TICKS: i32 = 4;
+pub const MINE_TICKS: i32 = 8;
+pub const DROP_TICKS: i32 = 4;
+pub const ATTACK_TICKS: i32 = 6;
+pub const WAIT_TICKS: i32 = 4;
+pub const FAIL_TICKS: i32 = 2;
+pub const STALL_TICKS: i32 = 1;
 
 /// MINE / DROP work when the gap between the drone and its target is
 /// below this (so `DIST a, ORE` then `JLE a, 1, ...` is always in reach).
@@ -44,10 +45,18 @@ pub const ATTACK_DAMAGE: i32 = 2;
 
 pub const DRONE_COST: i32 = 10;
 pub const FACTORY_COST: i32 = 150;
-pub const START_MINERALS: i32 = 60;
+/// Newcomers own nothing but this: one factory and its first two drones.
+pub const START_MINERALS: i32 = FACTORY_COST + 2 * DRONE_COST;
 
-/// Ticks between two drone spawns of a factory.
-pub const SPAWN_TICKS: i32 = 100;
+/// Ticks between two drone spawns of a factory (30 s).
+pub const SPAWN_TICKS: i32 = 120;
+
+/// Newcomers can neither be attacked nor attack for this long (10 min).
+pub const SHIELD_TICKS: u64 = (10.0 * 60.0 * TICKS_PER_SEC) as u64;
+
+/// Every so often a new crystal field appears somewhere, so that the
+/// persistent world never runs dry.
+pub const REGROW_TICKS: u64 = 40;
 
 /// A new factory must be this close to one of your units...
 pub const BUILD_RANGE: i32 = 8 * FP;
@@ -55,11 +64,14 @@ pub const BUILD_RANGE: i32 = 8 * FP;
 pub const ENEMY_BUILD_CLEARANCE: i32 = 25 * FP;
 /// ...and leave this gap to any other factory.
 pub const FACTORY_SPACING: i32 = 4 * FP;
+/// A first factory (landing, owning nothing yet) can go anywhere at least
+/// this far from other players' factories.
+pub const LANDING_CLEARANCE: i32 = 40 * FP;
 
 pub const MAX_DRONES_PER_PLAYER: usize = 150;
 pub const DEFAULT_QUOTA: u8 = 8;
 pub const MAX_QUOTA: u8 = 24;
-pub const MAX_PLAYERS: usize = 16;
+pub const MAX_PLAYERS: usize = 200;
 
 /// Non-action instructions a drone may execute per decision before it
 /// stalls for a moment.
@@ -73,4 +85,4 @@ pub const ORE_MIN: i32 = 40;
 pub const ORE_MAX: i32 = 120;
 
 /// Number of possible starting places generated with the map.
-pub const SPAWN_SLOTS: usize = 16;
+pub const SPAWN_SLOTS: usize = 24;

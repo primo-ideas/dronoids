@@ -1,5 +1,5 @@
-//! Game of Drones — program drone swarms in a tiny assembly language, in a
-//! large world shared with computer players or other humans.
+//! Game of Drones — program drone colonies in a tiny assembly language, in
+//! a shared, persistent sector (or offline, for practice).
 
 mod editor;
 mod fx;
@@ -7,6 +7,7 @@ mod game;
 mod gfx;
 mod library;
 mod menu;
+mod platform;
 mod ui;
 mod view;
 
@@ -17,7 +18,15 @@ use game_of_drones::ai::Level;
 use gfx::Bloom;
 use library::Library;
 use menu::{Menu, MenuOut};
+use platform::Settings;
 use ui::Ui;
+
+/// Checked by `web/god_net.js`.
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub extern "C" fn god_crate_version() -> u32 {
+    1
+}
 
 enum App {
     Menu(Box<Menu>),
@@ -30,21 +39,22 @@ fn window_conf() -> Conf {
         window_width: 1600,
         window_height: 900,
         window_resizable: true,
+        high_dpi: false,
         sample_count: 4,
         ..Default::default()
     }
 }
 
 /// Command-line switches, mostly for quick testing:
-/// `--solo [easy|normal|hard]`, `--ais N`, `--sandbox`, `--seed N`,
-/// `--ticks N` (fast-forward), `--zoom Z`, `--editor`, `--debug-drone`,
-/// `--help-screen`, `--build`, `--screenshot out.png [--frames N | --after SECS]`,
-/// `--host WORLD`, `--join ADDR`, `--name PSEUDO`.
+/// `--offline [easy|normal|hard]`, `--ais N`, `--seed N`, `--ticks N`
+/// (fast-forward), `--land` (place the first factory), `--zoom Z`,
+/// `--editor`, `--debug-drone`, `--help-screen`, `--build`, `--map`,
+/// `--players`, `--join URL`, `--name PSEUDO`,
+/// `--screenshot out.png [--after SECS | --frames N]`.
 #[derive(Default)]
 struct Args {
-    solo: Option<Level>,
+    offline: Option<Level>,
     ais: Option<usize>,
-    sandbox: bool,
     seed: Option<u64>,
     screenshot: Option<String>,
     frames: u32,
@@ -53,12 +63,13 @@ struct Args {
     debug_drone: bool,
     help: bool,
     build: bool,
+    map: bool,
+    players: bool,
+    land: bool,
     ticks: u64,
     zoom: Option<f32>,
-    host: Option<String>,
     join: Option<String>,
     name: Option<String>,
-    worlds: bool,
 }
 
 fn parse_args() -> Args {
@@ -69,7 +80,7 @@ fn parse_args() -> Args {
         let next = v.get(i + 1).cloned().unwrap_or_default();
         let mut take = true;
         match v[i].as_str() {
-            "--solo" => {
+            "--offline" => {
                 let lvl = match next.as_str() {
                     "easy" => Some(Level::Easy),
                     "hard" => Some(Level::Hard),
@@ -77,20 +88,15 @@ fn parse_args() -> Args {
                     _ => None,
                 };
                 take = lvl.is_some();
-                a.solo = Some(lvl.unwrap_or(Level::Normal));
+                a.offline = Some(lvl.unwrap_or(Level::Normal));
             }
             "--ais" => a.ais = next.parse().ok(),
-            "--sandbox" => {
-                a.sandbox = true;
-                take = false;
-            }
             "--seed" => a.seed = next.parse().ok(),
             "--screenshot" => a.screenshot = Some(next),
             "--frames" => a.frames = next.parse().unwrap_or(60),
             "--after" => a.after = next.parse().ok(),
             "--ticks" => a.ticks = next.parse().unwrap_or(0),
             "--zoom" => a.zoom = next.parse().ok(),
-            "--host" => a.host = Some(next),
             "--join" => a.join = Some(next),
             "--name" => a.name = Some(next),
             flag => {
@@ -100,7 +106,9 @@ fn parse_args() -> Args {
                     "--debug-drone" => a.debug_drone = true,
                     "--help-screen" => a.help = true,
                     "--build" => a.build = true,
-                    "--worlds" => a.worlds = true,
+                    "--map" => a.map = true,
+                    "--players" => a.players = true,
+                    "--land" => a.land = true,
                     _ => {}
                 }
             }
@@ -117,11 +125,18 @@ async fn main() {
     let mut bloom = Bloom::new();
     let mut lib = Library::load();
     let mut ui = Ui::default();
+    let mut settings = Settings::load();
+    if let Some(n) = &args.name {
+        settings.name = n.clone();
+    }
 
-    let mut app = if args.solo.is_some() || args.sandbox {
-        let level = args.solo.unwrap_or(Level::Normal);
-        let ais = if args.sandbox { 0 } else { args.ais.unwrap_or(5) };
-        let mut g = Game::solo(&lib, args.seed.unwrap_or_else(game::new_seed), ais, level);
+    let mut app = if let Some(level) = args.offline {
+        let ais = args.ais.unwrap_or(6);
+        let seed = args.seed.unwrap_or_else(platform::seed);
+        let mut g = Game::offline(&lib, settings.clone(), seed, ais, level);
+        if args.land {
+            g.auto_land();
+        }
         g.fast_forward(args.ticks);
         if let Some(z) = args.zoom {
             g.set_zoom(z);
@@ -132,20 +147,12 @@ async fn main() {
         if args.debug_drone {
             g.debug_first_drone();
         }
-        g.set_overlays(args.help, args.build);
+        g.set_overlays(args.help, args.build, args.map, args.players);
         App::Game(Box::new(g))
     } else {
-        let mut m = Menu::new();
-        if let Some(n) = &args.name {
-            m.set_player_name(n);
-        }
-        if args.worlds {
-            m.show_worlds();
-        }
-        if let Some(w) = &args.host {
-            m.host(w);
-        } else if let Some(addr) = &args.join {
-            m.connect(addr, None);
+        let mut m = Menu::new(settings.clone());
+        if let Some(url) = &args.join {
+            m.connect(Some(url));
         }
         App::Menu(Box::new(m))
     };
@@ -158,20 +165,21 @@ async fn main() {
             App::Menu(m) => match m.frame(&mut ui, &mut bloom) {
                 MenuOut::Stay => {}
                 MenuOut::Quit => break,
-                MenuOut::Solo { ais, level } => {
-                    next = Some(App::Game(Box::new(Game::solo(&lib, game::new_seed(), ais, level))));
+                MenuOut::Offline { ais, level, settings } => {
+                    next = Some(App::Game(Box::new(Game::offline(&lib, settings, platform::seed(), ais, level))));
                 }
-                MenuOut::Online { conn, me, world, name, server } => {
-                    let mut g = Game::online(&lib, conn, me, *world, name, server);
+                MenuOut::Online { conn, me, world, name, settings } => {
+                    let mut g = Game::online(&lib, settings, conn, me, *world, name);
                     if let Some(z) = args.zoom {
                         g.set_zoom(z);
                     }
+                    g.set_overlays(false, false, args.map, args.players);
                     next = Some(App::Game(Box::new(g)));
                 }
             },
             App::Game(g) => {
                 if let Outcome::ToMenu = g.frame(&mut ui, &mut lib, &mut bloom) {
-                    next = Some(App::Menu(Box::new(Menu::new())));
+                    next = Some(App::Menu(Box::new(Menu::new(Settings::load()))));
                 }
             }
         }

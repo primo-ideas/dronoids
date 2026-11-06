@@ -1,2 +1,8 @@
 [build]
 jobs = 4
+
+# Cross-compiling the server to Linux (musl, static) from Windows: the target
+# ships its own libc and CRT objects but still asks for `cc` as linker, which
+# Windows does not have. rust-lld comes with the toolchain.
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"

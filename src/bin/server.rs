@@ -1,38 +1,43 @@
 //! Dedicated, headless world server.
 //!
 //! ```text
-//! god-server [--name nebuleuse] [--port 7777] [--bots 4] [--level easy|normal|hard]
-//!            [--seed N] [--save worlds/nebuleuse.world]
+//! god-server [--name primo] [--bind 0.0.0.0] [--port 8082] [--bots 6]
+//!            [--level easy|normal|hard] [--seed N] [--save worlds/primo.world]
 //! ```
-//! The world is saved every minute (and loaded again on the next start).
+//! Clients connect over WebSocket (`ws://host:port/ws`). The world is saved
+//! every minute and on exit, and loaded again on the next start.
 
-use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-
-use game_of_drones::ai::Level;
-use game_of_drones::net::{local_ip, DEFAULT_PORT};
-use game_of_drones::server::{Server, ServerConfig};
-
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    use game_of_drones::ai::Level;
+    use game_of_drones::net::DEFAULT_PORT;
+    use game_of_drones::server::{Server, ServerConfig};
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     let get = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("god-server [--name NOM] [--port 7777] [--bots 4] [--level easy|normal|hard] [--seed N] [--save FICHIER]");
+        println!(
+            "god-server [--name NOM] [--bind 0.0.0.0] [--port {DEFAULT_PORT}] [--bots 6] [--level easy|normal|hard] [--seed N] [--save FICHIER]"
+        );
         return;
     }
-    let name = get("--name").unwrap_or_else(|| "nebuleuse".into());
+    let name = get("--name").unwrap_or_else(|| "primo".into());
     let level = match get("--level").as_deref() {
         Some("easy") => Level::Easy,
         Some("hard") => Level::Hard,
         _ => Level::Normal,
     };
     let cfg = ServerConfig {
+        bind: get("--bind").unwrap_or_else(|| "0.0.0.0".into()),
         port: get("--port").and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT),
         seed: get("--seed").and_then(|s| s.parse().ok()).unwrap_or_else(|| {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1)
         }),
-        bots: get("--bots").and_then(|b| b.parse().ok()).unwrap_or(4),
+        bots: get("--bots").and_then(|b| b.parse().ok()).unwrap_or(6),
         level,
         save: Some(get("--save").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("worlds").join(format!("{name}.world")))),
         name,
@@ -45,9 +50,9 @@ fn main() {
         }
     };
     println!(
-        "monde « {} » sur {}:{} ({} IA, {}) — sauvegarde : {}",
+        "monde « {} » sur ws://{}:{}/ws ({} colonies IA, {}) — sauvegarde : {}",
         cfg.name,
-        local_ip().unwrap_or_else(|| "0.0.0.0".into()),
+        cfg.bind,
         server.port(),
         cfg.bots,
         level.label(),
@@ -58,3 +63,6 @@ fn main() {
     }
     server.run(Arc::new(AtomicBool::new(false)), |l| println!("{l}"));
 }
+
+#[cfg(target_arch = "wasm32")]
+fn main() {}

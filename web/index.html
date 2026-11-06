@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Game of Drones</title>
+    <meta name="description" content="Un secteur partagé où vous programmez vos drones dans un petit assembleur.">
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #03040a;
+        }
+        canvas {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            outline: none;
+            z-index: 1;
+        }
+        #loading {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #5fd8ff;
+            font: 15px ui-monospace, Menlo, Consolas, monospace;
+            letter-spacing: 0.2em;
+            z-index: 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">GAME OF DRONES · chargement…</div>
+    <canvas id="glcanvas" tabindex="1"></canvas>
+    <script src="mq_js_bundle.js"></script>
+    <script src="god_net.js"></script>
+    <script>
+        // Right-drag moves the camera: no context menu on the game.
+        document.getElementById("glcanvas").addEventListener("contextmenu", function (e) { e.preventDefault(); });
+        load("game_of_drones.wasm");
+    </script>
+</body>
+</html>

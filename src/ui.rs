@@ -143,22 +143,35 @@ impl Ui {
     pub fn button_ex(&mut self, r: Rect, label: &str, active: bool, enabled: bool, color: Color) -> bool {
         self.block(r);
         let hover = enabled && self.hover(r);
+        // Quiet "ghost" buttons: a faint wash, an outline only on hover,
+        // and a soft glow when active.
         let base = if enabled { color } else { pal::FAINT };
         let fill = if active {
-            with_alpha(base, 0.85)
+            with_alpha(base, 0.20)
         } else if hover {
-            with_alpha(base, 0.22)
+            with_alpha(base, 0.12)
         } else {
-            with_alpha(base, 0.07)
+            with_alpha(base, 0.045)
         };
         draw_rectangle(r.x, r.y, r.w, r.h, fill);
-        draw_rectangle_lines(r.x, r.y, r.w, r.h, if hover { 2.0 } else { 1.0 }, with_alpha(base, if hover { 1.0 } else { 0.6 }));
-        let mut size = (r.h * 0.48).clamp(11.0, 17.0);
+        if hover || active {
+            draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, with_alpha(base, if active { 0.55 } else { 0.4 }));
+        }
+        if active {
+            draw_rectangle(r.x + 6.0, r.y + r.h - 2.0, r.w - 12.0, 2.0, with_alpha(base, 0.8));
+        }
+        let mut size = (r.h * 0.46).clamp(11.0, 15.0);
         let tw = gfx::text_width(label, size);
         if tw > r.w - 12.0 && tw > 0.0 {
             size = (size * (r.w - 12.0) / tw).max(9.0);
         }
-        let tc = if active { pal::BG } else if enabled { mix(base, WHITE, 0.55) } else { pal::DIM };
+        let tc = if !enabled {
+            pal::FAINT
+        } else if active || hover {
+            mix(base, WHITE, 0.6)
+        } else {
+            with_alpha(mix(base, WHITE, 0.45), 0.8)
+        };
         gfx::text_centered(label, r.x + r.w / 2.0, r.y + (r.h - size) / 2.0, size, tc);
         enabled && self.click(r)
     }
@@ -179,21 +192,11 @@ impl Ui {
     }
 }
 
+/// A calm translucent pane with a hairline edge and a thin accent on top.
 pub fn panel(r: Rect, edge: Color) {
     draw_rectangle(r.x, r.y, r.w, r.h, pal::PANEL);
-    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5, edge);
-    // Corner accents.
-    let c = with_alpha(mix(edge, WHITE, 0.3), 1.0);
-    let l = 10.0_f32.min(r.w / 4.0).min(r.h / 4.0);
-    for (x, y, dx, dy) in [
-        (r.x, r.y, 1.0, 1.0),
-        (r.x + r.w, r.y, -1.0, 1.0),
-        (r.x, r.y + r.h, 1.0, -1.0),
-        (r.x + r.w, r.y + r.h, -1.0, -1.0),
-    ] {
-        draw_line(x, y, x + l * dx, y, 2.5, c);
-        draw_line(x, y, x, y + l * dy, 2.5, c);
-    }
+    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, with_alpha(edge, edge.a * 0.45));
+    draw_rectangle(r.x + 1.0, r.y, (r.w * 0.25).min(60.0), 1.5, with_alpha(edge, 0.8));
 }
 
 /// Single-line text input.

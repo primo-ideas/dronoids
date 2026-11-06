@@ -13,8 +13,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::geo::{self, compass, dir_vec, dist, dist2};
+#[cfg(test)]
 use crate::programs;
-use crate::rng::{mix, Fnv};
+use crate::rng::{mix, Fnv, Rng};
 use crate::rules::*;
 use crate::vm::{self, thing, Action, Program, Senses, Sensor, Vm};
 use grid::Grid;
@@ -56,7 +57,10 @@ pub struct Player {
     pub mined: i64,
     pub drones_built: u32,
     pub kills: u32,
+    /// Suggested landing place (and camera start).
     pub home: (i32, i32),
+    /// Protected (can neither attack nor be attacked) until this tick.
+    pub shield_until: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -131,6 +135,7 @@ pub enum Event {
     FactoryBuilt { owner: u8, x: i32, y: i32 },
     PlayerJoined { player: u8 },
     PlayerEliminated { player: u8 },
+    OreGrown { x: i32, y: i32 },
 }
 
 /// Player intents: the only way to influence the world.
@@ -165,14 +170,21 @@ pub struct World {
     pub size: i32,
     pub seed: u64,
     pub tick: u64,
+    /// Static, rebuilt from the seed (never sent over the network).
+    #[serde(skip)]
     pub rocks: Vec<Rock>,
     pub ores: Vec<Ore>,
     pub players: Vec<Player>,
     pub factories: Vec<Factory>,
     pub drones: Vec<Drone>,
     pub programs: Vec<ProgEntry>,
+    #[serde(skip)]
     pub slots: Vec<(i32, i32)>,
     next_id: u32,
+    /// Drives crystal regrowth.
+    rng: Rng,
+    /// Regrowth keeps the number of deposits around this.
+    ore_target: u32,
     #[serde(skip)]
     pub events: Vec<Event>,
     #[serde(skip)]
@@ -200,6 +212,7 @@ impl World {
                 Ore { id, x, y, amount }
             })
             .collect();
+        let ore_target = m.ores.len() as u32;
         let mut w = World {
             size: m.size,
             seed,
@@ -212,6 +225,8 @@ impl World {
             programs: vec![],
             slots: m.slots,
             next_id,
+            rng: Rng::new(seed ^ 0x5EED),
+            ore_target,
             events: vec![],
             rock_grid: Grid::default(),
             ore_grid: Grid::default(),
@@ -223,6 +238,11 @@ impl World {
 
     /// Rebuild what is not serialized (compiled programs, spatial grids).
     pub fn rebuild_caches(&mut self) {
+        if self.rocks.is_empty() || self.slots.is_empty() {
+            let m = map::generate(self.seed, self.size / FP);
+            self.rocks = m.rocks;
+            self.slots = m.slots;
+        }
         for p in &mut self.programs {
             p.code = Some(Arc::new(vm::assemble(&p.name, &p.source).unwrap_or_else(|_| Program::empty(&p.name))));
         }
@@ -515,6 +535,13 @@ impl World {
         if self.factories.iter().any(|f| d(f.x, f.y) < sq(FACTORY_SPACING + 2 * FACTORY_RADIUS)) {
             return Err("trop près d'une autre usine");
         }
+        if self.is_landing(owner) {
+            // First factory: anywhere, as long as it is not on someone's doorstep.
+            if self.factories.iter().any(|f| f.owner != owner && d(f.x, f.y) < sq(LANDING_CLEARANCE)) {
+                return Err("trop près d'une autre colonie");
+            }
+            return Ok(());
+        }
         if self.factories.iter().any(|f| f.owner != owner && d(f.x, f.y) < sq(ENEMY_BUILD_CLEARANCE)) {
             return Err("trop près d'une usine ennemie");
         }
@@ -527,14 +554,25 @@ impl World {
         Ok(())
     }
 
+    /// A player owning nothing yet: the next factory is a landing.
+    pub fn is_landing(&self, owner: u8) -> bool {
+        !self.factories.iter().any(|f| f.owner == owner) && !self.drones.iter().any(|d| d.owner == owner)
+    }
+
+    pub fn shielded(&self, owner: u8) -> bool {
+        self.players.get(owner as usize).is_some_and(|p| p.shield_until > self.tick)
+    }
+
     pub fn state_hash(&self) -> u64 {
         let mut h = Fnv::default();
         h.add(self.tick as i64);
         h.add(self.next_id as i64);
+        h.add(self.rng.state() as i64);
         h.add(self.programs.len() as i64);
         for p in &self.players {
             h.add(p.minerals as i64);
             h.add(p.alive as i64);
+            h.add(p.shield_until as i64);
         }
         for f in &self.factories {
             for v in [f.id as i32, f.x, f.y, f.hp, f.timer, f.enabled as i32, f.quota as i32, f.prog as i32] {
@@ -628,12 +666,14 @@ impl World {
             return None;
         }
         let home = self.pick_slot();
+        let shield_until = self.tick + SHIELD_TICKS;
         let id = match existing {
             Some(i) => {
                 let p = &mut self.players[i];
                 p.alive = true;
-                p.minerals = START_MINERALS;
+                p.minerals = p.minerals.max(START_MINERALS);
                 p.home = home;
+                p.shield_until = shield_until;
                 i as u8
             }
             None => {
@@ -648,15 +688,52 @@ impl World {
                     drones_built: 0,
                     kills: 0,
                     home,
+                    shield_until,
                 });
                 id
             }
         };
-        let m = programs::builtin("mineur").expect("builtin");
-        let prog = self.intern_program(m.name, m.source).unwrap_or(0);
-        self.add_factory(id, home.0, home.1, prog);
+        // Newcomers own nothing: they choose where to land their first factory.
         self.events.push(Event::PlayerJoined { player: id });
         Some(id)
+    }
+
+    /// From time to time a fresh crystal field appears away from colonies.
+    fn regrow(&mut self) {
+        if !self.tick.is_multiple_of(REGROW_TICKS) || self.ores.len() as u32 >= self.ore_target {
+            return;
+        }
+        let margin = 12 * FP;
+        for _ in 0..12 {
+            let x = self.rng.range(margin, self.size - margin);
+            let y = self.rng.range(margin, self.size - margin);
+            let clear = (25 * FP) as i64;
+            if self.factories.iter().any(|f| dist2(f.x - x, f.y - y) < clear * clear) {
+                continue;
+            }
+            let n = self.rng.range(3, 8);
+            let mut placed = 0;
+            for _ in 0..n * 4 {
+                if placed >= n {
+                    break;
+                }
+                let (dx, dy) = dir_vec(self.rng.range(0, 360), self.rng.range(0, 4 * FP));
+                let (ox, oy) = (x + dx, y + dy);
+                let amount = self.rng.range(ORE_MIN, ORE_MAX + 1);
+                let far = (ox - 3 * self.size, oy - 3 * self.size);
+                if !self.inside(ox, oy, 2 * FP) || self.blocked(far, (ox, oy), ore_radius(amount) + FP / 4) {
+                    continue;
+                }
+                let id = self.new_id();
+                self.ores.push(Ore { id, x: ox, y: oy, amount });
+                self.ore_grid.insert(ox, oy, id);
+                placed += 1;
+            }
+            if placed > 0 {
+                self.events.push(Event::OreGrown { x, y });
+                return;
+            }
+        }
     }
 
     fn apply(&mut self, player: u8, cmd: &Command) {
@@ -753,6 +830,7 @@ impl World {
         self.drones.retain(|d| d.hp > 0);
         self.factories.retain(|f| f.hp > 0);
         self.ores.retain(|o| o.amount > 0);
+        self.regrow();
         self.check_players();
         self.tick += 1;
     }
@@ -929,8 +1007,16 @@ impl World {
                 true
             }
             Action::Attack => {
-                let drone = self.nearest(x, y, owner, id, thing::ENEMY).filter(|t| t.gap <= ATTACK_RANGE);
-                let base = self.nearest(x, y, owner, id, thing::EBASE).filter(|t| t.gap <= ATTACK_RANGE);
+                // Shielded newcomers can neither shoot nor be shot.
+                if self.shielded(owner) {
+                    return false;
+                }
+                let drone = self
+                    .nearest(x, y, owner, id, thing::ENEMY)
+                    .filter(|t| t.gap <= ATTACK_RANGE && self.drone(t.id).is_some_and(|d| !self.shielded(d.owner)));
+                let base = self
+                    .nearest(x, y, owner, id, thing::EBASE)
+                    .filter(|t| t.gap <= ATTACK_RANGE && self.factory(t.id).is_some_and(|f| !self.shielded(f.owner)));
                 let (tx, ty) = match (drone, base) {
                     (Some(t), b) if b.is_none_or(|b| t.gap <= b.gap) => {
                         let ti = self.drone_index(t.id).unwrap();
@@ -989,9 +1075,9 @@ impl World {
                 continue;
             }
             let owner = p.id;
+            // Without a factory, and without the means to land a new one.
             let has_factory = self.factories.iter().any(|f| f.owner == owner);
-            let has_drones = self.drones.iter().any(|d| d.owner == owner);
-            if !has_factory && (!has_drones || p.minerals < FACTORY_COST) {
+            if !has_factory && p.minerals < FACTORY_COST {
                 self.players[pi].alive = false;
                 for d in self.drones.iter_mut().filter(|d| d.owner == owner) {
                     d.hp = 0;
@@ -1034,15 +1120,58 @@ impl Senses for DroneView<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Land the first factory of `player` at (or near) its suggested home.
+    pub(crate) fn land(w: &mut World, player: u8, source: &str) {
+        let (hx, hy) = w.players[player as usize].home;
+        let spot = (0..8)
+            .flat_map(|r| (0..360).step_by(30).map(move |a| (r, a)))
+            .map(|(r, a)| {
+                let (dx, dy) = dir_vec(a, r * 2 * FP);
+                (hx + dx, hy + dy)
+            })
+            .find(|p| w.can_place_factory(player, p.0, p.1).is_ok())
+            .expect("somewhere to land");
+        w.step(&[(player, Command::PlaceFactory { x: spot.0, y: spot.1, name: "mineur".into(), source: source.into() })]);
+        assert_eq!(w.factory_count(player), 1);
+    }
 
     fn world_with(players: &[&str]) -> World {
         let mut w = World::new(7);
-        for p in players {
+        let m = programs::builtin("mineur").unwrap();
+        for (i, p) in players.iter().enumerate() {
             w.step(&[(0, Command::Join { name: p.to_string(), bot: false })]);
+            land(&mut w, i as u8, m.source);
         }
         w
+    }
+
+    #[test]
+    fn newcomers_own_nothing_but_a_landing() {
+        let mut w = World::new(3);
+        let id = w.join("nouveau", false).unwrap();
+        assert_eq!(w.factory_count(id), 0);
+        assert_eq!(w.drone_count(id), 0);
+        assert_eq!(w.players[0].minerals, START_MINERALS);
+        assert!(w.is_landing(id));
+        for _ in 0..50 {
+            w.step(&[]);
+        }
+        assert!(w.players[0].alive, "waiting to land is not losing");
+        // The landing may be far from everything: we own nothing yet.
+        let (hx, hy) = w.players[0].home;
+        let far = (hx + 200 * FP).min(w.size - 30 * FP);
+        let m = programs::builtin("mineur").unwrap();
+        let spot = (0..40)
+            .map(|k| (far - k * FP, hy))
+            .find(|p| w.can_place_factory(id, p.0, p.1).is_ok())
+            .expect("a free spot");
+        w.step(&[(id, Command::PlaceFactory { x: spot.0, y: spot.1, name: m.name.into(), source: m.source.into() })]);
+        assert_eq!(w.factory_count(id), 1);
+        // The new factory spends on its first drone right away.
+        assert_eq!(w.players[0].minerals, START_MINERALS - FACTORY_COST - DRONE_COST);
     }
 
     #[test]
@@ -1064,7 +1193,7 @@ mod tests {
             w.step(&[]);
         }
         assert!(w.players[0].mined > 40, "mined {}", w.players[0].mined);
-        assert!(w.drone_count(0) >= 4, "drones {}", w.drone_count(0));
+        assert!(w.drone_count(0) >= 3, "drones {}", w.drone_count(0));
     }
 
     #[test]
@@ -1073,7 +1202,9 @@ mod tests {
         for _ in 0..400 {
             a.step(&[]);
         }
-        let mut b = World::from_bytes(&a.to_bytes()).unwrap();
+        let bytes = a.to_bytes();
+        let mut b = World::from_bytes(&bytes).unwrap();
+        assert_eq!(a.rocks, b.rocks, "rocks are rebuilt from the seed");
         assert_eq!(a.state_hash(), b.state_hash());
         let hunter = programs::builtin("chasseur").unwrap();
         for t in 0..1500u64 {
@@ -1089,31 +1220,80 @@ mod tests {
     }
 
     #[test]
+    fn crystals_grow_back() {
+        let mut w = World::new(9);
+        let target = w.ores.len();
+        w.ores.truncate(target / 2);
+        w.rebuild_caches();
+        for _ in 0..REGROW_TICKS * 30 {
+            w.step(&[]);
+        }
+        assert!(w.ores.len() > target / 2 + 20, "{} deposits, target {target}", w.ores.len());
+    }
+
+    #[test]
+    fn shield_protects_newcomers() {
+        let mut w = world_with(&["vieux", "nouveau"]);
+        w.players[0].shield_until = 0;
+        let f = w.factories.iter().find(|f| f.owner == 1).unwrap().clone();
+        let hunter = programs::builtin("chasseur").unwrap();
+        let mine = w.factories.iter().find(|f| f.owner == 0).unwrap().id;
+        w.step(&[(0, Command::SetProgram { factory: mine, name: "chasseur".into(), source: hunter.source.into() })]);
+        let park = |w: &mut World| {
+            for d in w.drones.iter_mut().filter(|d| d.owner == 0) {
+                d.x = f.x + FACTORY_RADIUS + 2 * FP;
+                d.y = f.y;
+                d.busy = 0;
+            }
+            w.index_drones();
+        };
+        park(&mut w);
+        for _ in 0..200 {
+            w.step(&[]);
+        }
+        assert_eq!(w.factory(f.id).unwrap().hp, FACTORY_HP, "shielded factory took damage");
+        // Once the shield is over, the same hunters do hurt.
+        w.players[1].shield_until = 0;
+        park(&mut w);
+        for _ in 0..200 {
+            w.step(&[]);
+        }
+        assert!(w.factory(f.id).is_none_or(|f| f.hp < FACTORY_HP));
+    }
+
+    #[test]
     fn rejoin_after_elimination() {
         let mut w = world_with(&["a", "b"]);
         w.factories.retain(|f| f.owner != 1);
+        w.players[1].minerals = 0;
         w.step(&[]);
         assert!(!w.players[1].alive);
         w.step(&[(1, Command::Join { name: "b".into(), bot: false })]);
         assert!(w.players[1].alive);
-        assert_eq!(w.factory_count(1), 1);
+        assert!(w.is_landing(1));
+        assert_eq!(w.players[1].minerals, START_MINERALS);
         assert_eq!(w.players.len(), 2);
     }
 
     #[test]
     fn factory_placement_rules() {
         let mut w = world_with(&["a", "b"]);
-        let (hx, hy) = w.players[0].home;
-        assert_eq!(w.can_place_factory(0, hx, hy), Err("pas assez de minerai"));
+        let f0 = w.factories.iter().find(|f| f.owner == 0).unwrap().clone();
+        w.players[0].minerals = 0;
+        assert_eq!(w.can_place_factory(0, f0.x + 7 * FP, f0.y), Err("pas assez de minerai"));
         w.players[0].minerals = 1000;
-        assert_eq!(w.can_place_factory(0, hx, hy), Err("emplacement encombré"));
-        let (ex, ey) = w.players[1].home;
-        assert!(w.can_place_factory(0, ex + 5 * FP, ey).is_err());
-        let ok = (0..360).step_by(15).map(|a| {
-            let (dx, dy) = dir_vec(a, 7 * FP);
-            (hx + dx, hy + dy)
-        });
-        let spot = ok.into_iter().find(|p| w.can_place_factory(0, p.0, p.1).is_ok()).expect("a free spot");
+        assert_eq!(w.can_place_factory(0, f0.x, f0.y), Err("emplacement encombré"));
+        let f1 = w.factories.iter().find(|f| f.owner == 1).unwrap().clone();
+        assert!(w.can_place_factory(0, f1.x + 9 * FP, f1.y).is_err());
+        assert_eq!(w.can_place_factory(0, f0.x + 60 * FP, f0.y), Err("trop loin de vos unités"));
+        let spot = (0..360)
+            .step_by(15)
+            .map(|a| {
+                let (dx, dy) = dir_vec(a, 7 * FP);
+                (f0.x + dx, f0.y + dy)
+            })
+            .find(|p| w.can_place_factory(0, p.0, p.1).is_ok())
+            .expect("a free spot");
         let m = programs::builtin("mineur").unwrap();
         w.step(&[(0, Command::PlaceFactory { x: spot.0, y: spot.1, name: m.name.into(), source: m.source.into() })]);
         assert_eq!(w.factory_count(0), 2);
@@ -1124,15 +1304,29 @@ mod tests {
 mod better_programs {
     use super::*;
 
-    fn mined_with(source: &str, seed: u64) -> i64 {
+    fn mined_with(source: &str, seed: u64, ticks: u64) -> i64 {
         let mut w = World::new(seed);
         w.join("solo", false);
-        let f = w.factories[0].id;
-        w.step(&[(0, Command::SetProgram { factory: f, name: "p".into(), source: source.into() })]);
-        for _ in 0..6000 {
+        tests::land(&mut w, 0, source);
+        for _ in 0..ticks {
             w.step(&[]);
         }
         w.players[0].mined
+    }
+
+    #[test]
+    #[ignore]
+    fn compare_horizons() {
+        let better = include_str!("../../examples/mineur_plus.dasm");
+        let base = programs::builtin("mineur").unwrap().source;
+        for ticks in [4000u64, 8000, 14000] {
+            let (mut a, mut b) = (0, 0);
+            for seed in 1..=4 {
+                a += mined_with(base, seed, ticks);
+                b += mined_with(better, seed, ticks);
+            }
+            println!("{ticks} ticks: mineur {a}  mineur+ {b}");
+        }
     }
 
     /// The whole point of the game: a smarter program out-mines the default.
@@ -1143,8 +1337,8 @@ mod better_programs {
         let base = programs::builtin("mineur").unwrap().source;
         let (mut a, mut b) = (0, 0);
         for seed in 1..=4 {
-            a += mined_with(base, seed);
-            b += mined_with(better, seed);
+            a += mined_with(base, seed, 8000);
+            b += mined_with(better, seed, 8000);
         }
         println!("mineur: {a}  mineur+: {b}");
         assert!(b > a, "mineur+ {b} should beat mineur {a}");

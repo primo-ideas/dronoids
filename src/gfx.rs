@@ -14,11 +14,11 @@ pub mod pal {
     pub const WALL_EDGE: Color = Color::from_hex(0x8a4dff);
     pub const ORE: Color = Color::from_hex(0xffc23a);
     pub const ORE_CORE: Color = Color::from_hex(0xfff2c0);
-    pub const TEXT: Color = Color::from_hex(0xd8e6ff);
-    pub const DIM: Color = Color::from_hex(0x6c7aa8);
-    pub const FAINT: Color = Color::from_hex(0x2a3358);
-    pub const PANEL: Color = Color::new(0.02, 0.03, 0.08, 0.92);
-    pub const PANEL_EDGE: Color = Color::new(0.2, 0.55, 1.0, 0.45);
+    pub const TEXT: Color = Color::from_hex(0xc9d6f2);
+    pub const DIM: Color = Color::from_hex(0x66739c);
+    pub const FAINT: Color = Color::from_hex(0x2c3558);
+    pub const PANEL: Color = Color::new(0.016, 0.024, 0.06, 0.78);
+    pub const PANEL_EDGE: Color = Color::new(0.35, 0.6, 1.0, 0.6);
     pub const ACCENT: Color = Color::from_hex(0x00e5ff);
     pub const GOOD: Color = Color::from_hex(0x5cff8a);
     pub const BAD: Color = Color::from_hex(0xff3860);
@@ -62,23 +62,12 @@ thread_local! {
     static FONT: RefCell<Option<Font>> = const { RefCell::new(None) };
 }
 
-/// Try a few monospace system fonts; fall back to macroquad's built-in one.
+/// Fira Mono (SIL Open Font License, see assets/fonts), embedded so the
+/// desktop and the browser look the same.
 pub fn init_font() {
-    let candidates = [
-        "assets/font.ttf",
-        "C:/Windows/Fonts/consola.ttf",
-        "C:/Windows/Fonts/CascadiaMono.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-        "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
-        "/System/Library/Fonts/Monaco.ttf",
-    ];
-    for path in candidates {
-        if let Ok(bytes) = std::fs::read(path)
-            && let Ok(mut font) = load_ttf_font_from_bytes(&bytes) {
-                font.set_filter(FilterMode::Linear);
-                FONT.with(|f| *f.borrow_mut() = Some(font));
-                return;
-            }
+    if let Ok(mut font) = load_ttf_font_from_bytes(include_bytes!("../assets/fonts/FiraMono-Medium.ttf")) {
+        font.set_filter(FilterMode::Linear);
+        FONT.with(|f| *f.borrow_mut() = Some(font));
     }
 }
 
@@ -358,7 +347,7 @@ impl Bloom {
         gl_use_material(&self.copy);
         blit(&self.scene.texture, w, h, WHITE);
         gl_use_material(&self.add);
-        let weights = [0.55, 0.65, 0.75, 0.9];
+        let weights = [0.5, 0.58, 0.66, 0.75];
         for (lv, k) in self.levels.iter().zip(weights) {
             self.add.set_uniform("u_intensity", k * self.intensity);
             blit(&lv.a.texture, w, h, WHITE);

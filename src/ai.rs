@@ -59,6 +59,21 @@ pub struct Bot {
 const BUILD_ORDER: &[&str] = &["mineur", "eclaireur", "mineur", "chasseur", "gardien", "mineur", "chasseur", "chasseur"];
 
 const DENSITY_CELL: i32 = 8 * FP;
+/// Colonies only send raids this far from home: the world is big enough
+/// for newcomers to grow in peace if they settle away from them.
+const RAID_RANGE: i32 = 170 * FP;
+
+/// A free spot to land a first factory, as close as possible to home.
+fn landing_spot(w: &World, player: u8) -> Option<(i32, i32)> {
+    let (hx, hy) = w.players.get(player as usize)?.home;
+    (0..12)
+        .flat_map(|r| (0..360).step_by(30).map(move |a| (r, a)))
+        .map(|(r, a)| {
+            let (dx, dy) = dir_vec(a, r * 3 * FP);
+            (hx + dx, hy + dy)
+        })
+        .find(|p| w.can_place_factory(player, p.0, p.1).is_ok())
+}
 
 impl Bot {
     pub fn new(player: u8, level: Level) -> Bot {
@@ -75,6 +90,16 @@ impl Bot {
             return vec![];
         }
         let mut cmds = vec![];
+        // Like everyone, a colony starts with nothing: land a first factory.
+        if w.is_landing(self.player) {
+            if me.minerals >= FACTORY_COST
+                && let Some((x, y)) = landing_spot(w, self.player)
+            {
+                let b = builtin("mineur").expect("builtin");
+                cmds.push(Command::PlaceFactory { x, y, name: b.name.into(), source: b.source.into() });
+            }
+            return cmds;
+        }
         let hunting = w.tick >= self.level.hunter_gate();
 
         if me.minerals >= FACTORY_COST + 30 && w.factory_count(self.player) < self.level.max_factories()
@@ -116,18 +141,16 @@ impl Bot {
         cmds
     }
 
-    /// Home (in world units) of the nearest other living player.
+    /// Nearest factory (in world units) of a rival worth raiding: close
+    /// enough to our home, and not a shielded newcomer.
     fn closest_rival(&self, w: &World) -> Option<(i32, i32)> {
         let me = w.players.get(self.player as usize)?;
-        w.players
+        let range = (RAID_RANGE as i64) * (RAID_RANGE as i64);
+        w.factories
             .iter()
-            .filter(|p| p.alive && p.id != self.player)
-            .map(|p| {
-                // Aim at one of their factories if any is left, else their home.
-                let f = w.factories.iter().filter(|f| f.owner == p.id).min_by_key(|f| dist2(f.x - me.home.0, f.y - me.home.1));
-                let at = f.map(|f| (f.x, f.y)).unwrap_or(p.home);
-                (dist2(at.0 - me.home.0, at.1 - me.home.1), at)
-            })
+            .filter(|f| f.owner != self.player && !w.shielded(f.owner))
+            .map(|f| (dist2(f.x - me.home.0, f.y - me.home.1), (f.x, f.y)))
+            .filter(|(d, _)| *d <= range)
             .min()
             .map(|(_, (x, y))| (x / FP, y / FP))
     }

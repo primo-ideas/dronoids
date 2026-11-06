@@ -1,30 +1,26 @@
-//! Networking: length-prefixed bincode messages over TCP (one reader and
-//! one writer thread per connection, so the game loop never blocks), plus
-//! UDP broadcast to discover the worlds hosted on the local network.
-
-use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::thread;
-use std::time::Duration;
+//! Networking: bincode messages over WebSocket, so browsers can play.
+//!
+//! Native builds (desktop client, server) use `tungstenite` with one thread
+//! per connection; the browser build goes through the page's WebSocket via
+//! a tiny JavaScript plugin (`web/god_net.js`). Both expose the same `Conn`.
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::sim::Command;
 
-pub const PROTOCOL_VERSION: u32 = 2;
-pub const DEFAULT_PORT: u16 = 7777;
-pub const DISCOVERY_PORT: u16 = 7778;
-const MAX_MESSAGE: usize = 256 << 20;
-const PING: &[u8] = b"GAME-OF-DRONES?";
+pub const PROTOCOL_VERSION: u32 = 3;
+pub const DEFAULT_PORT: u16 = 8082;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ClientMsg {
-    Hello { version: u32, name: String },
+    /// `token` proves ownership of `name` across sessions.
+    Hello { version: u32, name: String, token: String },
     Cmd(Command),
     /// Hash of the client's world when it reached `tick`.
     Hash { tick: u64, hash: u64 },
+    /// The client fell too far behind (e.g. a hidden browser tab).
+    WantSnapshot,
     Bye,
 }
 
@@ -34,8 +30,10 @@ pub enum ServerMsg {
     Welcome { player: u8, world: String, snapshot: Vec<u8> },
     /// Commands to apply when stepping from `tick` to `tick + 1`.
     Frame { tick: u64, cmds: Vec<(u8, Command)> },
-    /// Your world diverged: start again from this one.
+    /// Start again from this world (divergence, or on request).
     Resync { snapshot: Vec<u8> },
+    /// How many people are connected right now.
+    Online { players: Vec<u8> },
     Refused(String),
 }
 
@@ -44,264 +42,330 @@ pub enum NetEvent<T> {
     Closed(String),
 }
 
-/// One TCP connection receiving `In` messages.
-pub struct Conn<In> {
-    out: Sender<Vec<u8>>,
-    rx: Receiver<NetEvent<In>>,
-    closed: bool,
+/// `ws://host:port/ws` from a bare `host` or `host:port`.
+pub fn normalize_url(addr: &str) -> String {
+    let a = addr.trim();
+    if a.starts_with("ws://") || a.starts_with("wss://") {
+        return a.to_string();
+    }
+    let host = if a.contains(':') { a.to_string() } else { format!("{a}:{DEFAULT_PORT}") };
+    format!("ws://{host}/ws")
 }
 
-impl<In: DeserializeOwned + Send + 'static> Conn<In> {
-    pub fn new(stream: TcpStream) -> io::Result<Conn<In>> {
-        stream.set_nodelay(true)?;
-        stream.set_nonblocking(false)?;
-        let mut reader = stream.try_clone()?;
-        let mut writer = stream.try_clone()?;
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            let close = |tx: &Sender<NetEvent<In>>, why: String| {
-                let _ = tx.send(NetEvent::Closed(why));
-            };
+fn decode<In: DeserializeOwned>(bytes: &[u8]) -> Result<In, String> {
+    bincode::deserialize(bytes).map_err(|e| format!("message invalide : {e}"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::*;
+#[cfg(target_arch = "wasm32")]
+pub use web::*;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod native {
+    use std::io;
+    use std::marker::PhantomData;
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+    use std::thread;
+    use std::time::Duration;
+
+    use serde::de::DeserializeOwned;
+    use serde::Serialize;
+    use tungstenite::{Message, WebSocket};
+
+    use super::{decode, NetEvent};
+
+    /// One WebSocket connection receiving `In` messages.
+    pub struct Conn<In> {
+        out: Sender<Vec<u8>>,
+        rx: Receiver<NetEvent<In>>,
+        closed: bool,
+        _in: PhantomData<In>,
+    }
+
+    /// Reads (with a short timeout) and writes on one thread until either
+    /// side goes away.
+    fn pump<In: DeserializeOwned>(mut ws: WebSocket<TcpStream>, tx: Sender<NetEvent<In>>, out: Receiver<Vec<u8>>) {
+        let _ = ws.get_mut().set_read_timeout(Some(Duration::from_millis(15)));
+        let _ = ws.get_mut().set_nodelay(true);
+        let close = |why: String| {
+            let _ = tx.send(NetEvent::Closed(why));
+        };
+        loop {
             loop {
-                let mut len = [0u8; 4];
-                if let Err(e) = reader.read_exact(&mut len) {
-                    let why = if e.kind() == io::ErrorKind::UnexpectedEof { "connexion fermée".into() } else { e.to_string() };
-                    return close(&tx, why);
+                match out.try_recv() {
+                    Ok(buf) => {
+                        if let Err(e) = ws.send(Message::binary(buf)) {
+                            return close(e.to_string());
+                        }
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        // Our side is done: say goodbye properly.
+                        let _ = ws.close(None);
+                        let _ = ws.flush();
+                        return;
+                    }
                 }
-                let len = u32::from_le_bytes(len) as usize;
-                if len > MAX_MESSAGE {
-                    return close(&tx, "message trop gros".into());
-                }
-                let mut buf = vec![0u8; len];
-                if let Err(e) = reader.read_exact(&mut buf) {
-                    return close(&tx, e.to_string());
-                }
-                match bincode::deserialize::<In>(&buf) {
+            }
+            match ws.read() {
+                Ok(Message::Binary(data)) => match decode::<In>(&data) {
                     Ok(m) => {
                         if tx.send(NetEvent::Msg(m)).is_err() {
                             return;
                         }
                     }
-                    Err(e) => return close(&tx, format!("message invalide : {e}")),
+                    Err(e) => return close(e),
+                },
+                Ok(Message::Close(_)) => return close("connexion fermée".into()),
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(e)) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                    // Pings get answered on the next write.
+                    let _ = ws.flush();
                 }
-            }
-        });
-        let (out, out_rx) = mpsc::channel::<Vec<u8>>();
-        // The writer flushes everything queued, then closes the socket once
-        // the `Conn` is dropped (so a last "Refused" still gets through).
-        thread::spawn(move || {
-            for buf in out_rx {
-                let len = (buf.len() as u32).to_le_bytes();
-                if writer.write_all(&len).is_err() || writer.write_all(&buf).is_err() {
-                    break;
+                Err(tungstenite::Error::ConnectionClosed) | Err(tungstenite::Error::AlreadyClosed) => {
+                    return close("connexion fermée".into());
                 }
-            }
-            let _ = writer.flush();
-            let _ = writer.shutdown(std::net::Shutdown::Both);
-        });
-        drop(stream);
-        Ok(Conn { out, rx, closed: false })
-    }
-
-    pub fn send<Out: Serialize>(&mut self, msg: &Out) {
-        if self.closed {
-            return;
-        }
-        let buf = bincode::serialize(msg).expect("serializable");
-        if self.out.send(buf).is_err() {
-            self.closed = true;
-        }
-    }
-
-    /// Next pending event, leaving the others queued (useful while a
-    /// message may hand the connection over, e.g. lobby -> game).
-    pub fn poll_one(&mut self) -> Option<NetEvent<In>> {
-        match self.rx.try_recv() {
-            Ok(e) => {
-                if matches!(e, NetEvent::Closed(_)) {
-                    self.closed = true;
-                }
-                Some(e)
-            }
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => {
-                if self.closed {
-                    None
-                } else {
-                    self.closed = true;
-                    Some(NetEvent::Closed("connexion perdue".into()))
-                }
+                Err(e) => return close(e.to_string()),
             }
         }
     }
 
-    pub fn poll(&mut self) -> Vec<NetEvent<In>> {
-        let mut v = vec![];
-        while let Some(e) = self.poll_one() {
-            v.push(e);
+    impl<In: DeserializeOwned + Send + 'static> Conn<In> {
+        fn spawn(ws: WebSocket<TcpStream>) -> Conn<In> {
+            let (tx, rx) = mpsc::channel();
+            let (out, out_rx) = mpsc::channel();
+            thread::spawn(move || pump(ws, tx, out_rx));
+            Conn { out, rx, closed: false, _in: PhantomData }
         }
-        v
-    }
 
-    pub fn is_closed(&self) -> bool {
-        self.closed
-    }
-}
-
-/// Connects in the background so the UI keeps running.
-pub struct Connecting {
-    rx: Receiver<io::Result<TcpStream>>,
-}
-
-pub fn with_default_port(addr: &str) -> String {
-    if addr.contains(':') { addr.to_string() } else { format!("{addr}:{DEFAULT_PORT}") }
-}
-
-impl Connecting {
-    pub fn start(addr: &str) -> Connecting {
-        let addr = with_default_port(addr);
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            let r = (|| {
-                let target = addr
-                    .to_socket_addrs()?
-                    .next()
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "adresse introuvable"))?;
-                TcpStream::connect_timeout(&target, Duration::from_secs(5))
-            })();
-            let _ = tx.send(r);
-        });
-        Connecting { rx }
-    }
-
-    pub fn poll(&self) -> Option<io::Result<TcpStream>> {
-        self.rx.try_recv().ok()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// LAN discovery
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct WorldInfo {
-    pub name: String,
-    pub port: u16,
-    pub players: u32,
-    pub online: u32,
-    pub bots: u32,
-    pub tick: u64,
-    pub version: u32,
-}
-
-/// Server side: answers discovery pings.
-pub struct Responder {
-    sock: UdpSocket,
-}
-
-impl Responder {
-    pub fn bind() -> io::Result<Responder> {
-        let sock = UdpSocket::bind(("0.0.0.0", DISCOVERY_PORT))?;
-        sock.set_nonblocking(true)?;
-        Ok(Responder { sock })
-    }
-
-    pub fn poll(&self, info: &WorldInfo) {
-        let mut buf = [0u8; 64];
-        while let Ok((n, from)) = self.sock.recv_from(&mut buf) {
-            if &buf[..n] == PING
-                && let Ok(reply) = serde_json::to_vec(info) {
-                    let _ = self.sock.send_to(&reply, from);
-                }
+        /// Server side: perform the WebSocket handshake on an accepted socket.
+        pub fn accept(stream: TcpStream) -> Result<Conn<In>, String> {
+            stream.set_nonblocking(false).map_err(|e| e.to_string())?;
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let ws = tungstenite::accept(stream).map_err(|e| e.to_string())?;
+            Ok(Conn::spawn(ws))
         }
-    }
-}
 
-#[derive(Clone, Debug)]
-pub struct Found {
-    pub addr: String,
-    pub info: WorldInfo,
-    pub seen: f64,
-}
-
-/// Client side: broadcasts pings and collects answers.
-pub struct Browser {
-    sock: UdpSocket,
-    pub found: Vec<Found>,
-}
-
-impl Browser {
-    pub fn new() -> io::Result<Browser> {
-        let sock = UdpSocket::bind(("0.0.0.0", 0))?;
-        sock.set_broadcast(true)?;
-        sock.set_nonblocking(true)?;
-        Ok(Browser { sock, found: vec![] })
-    }
-
-    pub fn ping(&self) {
-        for target in ["255.255.255.255", "127.0.0.1"] {
-            let _ = self.sock.send_to(PING, (target, DISCOVERY_PORT));
+        pub fn send<Out: Serialize>(&mut self, msg: &Out) {
+            if self.closed {
+                return;
+            }
+            let buf = bincode::serialize(msg).expect("serializable");
+            if self.out.send(buf).is_err() {
+                self.closed = true;
+            }
         }
-    }
 
-    pub fn poll(&mut self, now: f64) {
-        let mut buf = [0u8; 2048];
-        while let Ok((n, from)) = self.sock.recv_from(&mut buf) {
-            let Ok(info) = serde_json::from_slice::<WorldInfo>(&buf[..n]) else { continue };
-            let ip = match from {
-                SocketAddr::V4(a) => a.ip().to_string(),
-                SocketAddr::V6(a) => a.ip().to_string(),
-            };
-            let addr = format!("{ip}:{}", info.port);
-            match self.found.iter_mut().find(|f| f.addr == addr || (f.info.name == info.name && f.info.port == info.port)) {
-                Some(f) => {
-                    // Prefer a real LAN address over loopback for display.
-                    if f.addr.starts_with("127.") && !ip.starts_with("127.") {
-                        f.addr = addr;
+        /// Next pending event, leaving the others queued (useful while a
+        /// message may hand the connection over, e.g. menu -> game).
+        pub fn poll_one(&mut self) -> Option<NetEvent<In>> {
+            match self.rx.try_recv() {
+                Ok(e) => {
+                    if matches!(e, NetEvent::Closed(_)) {
+                        self.closed = true;
                     }
-                    f.info = info;
-                    f.seen = now;
+                    Some(e)
                 }
-                None => self.found.push(Found { addr, info, seen: now }),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => {
+                    if self.closed {
+                        None
+                    } else {
+                        self.closed = true;
+                        Some(NetEvent::Closed("connexion perdue".into()))
+                    }
+                }
             }
         }
-        self.found.retain(|f| now - f.seen < 6.0);
-        self.found.sort_by(|a, b| a.info.name.cmp(&b.info.name));
+
+        pub fn poll(&mut self) -> Vec<NetEvent<In>> {
+            let mut v = vec![];
+            while let Some(e) = self.poll_one() {
+                v.push(e);
+            }
+            v
+        }
+
+        pub fn is_closed(&self) -> bool {
+            self.closed
+        }
+    }
+
+    /// Connects in the background so the UI keeps running.
+    pub struct Connecting<In> {
+        rx: Receiver<Result<Conn<In>, String>>,
+    }
+
+    impl<In: DeserializeOwned + Send + 'static> Connecting<In> {
+        pub fn start(url: &str) -> Connecting<In> {
+            let url = super::normalize_url(url);
+            let (tx, rx) = mpsc::channel();
+            thread::spawn(move || {
+                let r = (|| -> Result<Conn<In>, String> {
+                    if url.starts_with("wss://") {
+                        return Err("wss:// n'est disponible que dans le navigateur (utilisez ws://)".into());
+                    }
+                    let hostport = url.trim_start_matches("ws://").split('/').next().unwrap_or_default().to_string();
+                    let addr = hostport
+                        .to_socket_addrs()
+                        .map_err(|e| e.to_string())?
+                        .next()
+                        .ok_or_else(|| "adresse introuvable".to_string())?;
+                    let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).map_err(|e| e.to_string())?;
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                    let (ws, _) = tungstenite::client(url.as_str(), stream).map_err(|e| e.to_string())?;
+                    Ok(Conn::spawn(ws))
+                })();
+                let _ = tx.send(r);
+            });
+            Connecting { rx }
+        }
+
+        pub fn poll(&mut self) -> Option<Result<Conn<In>, String>> {
+            self.rx.try_recv().ok()
+        }
     }
 }
 
-/// Best guess of this machine's LAN address (no packet is sent).
-pub fn local_ip() -> Option<String> {
-    let s = UdpSocket::bind("0.0.0.0:0").ok()?;
-    s.connect("192.168.0.1:9").ok()?;
-    Some(s.local_addr().ok()?.ip().to_string())
+#[cfg(target_arch = "wasm32")]
+mod web {
+    use std::marker::PhantomData;
+
+    use serde::de::DeserializeOwned;
+    use serde::Serialize;
+
+    use super::{decode, NetEvent};
+
+    #[link(wasm_import_module = "env")]
+    unsafe extern "C" {
+        fn god_ws_open(ptr: *const u8, len: usize) -> i32;
+        fn god_ws_state(id: i32) -> i32;
+        fn god_ws_send(id: i32, ptr: *const u8, len: usize);
+        fn god_ws_peek(id: i32) -> i32;
+        fn god_ws_take(id: i32, ptr: *mut u8, len: usize);
+        fn god_ws_close(id: i32);
+    }
+
+    const OPEN: i32 = 1;
+    const CLOSED: i32 = 2;
+
+    /// The page's WebSocket, seen through `web/god_net.js`.
+    pub struct Conn<In> {
+        id: i32,
+        closed: bool,
+        _in: PhantomData<In>,
+    }
+
+    impl<In: DeserializeOwned> Conn<In> {
+        pub fn send<Out: Serialize>(&mut self, msg: &Out) {
+            if self.closed {
+                return;
+            }
+            let buf = bincode::serialize(msg).expect("serializable");
+            unsafe { god_ws_send(self.id, buf.as_ptr(), buf.len()) };
+        }
+
+        pub fn poll_one(&mut self) -> Option<NetEvent<In>> {
+            if self.closed {
+                return None;
+            }
+            let len = unsafe { god_ws_peek(self.id) };
+            if len >= 0 {
+                let mut buf = vec![0u8; len as usize];
+                unsafe { god_ws_take(self.id, buf.as_mut_ptr(), buf.len()) };
+                return Some(match decode::<In>(&buf) {
+                    Ok(m) => NetEvent::Msg(m),
+                    Err(e) => {
+                        self.closed = true;
+                        NetEvent::Closed(e)
+                    }
+                });
+            }
+            if unsafe { god_ws_state(self.id) } == CLOSED {
+                self.closed = true;
+                return Some(NetEvent::Closed("connexion fermée".into()));
+            }
+            None
+        }
+
+        pub fn poll(&mut self) -> Vec<NetEvent<In>> {
+            let mut v = vec![];
+            while let Some(e) = self.poll_one() {
+                v.push(e);
+            }
+            v
+        }
+
+        pub fn is_closed(&self) -> bool {
+            self.closed
+        }
+    }
+
+    impl<In> Drop for Conn<In> {
+        fn drop(&mut self) {
+            unsafe { god_ws_close(self.id) };
+        }
+    }
+
+    pub struct Connecting<In> {
+        id: Option<i32>,
+        _in: PhantomData<In>,
+    }
+
+    impl<In: DeserializeOwned> Connecting<In> {
+        pub fn start(url: &str) -> Connecting<In> {
+            let url = super::normalize_url(url);
+            let id = unsafe { god_ws_open(url.as_ptr(), url.len()) };
+            Connecting { id: Some(id), _in: PhantomData }
+        }
+
+        pub fn poll(&mut self) -> Option<Result<Conn<In>, String>> {
+            let id = self.id?;
+            match unsafe { god_ws_state(id) } {
+                OPEN => {
+                    self.id = None;
+                    Some(Ok(Conn { id, closed: false, _in: PhantomData }))
+                }
+                CLOSED => {
+                    self.id = None;
+                    unsafe { god_ws_close(id) };
+                    Some(Err("serveur injoignable".into()))
+                }
+                _ => None,
+            }
+        }
+    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
-    fn framed_roundtrip() {
+    fn websocket_roundtrip() {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
-        let c = Connecting::start(&format!("127.0.0.1:{port}"));
-        let (s, _) = l.accept().unwrap();
-        let mut server: Conn<ClientMsg> = Conn::new(s).unwrap();
-        let mut stream = None;
-        for _ in 0..200 {
+        let server = thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            Conn::<ClientMsg>::accept(s).unwrap()
+        });
+        let mut c = Connecting::<ServerMsg>::start(&format!("127.0.0.1:{port}"));
+        let mut client = loop {
             if let Some(r) = c.poll() {
-                stream = Some(r.unwrap());
-                break;
+                break r.unwrap();
             }
-            thread::sleep(Duration::from_millis(10));
-        }
-        let mut client: Conn<ServerMsg> = Conn::new(stream.unwrap()).unwrap();
-        client.send(&ClientMsg::Hello { version: PROTOCOL_VERSION, name: "x\ny".into() });
+            thread::sleep(Duration::from_millis(5));
+        };
+        let mut server = server.join().unwrap();
+        client.send(&ClientMsg::Hello { version: PROTOCOL_VERSION, name: "x\ny".into(), token: "t".into() });
         server.send(&ServerMsg::Frame { tick: 3, cmds: vec![(1, Command::ToggleFactory { factory: 9 })] });
         let mut got = (false, false);
-        for _ in 0..200 {
+        for _ in 0..300 {
             if let Some(NetEvent::Msg(ClientMsg::Hello { name, .. })) = server.poll_one() {
                 assert_eq!(name, "x\ny");
                 got.0 = true;
@@ -313,8 +377,25 @@ mod tests {
             if got == (true, true) {
                 break;
             }
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(got, (true, true));
+        drop(client);
+        let mut closed = false;
+        for _ in 0..300 {
+            if let Some(NetEvent::Closed(_)) = server.poll_one() {
+                closed = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(closed, "server notices the client leaving");
+    }
+
+    #[test]
+    fn urls() {
+        assert_eq!(normalize_url("example.org"), "ws://example.org:8082/ws");
+        assert_eq!(normalize_url("10.0.0.2:9000"), "ws://10.0.0.2:9000/ws");
+        assert_eq!(normalize_url("wss://a.b/drones/ws"), "wss://a.b/drones/ws");
     }
 }

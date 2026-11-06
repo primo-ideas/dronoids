@@ -65,6 +65,8 @@ pub struct Highlight {
     pub build_range_for: Option<u8>,
     /// Target marker of the selected factory.
     pub target: Option<Vec2>,
+    /// Suggested place for a first factory.
+    pub landing: Option<Vec2>,
     pub me: u8,
 }
 
@@ -141,6 +143,10 @@ impl WorldView {
                     }
                 }
                 Event::PlayerEliminated { .. } => {}
+                Event::OreGrown { x, y } => {
+                    self.fx.ring(fpv(x, y), pal::ORE, 5.0, 2.5);
+                    self.fx.dots(fpv(x, y), pal::ORE_CORE, 18, 2.0, 1.6);
+                }
             }
         }
     }
@@ -337,6 +343,12 @@ impl WorldView {
                 draw_rectangle(sc.x - w / 2.0, sc.y + r * 1.4, w, (z * 0.12).max(3.0), with_alpha(BLACK, 0.7));
                 draw_rectangle(sc.x - w / 2.0, sc.y + r * 1.4, w * frac, (z * 0.12).max(3.0), mix(pal::BAD, pal::GOOD, frac));
             }
+            if world.shielded(f.owner) {
+                // Newcomer protection: a faint shimmering bubble.
+                let shimmer = 0.10 + 0.05 * (t * 1.7 + f.id as f32).sin();
+                draw_circle_lines(sc.x, sc.y, r * 2.3, 1.0, with_alpha(mix(pc, WHITE, 0.4), shimmer * 2.0));
+                draw_circle(sc.x, sc.y, r * 2.3, with_alpha(pc, shimmer * 0.35));
+            }
             if hl.factory == Some(f.id) {
                 for i in 0..6 {
                     let a0 = t * 0.8 + i as f32 * TAU / 6.0;
@@ -396,6 +408,17 @@ impl WorldView {
                 let (a, b) = (c + d * (rr - 6.0), c + d * (rr + 8.0));
                 draw_line(a.x, a.y, b.x, b.y, 2.0, col);
             }
+        }
+
+        if let Some(p) = hl.landing {
+            let c = cam.w2s(p);
+            let col = player_color(hl.me);
+            let rr = fp(FACTORY_RADIUS) * z * 2.0;
+            for i in 0..3 {
+                let k = (t * 0.5 + i as f32 / 3.0) % 1.0;
+                draw_circle_lines(c.x, c.y, rr * (1.0 + k * 2.0), 1.5, with_alpha(col, 0.5 * (1.0 - k)));
+            }
+            draw_circle(c.x, c.y, 3.0, col);
         }
 
         if let Some((p, ok)) = hl.ghost {
