@@ -1,0 +1,50 @@
+; MINEUR+ -- comme le mineur, mais quand la route directe
+; est bloquée il essaie l'autre axe au lieu d'errer.
+debut:
+    CARGO a
+    JGE a, FULL, maison
+    SET d, ORE           ; d = ce qu'on cherche
+    JMP aller
+maison:
+    SET d, BASE
+aller:
+    SCAN b, d            ; direction naïve vers la cible
+    JEQ b, NONE, errer
+    LOOK c, b
+    JEQ c, d, agir       ; la cible est juste à côté
+    MOVE b
+    JNZ ok, debut
+    ; bloqué : on tente l'axe secondaire
+    JEQ b, E, vertical
+    JEQ b, W, vertical
+    DX a, d              ; on allait N/S : est ou ouest ?
+    SET b, E
+    JGT a, 0, tenter
+    SET b, W
+    JLT a, 0, tenter
+    RAND b, 2            ; aligné : E (1) ou W (3) au hasard
+    MUL b, 2
+    ADD b, 1
+    JMP tenter
+vertical:
+    DY a, d              ; on allait E/W : nord ou sud ?
+    SET b, S
+    JGT a, 0, tenter
+    SET b, N
+    JLT a, 0, tenter
+    RAND b, 2            ; aligné : N (0) ou S (2) au hasard
+    MUL b, 2
+tenter:
+    MOVE b
+    JNZ ok, debut
+errer:
+    RAND b, 4
+    MOVE b
+    JMP debut
+agir:
+    JEQ d, BASE, vider
+    MINE b
+    JMP debut
+vider:
+    DROP b
+    JMP debut
