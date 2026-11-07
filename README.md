@@ -71,9 +71,12 @@ Sur téléphone ou tablette :
 | Deux doigts | zoomer, et déplacer la caméra |
 | Toucher un champ de texte ou le code | ouvrir le clavier du téléphone |
 
-L'écran reste volontairement épuré : une ligne d'état en haut à gauche, un dock en
-bas, et une seule ligne d'objectif (l'outil en cours, sinon le prochain premier pas).
-Carte et colonies s'ouvrent à la demande. Sur un écran étroit (moins de 700 px de
+L'écran reste volontairement épuré : vos cristaux en haut à gauche (et la
+protection du nouveau venu tant qu'elle dure), vitesse, aide et menu en haut à
+droite, un dock en bas, et une ligne courte : l'outil en cours, sinon le prochain
+premier pas et son avancement. Le panneau d'une unité ne montre sa santé qu'une
+fois touchée ; carte et colonies s'ouvrent à la demande. Hors ligne, le bouton de
+vitesse passe de x1 à x2, x4, x8 puis pause. Sur un écran étroit (moins de 700 px de
 large, un téléphone tenu droit), le panneau de sélection passe en bas au-dessus du
 dock, et l'éditeur comme l'aide occupent tout l'écran.
 

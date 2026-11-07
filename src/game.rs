@@ -854,7 +854,7 @@ impl Game {
             }
             if !self.is_online() {
                 bx -= 128.0;
-                if ui.button_ex(Rect::new(bx, h.y, 122.0, bh), "Pas à pas  N", false, true, pal::WARN) {
+                if ui.button_ex(Rect::new(bx, h.y, 122.0, bh), "Pas à pas", false, true, pal::WARN) {
                     acts.push(Act::Step);
                 }
             }
@@ -871,8 +871,7 @@ impl Game {
                 }
             }
             x += 18.0;
-            let apply = if ui.touch { "Appliquer" } else { "Appliquer · Ctrl+S" };
-            if ui.button_ex(Rect::new(x, h.y, 128.0, bh), apply, false, true, pal::GOOD) {
+            if ui.button_ex(Rect::new(x, h.y, 128.0, bh), "Appliquer", false, true, pal::GOOD) {
                 acts.push(Act::Apply);
             }
             x += 134.0;
@@ -943,54 +942,29 @@ impl Game {
             self.debug_side(ui, l.side, id, acts);
         }
 
+        // Under the code, only what calls for something: the errors, or
+        // what « Appliquer » will do once there are changes to apply.
         let f = l.footer;
-        if l.header2.is_some() {
-            // Small screen: two short lines at most.
-            let lines: Vec<(String, Color)> = if debug_id.is_some() {
-                vec![("La ligne surlignée est l'action en cours du drone.".into(), pal::DIM)]
-            } else if self.editor.errors.is_empty() {
-                let users = self.users_of(&self.edit_name.text);
-                let msg = if users > 0 {
-                    format!("Appliquer met à jour {users} usine(s) « {} » et leurs drones.", self.edit_name.text)
-                } else if let Some(fid) = self.edit_factory {
-                    format!("Appliquer donne ce programme à l'usine #{fid}.")
-                } else {
-                    "Aucune usine n'utilise ce programme pour l'instant.".into()
-                };
-                gfx::wrap(&msg, 12.0, f.w - 8.0).into_iter().map(|s| (s, pal::DIM)).collect()
-            } else {
-                let bad = mix(pal::BAD, WHITE, 0.35);
-                self.editor.errors.iter().map(|e| (format!("ligne {} : {}", e.line + 1, e.msg), bad)).collect()
-            };
-            for (i, (s, c)) in lines.iter().take(2).enumerate() {
-                gfx::text(s, f.x + 4.0, f.y + 4.0 + i as f32 * 17.0, gfx::fit_size(s, 12.0, f.w - 8.0), *c);
-            }
-        } else if debug_id.is_some() {
-            gfx::text("La ligne surlignée est l'action en cours du drone.", f.x + 4.0, f.y + 8.0, 13.0, pal::DIM);
-            if !self.is_online() && !ui.touch {
-                gfx::text("Espace : pause · N : un tick de plus", f.x + 4.0, f.y + 28.0, 13.0, pal::FAINT);
-            }
-        } else if self.editor.errors.is_empty() {
+        let lines: Vec<(String, Color)> = if debug_id.is_some() {
+            vec![]
+        } else if !self.editor.errors.is_empty() {
+            let bad = mix(pal::BAD, WHITE, 0.35);
+            self.editor.errors.iter().take(2).map(|e| (format!("ligne {} : {}", e.line + 1, e.msg), bad)).collect()
+        } else if self.editor.dirty {
             let users = self.users_of(&self.edit_name.text);
-            let msg = if users > 0 {
-                format!("Appliquer met à jour {users} usine(s) « {} » et leurs drones.", self.edit_name.text)
-            } else if let Some(fid) = self.edit_factory {
-                format!("Appliquer donne ce programme à l'usine #{fid}.")
+            if users > 0 {
+                vec![(format!("Appliquer met à jour {users} usine(s)"), pal::DIM)]
+            } else if self.edit_factory.is_some() {
+                vec![("Appliquer donne ce programme à l'usine".into(), pal::DIM)]
             } else {
-                "Aucune usine n'utilise ce programme pour l'instant.".into()
-            };
-            gfx::text(&msg, f.x + 4.0, f.y + 8.0, 13.0, pal::DIM);
-            let hint = if ui.touch {
-                "Laissez le doigt sur une instruction pour son aide · ? : tout le langage"
-            } else {
-                "Survolez une instruction pour son aide · F1 : tout le langage"
-            };
-            gfx::text(hint, f.x + 4.0, f.y + 28.0, 12.0, pal::FAINT);
-        } else {
-            for (i, e) in self.editor.errors.iter().take(2).enumerate() {
-                let s = format!("ligne {} : {}", e.line + 1, e.msg);
-                gfx::text(&s, f.x + 4.0, f.y + 8.0 + i as f32 * 19.0, 13.0, mix(pal::BAD, WHITE, 0.35));
+                vec![]
             }
+        } else {
+            vec![]
+        };
+        let size = if l.header2.is_some() { 12.0 } else { 13.0 };
+        for (i, (s, c)) in lines.iter().enumerate() {
+            gfx::text(s, f.x + 4.0, f.y + 6.0 + i as f32 * (size + 6.0), gfx::fit_size(s, size, f.w - 8.0), *c);
         }
     }
 
@@ -1051,115 +1025,82 @@ impl Game {
 
     // ----- HUD --------------------------------------------------------------
 
-    /// Top-left: who we are and what we have. Top-right: a few small buttons.
+    /// Top-left: the crystals (and the newcomer's shield while it lasts, a
+    /// connection only when it fails). Top-right: speed, help, menu.
     fn status(&self, ui: &mut Ui, acts: &mut Vec<Act>) {
         let Some(me) = self.world.players.get(self.me as usize) else { return };
-        let pc = player_color(self.me);
         let (x, y) = (16.0, 14.0);
-        draw_poly(x + 6.0, y + 8.0, 6, 6.0, 30.0, with_alpha(pc, 0.9));
-        gfx::text(&me.name, x + 18.0, y, 15.0, mix(pc, WHITE, 0.25));
+        draw_poly(x + 5.0, y + 9.0, 4, 6.0, 0.0, pal::ORE);
         let mins = me.minerals.to_string();
-        gfx::text(&mins, x + 18.0, y + 20.0, 13.0, pal::ORE);
-        let nf = self.world.factory_count(self.me);
-        let line = format!(
-            " cristaux  ·  {} drones  ·  {nf} usine{}",
-            self.world.drone_count(self.me),
-            if nf > 1 { "s" } else { "" }
-        );
-        gfx::text(&line, x + 18.0 + gfx::text_width(&mins, 13.0), y + 20.0, 13.0, pal::DIM);
+        gfx::text(&mins, x + 16.0, y, 16.0, pal::ORE);
+        let mut lx = x + 16.0 + gfx::text_width(&mins, 16.0) + 14.0;
+        let mut note = |s: &str, c: Color| {
+            gfx::text(s, lx, y + 3.0, 12.0, c);
+            lx += gfx::text_width(s, 12.0) + 12.0;
+        };
         if self.world.shielded(self.me) {
             let left = (me.shield_until - self.world.tick) as f32 / TICKS_PER_SEC;
-            let what = if ui::compact() { "protégé" } else { "protégé encore" };
-            let s = format!("{what} {}:{:02}", left as u32 / 60, left as u32 % 60);
-            gfx::text(&s, x + 18.0, y + 38.0, 12.0, with_alpha(pal::ACCENT, 0.7));
+            note(&format!("protégé {}:{:02}", left as u32 / 60, left as u32 % 60), with_alpha(pal::ACCENT, 0.6));
+        }
+        if let Driver::Online { frames, lost, .. } = &self.driver {
+            if lost.is_some() {
+                note("hors ligne", pal::BAD);
+            } else if frames.len() > 8 {
+                note("synchronisation…", pal::WARN);
+            }
         }
 
-        let sw = screen_width();
-        let mut rx = sw - 12.0;
-        let mut ry = 10.0;
-        let small = |ui: &mut Ui, rx: &mut f32, ry: f32, label: &str, active: bool, color: Color| -> bool {
+        let mut rx = screen_width() - 12.0;
+        let small = |ui: &mut Ui, rx: &mut f32, label: &str, active: bool| -> bool {
             let w = gfx::text_width(label, 13.0) + 18.0;
             *rx -= w;
-            let hit = ui.button_ex(Rect::new(*rx, ry, w, 26.0), label, active, true, color);
+            let hit = ui.button_ex(Rect::new(*rx, 10.0, w, 26.0), label, active, true, pal::ACCENT);
             *rx -= 4.0;
             hit
         };
-        if small(ui, &mut rx, ry, "Menu", false, pal::ACCENT) {
+        if small(ui, &mut rx, "Menu", false) {
             acts.push(Act::Menu);
         }
-        if small(ui, &mut rx, ry, "?", self.help_open, pal::ACCENT) {
+        if small(ui, &mut rx, "?", self.help_open) {
             acts.push(Act::ToggleHelp);
         }
-        // Too narrow for one row: the rest goes under the resources line.
-        if ui::compact() {
-            rx = sw - 12.0;
-            ry = 56.0;
-        }
-        match &self.driver {
-            Driver::Offline { .. } => {
-                for (s, label) in [(8.0, "x8"), (4.0, "x4"), (2.0, "x2"), (1.0, "x1"), (0.0, "II")] {
-                    let active = (self.speed - s).abs() < 0.01;
-                    if small(ui, &mut rx, ry, label, active, pal::ACCENT) {
-                        acts.push(Act::Speed(s));
-                    }
-                }
-            }
-            Driver::Online { frames, lost, online, .. } => {
-                let (s, c) = if lost.is_some() {
-                    ("hors ligne".to_string(), pal::BAD)
-                } else if frames.len() > 8 {
-                    ("synchronisation…".to_string(), pal::WARN)
-                } else {
-                    (format!("{} en ligne", online.len()), pal::GOOD)
-                };
-                let w = gfx::text_width(&s, 12.0);
-                rx -= w + 20.0;
-                draw_circle(rx + 4.0, ry + 13.0, 3.0, c);
-                gfx::text(&s, rx + 12.0, ry + 6.0, 12.0, pal::DIM);
+        // Offline, one button walks through the speeds (keys 1-4 and Space too).
+        if !self.is_online() {
+            const SPEEDS: [f32; 5] = [1.0, 2.0, 4.0, 8.0, 0.0];
+            let at = SPEEDS.iter().position(|s| (self.speed - s).abs() < 0.01).unwrap_or(0);
+            let label = if self.speed == 0.0 { "II".to_string() } else { format!("x{}", self.speed) };
+            if small(ui, &mut rx, &label, self.speed != 1.0) {
+                acts.push(Act::Speed(SPEEDS[(at + 1) % SPEEDS.len()]));
             }
         }
     }
 
-    /// One discreet line of guidance, only when it is useful: what the
-    /// current tool expects, or else the next first-steps objective. On a
-    /// narrow screen it wraps. Returns where the space under it begins.
+    /// One short line of guidance: what the current tool expects, or else
+    /// the next first-steps objective and how far along it is. Returns
+    /// where the space under it begins.
     fn objective(&self, ui: &Ui) -> f32 {
-        let y = if ui::compact() { 92.0 } else { 56.0 };
+        let y = 46.0;
         let pulse = with_alpha(pal::TEXT, 0.75 + 0.25 * (get_time() as f32 * 2.0).sin());
         let say = |mouse: &str, finger: &str| -> Vec<(String, Color)> { vec![((if ui.touch { finger } else { mouse }).to_string(), pulse)] };
         let parts: Vec<(String, Color)> = match self.tool {
-            Tool::Build => say(
-                "Nouvelle usine : près de vos unités · clic droit pour annuler",
-                "Nouvelle usine : touchez près de vos unités · « Usine » pour annuler",
-            ),
-            Tool::Target(_) => say(
-                "Cible : cliquez sur la carte · clic droit pour annuler",
-                "Cible : touchez la carte · « Cibler » pour annuler",
-            ),
-            Tool::None if self.landing() => say(
-                "Posez votre première usine : cliquez sur un espace libre (le cercle est un bon endroit)",
-                "Posez votre première usine : touchez un espace libre (le cercle est un bon endroit)",
-            ),
+            Tool::Build => say("Cliquez près de vos unités", "Touchez près de vos unités"),
+            Tool::Target(_) => say("Cliquez sur la cible", "Touchez la cible"),
+            Tool::None if self.landing() => say("Cliquez un espace libre pour votre usine", "Touchez un espace libre pour votre usine"),
             Tool::None => {
                 let Some(i) = quests::current(&self.world, self.me) else { return y };
-                let q = &QUESTS[i];
                 let (done, goal) = quests::progress(&self.world, self.me, i);
-                let mut parts = vec![("Objectif  ".to_string(), pal::DIM), (q.title.to_string(), pal::TEXT)];
+                let mut parts = vec![(QUESTS[i].title.to_string(), with_alpha(pal::TEXT, 0.8))];
                 if goal > 100 {
                     parts.push((format!("  {} %", done * 100 / goal), pal::ACCENT));
                 } else if goal > 1 {
                     parts.push((format!("  {done}/{goal}"), pal::ACCENT));
                 }
-                parts.push((format!("  ·  {}", if ui.touch { finger_hint(q.hint) } else { q.hint }), pal::DIM));
-                if q.reward > 0 {
-                    parts.push((format!("  +{}", q.reward), pal::ORE));
-                }
                 parts
             }
         };
         let sw = screen_width();
-        let lines = gfx::rich_wrapped(&parts, 14.0, sw / 2.0, y + 5.0, sw - 48.0, with_alpha(pal::PANEL, 0.6));
-        y + lines as f32 * 26.0 + 8.0
+        let lines = gfx::rich_wrapped(&parts, 13.0, sw / 2.0, y + 5.0, sw - 48.0, with_alpha(pal::PANEL, 0.45));
+        y + lines as f32 * 25.0 + 8.0
     }
 
     /// Bottom-centre: a handful of quiet buttons (shorter and taller on a
@@ -1274,13 +1215,13 @@ impl Game {
         let h = match self.sel {
             Sel::None => return None,
             Sel::Factory(id) => match self.world.factory(id) {
-                Some(f) if f.owner == self.me => 196.0,
-                Some(_) => 74.0,
+                Some(f) if f.owner == self.me => 112.0,
+                Some(_) => 44.0,
                 None => return None,
             },
             Sel::Drone(id) => match self.world.drone(id) {
-                Some(d) if d.owner == self.me => 132.0,
-                Some(_) => 74.0,
+                Some(d) if d.owner == self.me => 76.0,
+                Some(_) => 44.0,
                 None => return None,
             },
         };
@@ -1293,60 +1234,62 @@ impl Game {
         compact.then_some(y)
     }
 
+    /// What a selected unit is and what can be done with it, nothing more:
+    /// its health only once it is hurt, the pause only once it is paused,
+    /// the target's clear button only when there is a target.
     fn selection_body(&self, ui: &mut Ui, lib: &Library, acts: &mut Vec<Act>, r: Rect) {
         let (x, y, w) = (r.x, r.y, r.w);
         let compact = ui::compact();
+        let health = |hp: i32, max: i32| {
+            if hp < max {
+                let k = hp as f32 / max as f32;
+                thin_bar(x + 12.0, y + 32.0, w - 24.0, k, mix(pal::BAD, pal::GOOD, k));
+            }
+        };
+        let theirs = |owner: u8, what: &str| {
+            let pc = player_color(owner);
+            gfx::text(&self.world.players[owner as usize].name, x + 12.0, y + 10.0, 15.0, mix(pc, WHITE, 0.2));
+            gfx::text(what, x + w - 12.0 - gfx::text_width(what, 12.0), y + 13.0, 12.0, pal::DIM);
+        };
         match self.sel {
             Sel::None => {}
             Sel::Factory(id) => {
                 let Some(f) = self.world.factory(id) else { return };
-                let mine = f.owner == self.me;
-                let r = Rect::new(x, y, w, if mine { 196.0 } else { 74.0 });
                 ui.panel(r);
-                let pc = player_color(f.owner);
-                let owner = &self.world.players[f.owner as usize].name;
-                gfx::text(&format!("Usine #{id}"), x + 12.0, y + 10.0, 15.0, mix(pc, WHITE, 0.2));
-                gfx::text(owner, x + w - 12.0 - gfx::text_width(owner, 12.0), y + 13.0, 12.0, pal::DIM);
-                thin_bar(x + 12.0, y + 34.0, w - 24.0, f.hp as f32 / FACTORY_HP as f32, mix(pal::BAD, pal::GOOD, f.hp as f32 / FACTORY_HP as f32));
+                health(f.hp, FACTORY_HP);
                 let pname = self.world.program_name(f.prog);
-                gfx::text("programme", x + 12.0, y + 46.0, 12.0, pal::DIM);
-                gfx::text(pname, x + 90.0, y + 45.0, 14.0, pal::ACCENT);
-                if !mine {
+                if f.owner != self.me {
+                    theirs(f.owner, "usine");
                     return;
                 }
-                let mut cy = y + 70.0;
-                let edit = if ui.touch { "Programme" } else { "Programme · E" };
-                if ui.button_ex(Rect::new(x + 12.0, cy, 128.0, 28.0), edit, false, true, pal::GOOD) {
+                gfx::text(pname, x + 12.0, y + 10.0, 15.0, pal::ACCENT);
+                if !f.enabled && ui.button_ex(Rect::new(x + w - 102.0, y + 6.0, 90.0, 24.0), "Reprendre", false, true, pal::WARN) {
+                    acts.push(Act::Issue(Command::ToggleFactory { factory: id }));
+                }
+                let mut cy = y + 40.0;
+                if ui.button_ex(Rect::new(x + 12.0, cy, 128.0, 28.0), "Programme", false, true, pal::GOOD) {
                     acts.push(Act::OpenProgram(pname.to_string(), Some(id)));
                 }
                 if ui.button_ex(Rect::new(x + 146.0, cy, 132.0, 28.0), "Changer…", self.program_menu == Some(id), true, pal::ACCENT) {
                     acts.push(Act::ToggleProgramMenu(id));
                 }
-                cy += 38.0;
+                cy += 36.0;
                 let n = self.world.drones_of_factory(id);
-                gfx::text(&format!("drones {n}/{}", f.quota), x + 12.0, cy + 7.0, 13.0, pal::TEXT);
+                gfx::text(&format!("drones {n}/{}", f.quota), x + 12.0, cy + 7.0, 13.0, pal::DIM);
                 if ui.button(Rect::new(x + 112.0, cy, 28.0, 26.0), "−") && f.quota > 0 {
                     acts.push(Act::Issue(Command::SetQuota { factory: id, quota: f.quota - 1 }));
                 }
                 if ui.button(Rect::new(x + 144.0, cy, 28.0, 26.0), "+") && f.quota < MAX_QUOTA {
                     acts.push(Act::Issue(Command::SetQuota { factory: id, quota: f.quota + 1 }));
                 }
-                let (label, col) = if f.enabled { ("en production", pal::GOOD) } else { ("en pause", pal::WARN) };
-                if ui.button_ex(Rect::new(x + 180.0, cy, 98.0, 26.0), label, false, true, col) {
-                    acts.push(Act::Issue(Command::ToggleFactory { factory: id }));
-                }
-                cy += 36.0;
-                let targeting = self.tool == Tool::Target(id);
-                let tl = if f.mem[2] == 1 { format!("cible {}, {}", f.mem[0], f.mem[1]) } else { "pas de cible".into() };
-                gfx::text(&tl, x + 12.0, cy + 7.0, 13.0, if f.mem[2] == 1 { pal::TEXT } else { pal::DIM });
-                let aim = if ui.touch { "Cibler" } else { "Cibler · T" };
-                if ui.button_ex(Rect::new(x + 146.0, cy, 98.0, 26.0), aim, targeting, true, pal::PINK) {
+                let aim = Rect::new(x + 180.0, cy, 70.0, 26.0);
+                if ui.button_ex(aim, "Cibler", self.tool == Tool::Target(id), true, pal::PINK) {
                     acts.push(Act::Tool(Tool::Target(id)));
                 }
-                if ui.hover(Rect::new(x + 146.0, cy, 98.0, 26.0)) {
+                if ui.hover(aim) {
                     ui.tooltip("Écrit X, Y dans la mémoire 0 et 1 de l'usine (2 = 1) : « chasseur » s'y rend");
                 }
-                if ui.button_ex(Rect::new(x + 250.0, cy, 28.0, 26.0), "×", false, f.mem[2] != 0, pal::PINK) {
+                if f.mem[2] != 0 && ui.button_ex(Rect::new(x + 254.0, cy, 24.0, 26.0), "×", false, true, pal::PINK) {
                     acts.push(Act::Issue(Command::SetMemory { factory: id, index: 2, value: 0 }));
                 }
 
@@ -1356,7 +1299,7 @@ impl Game {
                     let (cols, rh) = if compact { (2, 32.0) } else { (1, 26.0) };
                     let rows = n.div_ceil(cols);
                     let ph = 10.0 + rows as f32 * rh;
-                    let pr = if compact { Rect::new(x, y - ph - 6.0, w, ph) } else { Rect::new(x - 172.0, y + 70.0, 164.0, ph) };
+                    let pr = if compact { Rect::new(x, y - ph - 6.0, w, ph) } else { Rect::new(x - 172.0, y + 40.0, 164.0, ph) };
                     ui.panel(pr);
                     let cw = (pr.w - 10.0 - 6.0 * (cols - 1) as f32) / cols as f32;
                     for (i, e) in lib.entries.iter().take(n).enumerate() {
@@ -1383,25 +1326,22 @@ impl Game {
             }
             Sel::Drone(id) => {
                 let Some(d) = self.world.drone(id) else { return };
-                let mine = d.owner == self.me;
-                let r = Rect::new(x, y, w, if mine { 132.0 } else { 74.0 });
                 ui.panel(r);
-                let pc = player_color(d.owner);
-                gfx::text(&format!("Drone #{id}"), x + 12.0, y + 10.0, 15.0, mix(pc, WHITE, 0.2));
-                let owner = &self.world.players[d.owner as usize].name;
-                gfx::text(owner, x + w - 12.0 - gfx::text_width(owner, 12.0), y + 13.0, 12.0, pal::DIM);
-                thin_bar(x + 12.0, y + 34.0, w - 24.0, d.hp as f32 / DRONE_HP as f32, mix(pal::BAD, pal::GOOD, d.hp as f32 / DRONE_HP as f32));
+                health(d.hp, DRONE_HP);
                 let (state, col) = doing_label(d.doing);
-                gfx::text(&format!("{state} · soute {}/{CARGO_CAP}", d.cargo), x + 12.0, y + 46.0, 13.0, col);
-                if !mine {
+                if d.owner != self.me {
+                    theirs(d.owner, &state);
                     return;
                 }
-                gfx::text(&format!("programme « {} »", self.world.program_name(d.prog)), x + 12.0, y + 66.0, 12.0, pal::DIM);
-                let debug = if ui.touch { "Déboguer" } else { "Déboguer · E" };
-                if ui.button_ex(Rect::new(x + 12.0, y + 92.0, 128.0, 28.0), debug, false, true, pal::GOOD) {
+                gfx::text(&state, x + 12.0, y + 10.0, 15.0, col);
+                if d.cargo > 0 {
+                    let load = format!("{}/{CARGO_CAP}", d.cargo);
+                    gfx::text(&load, x + w - 12.0 - gfx::text_width(&load, 13.0), y + 12.0, 13.0, pal::ORE);
+                }
+                if ui.button_ex(Rect::new(x + 12.0, y + 40.0, 128.0, 28.0), "Déboguer", false, true, pal::GOOD) {
                     acts.push(Act::OpenDebug(id));
                 }
-                if ui.button_ex(Rect::new(x + 146.0, y + 92.0, 132.0, 28.0), "Suivre", self.follow, true, pal::ACCENT) {
+                if ui.button_ex(Rect::new(x + 146.0, y + 40.0, 132.0, 28.0), "Suivre", self.follow, true, pal::ACCENT) {
                     acts.push(Act::Follow(!self.follow));
                 }
             }
@@ -1766,17 +1706,6 @@ impl Game {
     }
 }
 
-/// First-steps hints speak of the mouse and keys; this is what they say to
-/// a finger.
-fn finger_hint(hint: &'static str) -> &'static str {
-    match hint {
-        "clic gauche sur un espace libre" => "touchez un espace libre",
-        "« Programme » (E), modifiez, Ctrl+S" => "« Programme », modifiez, « Appliquer »",
-        "B, près de vos unités" => "« Usine », près de vos unités",
-        other => other,
-    }
-}
-
 pub fn bot_name(i: usize) -> String {
     const NAMES: &[&str] = &["Orion", "Vega", "Lyra", "Rigel", "Deneb", "Sirius", "Altaïr", "Antarès"];
     format!("IA {}", NAMES[i % NAMES.len()])
@@ -1980,18 +1909,5 @@ fn help_scrolling(ui: &mut Ui, acts: &mut Vec<Act>, scroll: &mut f32) {
         let bar = body.h * body.h / total;
         let by = body.y + (body.h - bar) * *scroll / max;
         draw_rectangle(r.x + r.w - 5.0, by, 2.0, bar, with_alpha(pal::ACCENT, 0.5));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hints_naming_the_mouse_or_keys_have_a_finger_version() {
-        for q in QUESTS.iter() {
-            let mouse = ["clic", "Ctrl", "(E)", "B,"].iter().any(|k| q.hint.contains(k));
-            assert!(!mouse || finger_hint(q.hint) != q.hint, "no finger version of « {} »", q.hint);
-        }
     }
 }

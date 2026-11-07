@@ -11,7 +11,7 @@ use dronoids::rules::*;
 use dronoids::sim::{ore_radius, Doing, Event, World};
 
 use crate::fx::Fx;
-use crate::gfx::{self, arc, mix, pal, player_color, poly_fill, poly_lines, regular, scale_rgb, with_alpha};
+use crate::gfx::{arc, mix, pal, player_color, poly_fill, poly_lines, regular, scale_rgb, with_alpha};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Cam {
@@ -630,7 +630,6 @@ pub fn draw_minimap(world: &World, cam: &Cam, r: Rect, sight: &Sight, mouse: Vec
         draw_rectangle_lines(vx, vy, vw, vh, 1.5, with_alpha(WHITE, 0.7));
     }
     draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5, pal::PANEL_EDGE);
-    gfx::text("CARTE", r.x + 6.0, r.y + 4.0, 12.0, pal::DIM);
     if clicked && r.contains(mouse) {
         return Some(vec2((mouse.x - r.x) / k, (mouse.y - r.y) / k));
     }
