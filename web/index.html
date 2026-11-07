@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, interactive-widget=resizes-content">
     <title>Dronoids</title>
     <meta name="description" content="Un secteur partagé où vous programmez vos drones dans un petit assembleur.">
     <style>
@@ -21,6 +21,28 @@
             height: 100%;
             outline: none;
             z-index: 1;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-touch-callout: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        /* Where the phone's keyboard types (see god_net.js): invisible, and
+           16px so that iOS does not zoom in when it gets the focus. */
+        #keys {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            border: 0;
+            opacity: 0;
+            resize: none;
+            font-size: 16px;
+            caret-color: transparent;
+            pointer-events: none;
+            z-index: 0;
         }
         #loading {
             position: absolute;
@@ -38,6 +60,7 @@
 <body>
     <div id="loading">DRONOIDS · chargement…</div>
     <canvas id="glcanvas" tabindex="1"></canvas>
+    <textarea id="keys" tabindex="-1" aria-hidden="true" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
     <script src="mq_js_bundle.js"></script>
     <script src="god_net.js"></script>
     <script>

@@ -121,6 +121,8 @@ fn parse_args() -> Args {
 #[macroquad::main(window_conf)]
 async fn main() {
     let args = parse_args();
+    // Fingers are read as such (see Ui): one sliding pans, two pinch.
+    simulate_mouse_with_touch(false);
     gfx::init_font();
     let mut bloom = Bloom::new();
     let mut lib = Library::load();

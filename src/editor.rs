@@ -8,7 +8,7 @@ use macroquad::prelude::*;
 use dronoids::vm::{self, AsmError, Cat, TokKind};
 
 use crate::gfx::{self, pal, with_alpha};
-use crate::ui::Ui;
+use crate::ui::{Typed, Ui};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Pos {
@@ -43,6 +43,8 @@ pub struct Editor {
     redo: Vec<Snapshot>,
     last_kind: EditKind,
     dragging: bool,
+    /// A finger landed in the code: the scroll and finger height back then.
+    touch_scroll: Option<(f32, f32)>,
     blink: f32,
     follow_cursor: bool,
 }
@@ -93,6 +95,7 @@ impl Editor {
             redo: vec![],
             last_kind: EditKind::None,
             dragging: false,
+            touch_scroll: None,
             blink: 0.0,
             follow_cursor: false,
         }
@@ -382,7 +385,39 @@ impl Editor {
             self.scroll = (self.scroll - ui.wheel.signum() * 3.0).clamp(0.0, max_scroll);
         }
 
-        if ui.pressed {
+        if ui.touch {
+            // A finger slides the code; a tap puts the cursor there.
+            if ui.pressed {
+                if r.contains(ui.mouse) {
+                    ui.pressed = false;
+                    self.touch_scroll = Some((self.scroll, ui.mouse.y));
+                    if !self.read_only {
+                        ui.text_touched = true;
+                    }
+                } else {
+                    self.focused = false;
+                }
+            }
+            if let Some((from, y0)) = self.touch_scroll {
+                if ui.drag.is_some() {
+                    self.scroll = (from - (ui.mouse.y - y0) / self.line_h()).clamp(0.0, max_scroll);
+                }
+                if ui.tap {
+                    self.focused = true;
+                    let p = self.pos_at(r, ui.mouse);
+                    if ui.double_click {
+                        self.select_word_at(p);
+                    } else {
+                        self.anchor = None;
+                        self.cur = p;
+                    }
+                    self.blink = 0.0;
+                }
+                if !ui.down {
+                    self.touch_scroll = None;
+                }
+            }
+        } else if ui.pressed {
             if r.contains(ui.mouse) {
                 ui.pressed = false;
                 self.focused = true;
@@ -436,6 +471,29 @@ impl Editor {
                 self.snapshot(if c == ' ' { EditKind::Other } else { EditKind::Typing });
                 self.insert(&c.to_string());
                 self.blink = 0.0;
+            }
+        }
+        // The phone's keyboard.
+        if editable {
+            ui.text_focus = true;
+            for t in ui.typed.clone() {
+                match t {
+                    Typed::Char(c) if !c.is_control() => {
+                        self.snapshot(if c == ' ' { EditKind::Other } else { EditKind::Typing });
+                        self.insert(&c.to_string());
+                    }
+                    Typed::Char(_) => {}
+                    Typed::Back => {
+                        self.snapshot(EditKind::Other);
+                        self.backspace();
+                    }
+                    Typed::Enter => {
+                        self.snapshot(EditKind::Other);
+                        self.newline();
+                    }
+                }
+                self.blink = 0.0;
+                self.follow_cursor = true;
             }
         }
 

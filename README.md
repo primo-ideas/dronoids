@@ -62,9 +62,20 @@ Rust stable récent (édition 2024). Dépendances : `macroquad` (rendu), `serde`
 | `F1` | aide du langage |
 | Hors ligne | `Espace` pause, `1`-`4` vitesse, `N` tick suivant |
 
+Sur téléphone ou tablette :
+
+| Geste | Effet |
+| --- | --- |
+| Toucher | sélectionner, poser une usine ou une cible ; deux fois sur une usine pour son programme |
+| Un doigt glissé | déplacer la caméra (dans l'éditeur et l'aide : faire défiler) |
+| Deux doigts | zoomer, et déplacer la caméra |
+| Toucher un champ de texte ou le code | ouvrir le clavier du téléphone |
+
 L'écran reste volontairement épuré : une ligne d'état en haut à gauche, un dock en
 bas, et une seule ligne d'objectif (l'outil en cours, sinon le prochain premier pas).
-Carte et colonies s'ouvrent à la demande.
+Carte et colonies s'ouvrent à la demande. Sur un écran étroit (moins de 700 px de
+large, un téléphone tenu droit), le panneau de sélection passe en bas au-dessus du
+dock, et l'éditeur comme l'aide occupent tout l'écran.
 
 ## DASM en bref
 

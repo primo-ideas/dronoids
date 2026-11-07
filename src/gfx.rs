@@ -97,6 +97,64 @@ pub fn char_width(size: f32) -> f32 {
     text_width("MMMMMMMMMM", size) / 10.0
 }
 
+/// `s` cut at spaces into lines no wider than `w` (a longer word stays whole).
+pub fn wrap(s: &str, size: f32, w: f32) -> Vec<String> {
+    let mut lines = vec![];
+    let mut line = String::new();
+    for word in s.split(' ') {
+        let longer = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+        if !line.is_empty() && text_width(&longer, size) > w {
+            lines.push(std::mem::replace(&mut line, word.to_string()));
+        } else {
+            line = longer;
+        }
+    }
+    lines.push(line);
+    lines
+}
+
+/// The largest size up to `size` at which `s` fits in `w` (never below 9).
+pub fn fit_size(s: &str, size: f32, w: f32) -> f32 {
+    let tw = text_width(s, size);
+    if tw > w && tw > 0.0 { (size * w / tw).floor().max(9.0) } else { size }
+}
+
+/// Coloured pieces of text, cut at spaces into lines no wider than `w`,
+/// each centred on `cx`, the first at `y`. Returns how many lines.
+pub fn rich_wrapped(parts: &[(String, Color)], size: f32, cx: f32, y: f32, w: f32, backdrop: Color) -> usize {
+    let mut lines: Vec<Vec<(String, Color)>> = vec![vec![]];
+    let mut used = 0.0;
+    for (t, c) in parts {
+        for word in t.split_inclusive(' ') {
+            let ww = text_width(word, size);
+            let trimmed = text_width(word.trim_end(), size);
+            if used > 0.0 && used + trimmed > w {
+                lines.push(vec![]);
+                used = 0.0;
+            }
+            // A line starts with words, not with blanks or a separator.
+            if used == 0.0 && matches!(word.trim(), "" | "·") {
+                continue;
+            }
+            lines.last_mut().unwrap().push((word.to_string(), *c));
+            used += ww;
+        }
+    }
+    let lh = size + 12.0;
+    for (i, line) in lines.iter().enumerate() {
+        let full: String = line.iter().map(|p| p.0.as_str()).collect();
+        let lw = text_width(full.trim_end(), size);
+        let mut x = cx - lw / 2.0;
+        let ly = y + i as f32 * lh;
+        draw_rectangle(x - 14.0, ly - 5.0, lw + 28.0, lh, backdrop);
+        for (t, c) in line {
+            text(t, x, ly, size, *c);
+            x += text_width(t, size);
+        }
+    }
+    lines.len()
+}
+
 // ---------------------------------------------------------------------------
 // Shapes
 // ---------------------------------------------------------------------------

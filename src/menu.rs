@@ -148,7 +148,8 @@ impl Menu {
             poly_lines(&regular(c, 11.0, 6, PI / 6.0 + self.view.time * 0.4 * (i as f32 - 1.0)), 2.0, with_alpha(col, 0.85));
         }
         gfx::text_centered("DRONOIDS", sw / 2.0, ty, 54.0, mix(pal::ACCENT, WHITE, 0.2));
-        gfx::text_centered("un secteur partagé · des drones que vous programmez", sw / 2.0, ty + 66.0, 15.0, with_alpha(pal::PINK, 0.85));
+        let tagline = "un secteur partagé · des drones que vous programmez";
+        gfx::text_centered(tagline, sw / 2.0, ty + 66.0, gfx::fit_size(tagline, 15.0, sw - 24.0), with_alpha(pal::PINK, 0.85));
         bloom.finish();
 
         let out = match self.screen {
@@ -161,7 +162,7 @@ impl Menu {
 
     fn main_screen(&mut self, ui: &mut Ui) -> MenuOut {
         let (sw, sh) = (screen_width(), screen_height());
-        let w = 340.0;
+        let w = (sw - 56.0).min(340.0);
         let x = sw / 2.0 - w / 2.0;
         let mut y = (sh * 0.40).max(250.0);
         draw_rectangle(x - 24.0, y - 34.0, w + 48.0, 172.0, with_alpha(pal::PANEL, 0.7));
@@ -236,7 +237,8 @@ impl Menu {
 
     fn connecting_screen(&mut self, ui: &mut Ui) -> MenuOut {
         let (sw, sh) = (screen_width(), screen_height());
-        let r = Rect::new(sw / 2.0 - 230.0, (sh * 0.42).max(240.0), 460.0, 150.0);
+        let rw = (sw - 24.0).min(460.0);
+        let r = Rect::new(sw / 2.0 - rw / 2.0, (sh * 0.42).max(240.0), rw, 150.0);
         ui.panel(r);
         let name = self.settings.name.clone();
         let token = self.settings.token.clone();

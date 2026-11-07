@@ -87,6 +87,13 @@ mod imp {
     pub fn is_web() -> bool {
         false
     }
+
+    /// Desktop keyboards are always there.
+    pub fn keyboard(_open: bool) {}
+
+    pub fn typed() -> String {
+        String::new()
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -98,6 +105,9 @@ mod imp {
         fn god_storage_write(kptr: *const u8, klen: usize, vptr: *const u8, vlen: usize);
         fn god_default_server(ptr: *mut u8, cap: usize) -> i32;
         fn god_random() -> u32;
+        fn god_keyboard(open: u32);
+        fn god_typed_len() -> i32;
+        fn god_typed_take(ptr: *mut u8, len: usize);
     }
 
     pub fn load(key: &str) -> Option<String> {
@@ -133,6 +143,24 @@ mod imp {
     pub fn is_web() -> bool {
         true
     }
+
+    /// The phone's on-screen keyboard: `true` brings it up when the finger
+    /// that touched a text field is lifted (browsers only open it then).
+    pub fn keyboard(open: bool) {
+        unsafe { god_keyboard(open as u32) };
+    }
+
+    /// What was typed on the on-screen keyboard since last call; U+0008 is
+    /// a backspace, `\n` is Enter.
+    pub fn typed() -> String {
+        let len = unsafe { god_typed_len() };
+        if len <= 0 {
+            return String::new();
+        }
+        let mut buf = vec![0u8; len as usize];
+        unsafe { god_typed_take(buf.as_mut_ptr(), buf.len()) };
+        String::from_utf8(buf).unwrap_or_default()
+    }
 }
 
-pub use imp::{default_name, default_server, is_web, load, random_u32, store};
+pub use imp::{default_name, default_server, is_web, keyboard, load, random_u32, store, typed};

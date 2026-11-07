@@ -1,6 +1,7 @@
 // Dronoids: the bits of the browser the game needs, as a miniquad
 // plugin. WebSockets (the game's only network), local storage (settings and
-// programs), the default server address and a good source of randomness.
+// programs), the default server address, a good source of randomness and
+// the phone's on-screen keyboard.
 "use strict";
 
 (function () {
@@ -48,6 +49,108 @@
             }
         } catch (e) { /* storage unavailable */ }
         return key;
+    }
+
+    // The phone's keyboard. Browsers only bring it up for a focused text
+    // field, and only when the focus comes from a touch being handled: the
+    // game arms it when a finger lands on one of its text fields, and the
+    // field is focused as that finger is lifted (unless it slid away). What
+    // is typed is read back by comparing the hidden field with what it held
+    // before: U+0008 for each character erased, then what was added.
+    const PAD = "  ";
+    let keys = null;
+    let typed = "";
+    let last = PAD;
+    let composing = false;
+    let armedAt = -1;
+    let touchStart = 0;
+    let touchFrom = null;
+    let fullHeight = 0;
+    let shrunk = false;
+
+    function resetKeys() {
+        keys.value = PAD;
+        keys.setSelectionRange(PAD.length, PAD.length);
+        last = PAD;
+    }
+
+    function readKeys() {
+        const before = Array.from(last);
+        const now = Array.from(keys.value);
+        let same = 0;
+        while (same < before.length && same < now.length && before[same] === now[same]) {
+            same++;
+        }
+        typed += "\b".repeat(before.length - same) + now.slice(same).join("");
+        last = keys.value;
+        // Words being composed (suggestions, accents) are left alone until done.
+        if (!composing) {
+            resetKeys();
+        }
+    }
+
+    // While the keyboard is up, the game fits in what is left of the screen.
+    // A keyboard put away without leaving the field (Android's back button)
+    // gives the height back: then leave the field, so that the next touch
+    // on a text field brings the keyboard up again.
+    function fitCanvas() {
+        const vv = window.visualViewport;
+        const focused = document.activeElement === keys;
+        if (focused && vv) {
+            if (vv.height < fullHeight - 100) {
+                shrunk = true;
+            } else if (shrunk) {
+                keys.blur();
+                return;
+            }
+        }
+        const canvas = document.getElementById("glcanvas");
+        const h = focused && vv ? vv.height + "px" : "";
+        if (canvas.style.height !== h) {
+            canvas.style.height = h;
+            window.dispatchEvent(new Event("resize"));
+        }
+        window.scrollTo(0, 0);
+    }
+
+    function setupKeys() {
+        keys = document.getElementById("keys");
+        const canvas = document.getElementById("glcanvas");
+        if (!keys || !canvas) {
+            return;
+        }
+        resetKeys();
+        keys.addEventListener("input", readKeys);
+        keys.addEventListener("compositionstart", function () { composing = true; });
+        keys.addEventListener("compositionend", function () {
+            composing = false;
+            readKeys();
+        });
+        keys.addEventListener("focus", function () {
+            fullHeight = window.visualViewport ? window.visualViewport.height : 0;
+            shrunk = false;
+            fitCanvas();
+        });
+        keys.addEventListener("blur", fitCanvas);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener("resize", fitCanvas);
+        }
+        canvas.addEventListener("touchstart", function (e) {
+            if (e.touches.length === 1) {
+                const t = e.changedTouches[0];
+                touchStart = performance.now();
+                touchFrom = [t.clientX, t.clientY];
+            }
+        }, { passive: true });
+        canvas.addEventListener("touchend", function (e) {
+            const t = e.changedTouches[0];
+            const still = touchFrom !== null && Math.hypot(t.clientX - touchFrom[0], t.clientY - touchFrom[1]) < 12;
+            if (armedAt >= touchStart && still && document.activeElement !== keys) {
+                keys.focus({ preventScroll: true });
+                resetKeys();
+            }
+            armedAt = -1;
+        }, { passive: true });
     }
 
     miniquad_add_plugin({
@@ -132,6 +235,24 @@
             env.god_random = function () {
                 return window.crypto.getRandomValues(new Uint32Array(1))[0];
             };
+
+            env.god_keyboard = function (open) {
+                if (open) {
+                    armedAt = performance.now();
+                } else {
+                    armedAt = -1;
+                    if (keys && document.activeElement === keys) {
+                        keys.blur();
+                    }
+                }
+            };
+            env.god_typed_len = function () {
+                return typed.length === 0 ? 0 : encoder.encode(typed).length;
+            };
+            env.god_typed_take = function (ptr, len) {
+                writeBytes(encoder.encode(typed), ptr, len);
+                typed = "";
+            };
         },
         on_init: function () {
             // The game draws from now on: drop the loading text behind the canvas.
@@ -139,6 +260,7 @@
             if (loading) {
                 loading.remove();
             }
+            setupKeys();
         },
     });
 })();
