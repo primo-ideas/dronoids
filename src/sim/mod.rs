@@ -1,15 +1,19 @@
-//! The deterministic simulation of a large, continuous world: asteroids,
-//! crystal deposits, factories and dronoids moving freely.
+//! The deterministic simulation of an immense, continuous world: asteroids
+//! and crystal deposits generated as they are discovered (`terrain`),
+//! factories and dronoids moving freely.
 //!
 //! Positions are fixed-point integers (`rules::FP` per unit) and angles are
 //! whole degrees: given the same seed and the same commands, every machine
 //! computes the exact same world, which is what multiplayer relies on.
 
 mod compat;
+pub mod fog;
 pub mod grid;
 pub mod map;
 pub mod quests;
+pub mod terrain;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -19,8 +23,10 @@ use crate::programs;
 use crate::rng::{mix, Fnv, Rng};
 use crate::rules::*;
 use crate::vm::{self, thing, Action, Program, Senses, Sensor, Vm};
+use fog::FogMap;
 use grid::Grid;
 pub use map::ore_radius;
+use terrain::{Terrain, NATURAL};
 
 const GRID_CELL: i32 = 8 * FP;
 /// Largest rock radius produced by the generator (for grid queries).
@@ -48,6 +54,29 @@ impl Ore {
     }
 }
 
+/// A deposit as it stands now, from anywhere in the world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OreSpot {
+    pub id: u64,
+    pub x: i32,
+    pub y: i32,
+    pub amount: i32,
+}
+
+impl OreSpot {
+    pub fn radius(&self) -> i32 {
+        ore_radius(self.amount)
+    }
+}
+
+/// A generated deposit that has been mined: all that is ever stored of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Worn {
+    pub left: i32,
+    /// Whole again from this tick on.
+    pub until: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Player {
     pub id: u8,
@@ -64,7 +93,11 @@ pub struct Player {
     pub home: (i32, i32),
     /// Protected (can neither attack nor be attacked) until this tick.
     pub shield_until: u64,
-    /// Explored space, one bit per `FOG_CELL` square (row-major).
+    /// What this player has seen.
+    #[serde(default)]
+    pub seen: FogMap,
+    /// Older saves: the explored first sector, row by row (moved to `seen`).
+    #[serde(default)]
     pub explored: Vec<u64>,
     /// First-steps objectives completed (bit i = `quests::QUESTS[i]`).
     #[serde(default)]
@@ -174,11 +207,13 @@ pub struct Target {
     pub dy: i32,
     /// Gap between the two bodies.
     pub gap: i32,
-    pub id: u32,
+    pub id: u64,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct World {
+    /// Side of the first sector of an older world, generated whole (rocks
+    /// and ores below); 0 in newer worlds, entirely generated on the way.
     pub size: i32,
     pub seed: u64,
     pub tick: u64,
@@ -186,14 +221,15 @@ pub struct World {
     #[serde(skip)]
     pub rocks: Vec<Rock>,
     pub ores: Vec<Ore>,
+    /// Generated deposits that have been mined (nothing else is stored).
+    #[serde(default)]
+    pub worn: BTreeMap<u64, Worn>,
     pub players: Vec<Player>,
     pub factories: Vec<Factory>,
     // The name in saves written before the rename.
     #[serde(alias = "drones")]
     pub dronoids: Vec<Dronoid>,
     pub programs: Vec<ProgEntry>,
-    #[serde(skip)]
-    pub slots: Vec<(i32, i32)>,
     next_id: u32,
     /// Drives crystal regrowth.
     rng: Rng,
@@ -207,6 +243,8 @@ pub struct World {
     ore_grid: Grid,
     #[serde(skip)]
     dronoid_grid: Grid,
+    #[serde(skip)]
+    terrain: Terrain,
 }
 
 fn gap_between(dx: i32, dy: i32, r1: i32, r2: i32) -> i32 {
@@ -215,61 +253,82 @@ fn gap_between(dx: i32, dy: i32, r1: i32, r2: i32) -> i32 {
 
 impl World {
     pub fn new(seed: u64) -> World {
-        let m = map::generate(seed, WORLD_SIZE);
-        let mut next_id = 1;
-        let ores = m
-            .ores
-            .iter()
-            .map(|&(x, y, amount)| {
-                let id = next_id;
-                next_id += 1;
-                Ore { id, x, y, amount }
-            })
-            .collect();
-        let ore_target = m.ores.len() as u32;
         let mut w = World {
-            size: m.size,
+            size: 0,
             seed,
             tick: 0,
-            rocks: m.rocks,
-            ores,
+            rocks: vec![],
+            ores: vec![],
+            worn: BTreeMap::new(),
             players: vec![],
             factories: vec![],
             dronoids: vec![],
             programs: vec![],
-            slots: m.slots,
-            next_id,
+            next_id: 1,
             rng: Rng::new(seed ^ 0x5EED),
-            ore_target,
+            ore_target: 0,
             events: vec![],
             rock_grid: Grid::default(),
             ore_grid: Grid::default(),
             dronoid_grid: Grid::default(),
+            terrain: Terrain::default(),
         };
+        w.rebuild_caches();
+        w
+    }
+
+    /// A world with a first sector generated whole, like the older ones.
+    #[cfg(test)]
+    pub(crate) fn with_first_sector(seed: u64) -> World {
+        let m = map::generate(seed, WORLD_SIZE);
+        let mut w = World::new(seed);
+        w.size = m.size;
+        w.ore_target = m.ores.len() as u32;
+        for (x, y, amount) in m.ores {
+            let id = w.new_id();
+            w.ores.push(Ore { id, x, y, amount });
+        }
         w.rebuild_caches();
         w
     }
 
     /// Rebuild what is not serialized (compiled programs, spatial grids).
     pub fn rebuild_caches(&mut self) {
-        if self.rocks.is_empty() || self.slots.is_empty() {
-            let m = map::generate(self.seed, self.size / FP);
-            self.rocks = m.rocks;
-            self.slots = m.slots;
+        if self.size > 0 && self.rocks.is_empty() {
+            self.rocks = map::generate(self.seed, self.size / FP).rocks;
         }
+        self.terrain = Terrain::new(self.seed, self.size);
+        self.adopt_old_maps();
         for p in &mut self.programs {
             p.code = Some(Arc::new(vm::assemble(&p.name, &p.source).unwrap_or_else(|_| Program::empty(&p.name))));
         }
-        self.rock_grid = Grid::new(self.size, GRID_CELL);
+        self.rock_grid = Grid::new(GRID_CELL);
         for (i, r) in self.rocks.iter().enumerate() {
             self.rock_grid.insert(r.x, r.y, i as u32);
         }
-        self.ore_grid = Grid::new(self.size, GRID_CELL);
+        self.ore_grid = Grid::new(GRID_CELL);
         for o in &self.ores {
             self.ore_grid.insert(o.x, o.y, o.id);
         }
-        self.dronoid_grid = Grid::new(self.size, GRID_CELL);
+        self.dronoid_grid = Grid::new(GRID_CELL);
         self.index_dronoids();
+    }
+
+    /// Older saves kept what a player had explored of the first sector row
+    /// by row.
+    fn adopt_old_maps(&mut self) {
+        let n = (self.size + FOG_CELL - 1) / FOG_CELL;
+        for p in self.players.iter_mut().filter(|p| !p.explored.is_empty()) {
+            for cy in 0..n {
+                for cx in 0..n {
+                    let i = (cy * n + cx) as usize;
+                    if p.explored.get(i / 64).is_some_and(|w| w & (1 << (i % 64)) != 0) {
+                        p.seen.set(cx, cy);
+                    }
+                }
+            }
+            p.explored = vec![];
+        }
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -379,37 +438,69 @@ impl World {
     }
 
     pub fn inside(&self, x: i32, y: i32, r: i32) -> bool {
-        x >= r && y >= r && x <= self.size - r && y <= self.size - r
+        x.abs() + r <= WORLD_EXTENT && y.abs() + r <= WORLD_EXTENT
+    }
+
+    /// Every asteroid centred in the rectangle, with something to tell them apart.
+    pub fn rocks_in(&self, x0: i32, y0: i32, x1: i32, y1: i32, mut f: impl FnMut(u64, &Rock)) {
+        let mut near = vec![];
+        self.rock_grid.query_rect(x0, y0, x1, y1, &mut near);
+        for &i in &near {
+            f(i as u64, &self.rocks[i as usize]);
+        }
+        self.terrain.each_rock(x0, y0, x1, y1, |k| f(k.seed as u64, k));
+    }
+
+    /// Every deposit still there and centred in the rectangle.
+    pub fn ores_in(&self, x0: i32, y0: i32, x1: i32, y1: i32, mut f: impl FnMut(OreSpot)) {
+        let mut near = vec![];
+        self.ore_grid.query_rect(x0, y0, x1, y1, &mut near);
+        for &id in &near {
+            let Some(i) = self.ore_index(id) else { continue };
+            let o = &self.ores[i];
+            if o.amount > 0 {
+                f(OreSpot { id: o.id as u64, x: o.x, y: o.y, amount: o.amount });
+            }
+        }
+        self.terrain.each_deposit(x0, y0, x1, y1, |d| {
+            let amount = self.worn.get(&d.id).map_or(d.amount, |w| w.left);
+            if amount > 0 {
+                f(OreSpot { id: d.id, x: d.x, y: d.y, amount });
+            }
+        });
+    }
+
+    fn rocks_near(&self, x: i32, y: i32, reach: i32, f: impl FnMut(u64, &Rock)) {
+        self.rocks_in(x - reach, y - reach, x + reach, y + reach, f);
+    }
+
+    pub fn ores_near(&self, x: i32, y: i32, reach: i32, f: impl FnMut(OreSpot)) {
+        self.ores_in(x - reach, y - reach, x + reach, y + reach, f);
     }
 
     /// Would a body of radius `r` moving from `from` to `to` hit something
     /// it was not already touching?
     pub fn blocked(&self, from: (i32, i32), to: (i32, i32), r: i32) -> bool {
-        if !self.inside(to.0, to.1, r) {
-            return true;
-        }
+        !self.inside(to.0, to.1, r) || self.hits_solid(Some(from), to, r)
+    }
+
+    /// Is there something in the way of a body of radius `r` at `at`?
+    fn occupied(&self, at: (i32, i32), r: i32) -> bool {
+        !self.inside(at.0, at.1, r) || self.hits_solid(None, at, r)
+    }
+
+    fn hits_solid(&self, from: Option<(i32, i32)>, to: (i32, i32), r: i32) -> bool {
         let hits = |ox: i32, oy: i32, or: i32| {
             let lim = (or + r) as i64 * (or + r) as i64;
-            dist2(ox - to.0, oy - to.1) < lim && dist2(ox - from.0, oy - from.1) >= lim
+            dist2(ox - to.0, oy - to.1) < lim && from.is_none_or(|f| dist2(ox - f.0, oy - f.1) >= lim)
         };
-        let mut near = vec![];
-        self.rock_grid.query(to.0, to.1, r + MAX_ROCK_R, &mut near);
-        if near.iter().any(|&i| {
-            let k = &self.rocks[i as usize];
-            hits(k.x, k.y, k.r)
-        }) {
+        let mut hit = false;
+        self.rocks_near(to.0, to.1, r + MAX_ROCK_R, |_, k| hit = hit || hits(k.x, k.y, k.r));
+        if hit {
             return true;
         }
-        self.ore_grid.query(to.0, to.1, r + 2 * FP, &mut near);
-        if near.iter().any(|&id| {
-            self.ore_index(id).is_some_and(|i| {
-                let o = &self.ores[i];
-                o.amount > 0 && hits(o.x, o.y, o.radius())
-            })
-        }) {
-            return true;
-        }
-        self.factories.iter().any(|f| f.hp > 0 && hits(f.x, f.y, FACTORY_RADIUS))
+        self.ores_near(to.0, to.1, r + 2 * FP, |o| hit = hit || hits(o.x, o.y, o.radius()));
+        hit || self.factories.iter().any(|f| f.hp > 0 && hits(f.x, f.y, FACTORY_RADIUS))
     }
 
     /// Nearest `target` seen by a dronoid of `owner` at (x, y).
@@ -427,28 +518,20 @@ impl World {
                 let range = if own { i32::MAX } else { EBASE_RANGE };
                 for f in self.factories.iter().filter(|f| f.hp > 0 && (f.owner == owner) == own) {
                     let (dx, dy) = (f.x - x, f.y - y);
-                    consider(Target { dx, dy, gap: gap_between(dx, dy, DRONOID_RADIUS, FACTORY_RADIUS), id: f.id }, range);
+                    consider(Target { dx, dy, gap: gap_between(dx, dy, DRONOID_RADIUS, FACTORY_RADIUS), id: f.id as u64 }, range);
                 }
             }
             thing::ORE => {
-                self.ore_grid.query(x, y, SENSOR_RANGE + 2 * FP, &mut near);
-                for &id in &near {
-                    let Some(i) = self.ore_index(id) else { continue };
-                    let o = &self.ores[i];
-                    if o.amount <= 0 {
-                        continue;
-                    }
+                self.ores_near(x, y, SENSOR_RANGE + 2 * FP, |o| {
                     let (dx, dy) = (o.x - x, o.y - y);
                     consider(Target { dx, dy, gap: gap_between(dx, dy, DRONOID_RADIUS, o.radius()), id: o.id }, SENSOR_RANGE);
-                }
+                });
             }
             thing::WALL => {
-                self.rock_grid.query(x, y, SENSOR_RANGE + MAX_ROCK_R, &mut near);
-                for &i in &near {
-                    let k = &self.rocks[i as usize];
+                self.rocks_near(x, y, SENSOR_RANGE + MAX_ROCK_R, |id, k| {
                     let (dx, dy) = (k.x - x, k.y - y);
-                    consider(Target { dx, dy, gap: gap_between(dx, dy, DRONOID_RADIUS, k.r), id: i }, SENSOR_RANGE);
-                }
+                    consider(Target { dx, dy, gap: gap_between(dx, dy, DRONOID_RADIUS, k.r), id }, SENSOR_RANGE);
+                });
             }
             thing::ALLY | thing::ENEMY => {
                 let ally = target == thing::ALLY;
@@ -459,7 +542,7 @@ impl World {
                         continue;
                     }
                     let (dx, dy) = (d.x - x, d.y - y);
-                    consider(Target { dx, dy, gap: gap_between(dx, dy, DRONOID_RADIUS, DRONOID_RADIUS), id: d.id }, SENSOR_RANGE);
+                    consider(Target { dx, dy, gap: gap_between(dx, dy, DRONOID_RADIUS, DRONOID_RADIUS), id: d.id as u64 }, SENSOR_RANGE);
                 }
             }
             _ => {}
@@ -480,18 +563,14 @@ impl World {
                     .count() as i32
             }
             thing::ORE => {
-                self.ore_grid.query(x, y, SENSOR_RANGE + 2 * FP, &mut near);
-                near.iter()
-                    .filter_map(|&id| self.ore_index(id).map(|i| &self.ores[i]))
-                    .filter(|o| o.amount > 0 && within(o.x - x, o.y - y, o.radius(), SENSOR_RANGE))
-                    .count() as i32
+                let mut n = 0;
+                self.ores_near(x, y, SENSOR_RANGE + 2 * FP, |o| n += within(o.x - x, o.y - y, o.radius(), SENSOR_RANGE) as i32);
+                n
             }
             thing::WALL => {
-                self.rock_grid.query(x, y, SENSOR_RANGE + MAX_ROCK_R, &mut near);
-                near.iter()
-                    .map(|&i| &self.rocks[i as usize])
-                    .filter(|k| within(k.x - x, k.y - y, k.r, SENSOR_RANGE))
-                    .count() as i32
+                let mut n = 0;
+                self.rocks_near(x, y, SENSOR_RANGE + MAX_ROCK_R, |_, k| n += within(k.x - x, k.y - y, k.r, SENSOR_RANGE) as i32);
+                n
             }
             thing::ALLY | thing::ENEMY => {
                 let ally = target == thing::ALLY;
@@ -521,26 +600,20 @@ impl World {
             return thing::WALL;
         }
         let touches = |ox: i32, oy: i32, r: i32| dist2(ox - px, oy - py) < (r + DRONOID_RADIUS) as i64 * (r + DRONOID_RADIUS) as i64;
-        let mut near = vec![];
-        self.rock_grid.query(px, py, MAX_ROCK_R + FP, &mut near);
-        if near.iter().any(|&i| {
-            let k = &self.rocks[i as usize];
-            touches(k.x, k.y, k.r)
-        }) {
+        let mut wall = false;
+        self.rocks_near(px, py, MAX_ROCK_R + FP, |_, k| wall = wall || touches(k.x, k.y, k.r));
+        if wall {
             return thing::WALL;
         }
         if let Some(f) = self.factories.iter().find(|f| f.hp > 0 && touches(f.x, f.y, FACTORY_RADIUS)) {
             return if f.owner == owner { thing::BASE } else { thing::EBASE };
         }
-        self.ore_grid.query(px, py, 2 * FP, &mut near);
-        if near.iter().any(|&id| {
-            self.ore_index(id).is_some_and(|i| {
-                let o = &self.ores[i];
-                o.amount > 0 && touches(o.x, o.y, o.radius())
-            })
-        }) {
+        let mut ore = false;
+        self.ores_near(px, py, 2 * FP, |o| ore = ore || touches(o.x, o.y, o.radius()));
+        if ore {
             return thing::ORE;
         }
+        let mut near = vec![];
         self.dronoid_grid.query(px, py, 2 * FP, &mut near);
         let mut found = thing::EMPTY;
         for &i in &near {
@@ -567,8 +640,7 @@ impl World {
         if p.minerals < FACTORY_COST {
             return Err("pas assez de minerai");
         }
-        let far = (x - 3 * self.size, y - 3 * self.size);
-        if self.blocked(far, (x, y), FACTORY_RADIUS + FP / 2) {
+        if self.occupied((x, y), FACTORY_RADIUS + FP / 2) {
             return Err("emplacement encombré");
         }
         let d = |fx: i32, fy: i32| dist2(fx - x, fy - y);
@@ -637,6 +709,9 @@ impl World {
         for o in &self.ores {
             h.add(o.id as i64 * 977 + o.amount as i64);
         }
+        for (id, w) in &self.worn {
+            h.add(*id as i64 * 977 + w.left as i64);
+        }
         h.0
     }
 
@@ -660,45 +735,22 @@ impl World {
         id
     }
 
-    /// Cells per side of the explored maps.
-    pub fn fog_side(&self) -> i32 {
-        (self.size + FOG_CELL - 1) / FOG_CELL
-    }
-
-    fn fog_words(&self) -> usize {
-        let n = self.fog_side() as usize;
-        (n * n).div_ceil(64)
-    }
-
     /// Has `owner` ever seen the point (x, y)?
     pub fn explored(&self, owner: u8, x: i32, y: i32) -> bool {
-        let Some(p) = self.players.get(owner as usize) else { return false };
-        let n = self.fog_side();
-        let (cx, cy) = (x.div_euclid(FOG_CELL), y.div_euclid(FOG_CELL));
-        if cx < 0 || cy < 0 || cx >= n || cy >= n {
-            return false;
-        }
-        let i = (cy * n + cx) as usize;
-        p.explored.get(i / 64).is_some_and(|w| w & (1 << (i % 64)) != 0)
+        self.players.get(owner as usize).is_some_and(|p| p.seen.get(x.div_euclid(FOG_CELL), y.div_euclid(FOG_CELL)))
     }
 
     /// Mark everything within `r` of (x, y) as explored by `owner`.
     fn reveal(&mut self, owner: u8, x: i32, y: i32, r: i32) {
-        let n = self.fog_side();
-        let words = self.fog_words();
         let Some(p) = self.players.get_mut(owner as usize) else { return };
-        if p.explored.len() != words {
-            p.explored.resize(words, 0);
-        }
         let r2 = r as i64 * r as i64;
-        let (x0, x1) = (((x - r) / FOG_CELL).max(0), ((x + r) / FOG_CELL).min(n - 1));
-        let (y0, y1) = (((y - r) / FOG_CELL).max(0), ((y + r) / FOG_CELL).min(n - 1));
+        let (x0, x1) = ((x - r).div_euclid(FOG_CELL), (x + r).div_euclid(FOG_CELL));
+        let (y0, y1) = ((y - r).div_euclid(FOG_CELL), (y + r).div_euclid(FOG_CELL));
         for cy in y0..=y1 {
             for cx in x0..=x1 {
                 let (mx, my) = (cx * FOG_CELL + FOG_CELL / 2, cy * FOG_CELL + FOG_CELL / 2);
                 if dist2(mx - x, my - y) <= r2 {
-                    let i = (cy * n + cx) as usize;
-                    p.explored[i / 64] |= 1 << (i % 64);
+                    p.seen.set(cx, cy);
                 }
             }
         }
@@ -723,24 +775,28 @@ impl World {
         id
     }
 
-    /// Starting place farthest from every other player's factories.
+    /// The nearest starting place, working outwards, far enough from
+    /// everyone already settled.
     fn pick_slot(&self) -> (i32, i32) {
-        let score = |s: &(i32, i32)| {
-            self.factories
-                .iter()
-                .map(|f| dist2(f.x - s.0, f.y - s.1))
-                .chain(self.players.iter().filter(|p| p.alive).map(|p| dist2(p.home.0 - s.0, p.home.1 - s.1)))
-                .min()
-                .unwrap_or(i64::MAX)
+        let origin = (self.size / 2, self.size / 2);
+        let (ci, cj) = Terrain::site_cell(origin.0, origin.1);
+        let clear = NEWCOMER_GAP as i64 * NEWCOMER_GAP as i64;
+        let free = |s: (i32, i32)| {
+            let far = |x: i32, y: i32| dist2(x - s.0, y - s.1) >= clear;
+            self.factories.iter().all(|f| far(f.x, f.y)) && self.players.iter().filter(|p| p.alive).all(|p| far(p.home.0, p.home.1))
         };
-        let mut best = (i64::MIN, self.slots[0]);
-        for s in &self.slots {
-            let v = score(s);
-            if v > best.0 {
-                best = (v, *s);
+        for ring in 0..200i32 {
+            for dj in -ring..=ring {
+                // Only the edge of the ring is new.
+                let step = if dj.abs() == ring { 1 } else { (2 * ring).max(1) };
+                for di in (-ring..=ring).step_by(step as usize) {
+                    if let Some(s) = self.terrain.site(ci + di, cj + dj).filter(|s| free(*s)) {
+                        return s;
+                    }
+                }
             }
         }
-        best.1
+        origin
     }
 
     /// Bring a player into the world (or back to life). Returns its id.
@@ -777,6 +833,7 @@ impl World {
                     kills: 0,
                     home,
                     shield_until,
+                    seen: FogMap::default(),
                     explored: vec![],
                     quests: 0,
                     flags: 0,
@@ -790,9 +847,36 @@ impl World {
         Some(id)
     }
 
-    /// From time to time a fresh crystal field appears away from colonies.
+    /// Mined deposits of the generated terrain end up whole again, except
+    /// under a factory built in the meantime.
+    fn restore_deposits(&mut self) {
+        if !self.tick.is_multiple_of(REGROW_TICKS) {
+            return;
+        }
+        let tick = self.tick;
+        let due: Vec<(u64, Worn)> = self.worn.iter().filter(|(_, w)| w.until <= tick).map(|(id, w)| (*id, *w)).collect();
+        for (id, w) in due {
+            let spot = self.terrain.deposit(id);
+            let covered = spot.is_some_and(|d| {
+                let gap = (ore_radius(d.amount) + FACTORY_RADIUS) as i64;
+                self.factories.iter().any(|f| dist2(f.x - d.x, f.y - d.y) < gap * gap)
+            });
+            if covered {
+                self.worn.insert(id, Worn { until: tick + DEPOSIT_REGROW_TICKS, ..w });
+                continue;
+            }
+            self.worn.remove(&id);
+            if let Some(d) = spot.filter(|_| w.left <= 0) {
+                self.events.push(Event::OreGrown { x: d.x, y: d.y });
+            }
+        }
+    }
+
+    /// From time to time a fresh crystal field appears in the first sector
+    /// of an older world, away from colonies.
     fn regrow(&mut self) {
-        if !self.tick.is_multiple_of(REGROW_TICKS) || self.ores.len() as u32 >= self.ore_target {
+        self.restore_deposits();
+        if self.size == 0 || !self.tick.is_multiple_of(REGROW_TICKS) || self.ores.len() as u32 >= self.ore_target {
             return;
         }
         let margin = 12 * FP;
@@ -812,8 +896,7 @@ impl World {
                 let (dx, dy) = dir_vec(self.rng.range(0, 360), self.rng.range(0, 4 * FP));
                 let (ox, oy) = (x + dx, y + dy);
                 let amount = self.rng.range(ORE_MIN, ORE_MAX + 1);
-                let far = (ox - 3 * self.size, oy - 3 * self.size);
-                if !self.inside(ox, oy, 2 * FP) || self.blocked(far, (ox, oy), ore_radius(amount) + FP / 4) {
+                if ox < 2 * FP || oy < 2 * FP || ox > self.size - 2 * FP || oy > self.size - 2 * FP || self.occupied((ox, oy), ore_radius(amount) + FP / 4) {
                     continue;
                 }
                 let id = self.new_id();
@@ -1015,8 +1098,7 @@ impl World {
 
     /// Is (x, y) inside a rock, deposit or factory (for spawn points)?
     fn touches_solid(&self, x: i32, y: i32) -> bool {
-        let far = (x - 3 * self.size, y - 3 * self.size);
-        self.blocked(far, (x, y), DRONOID_RADIUS)
+        self.occupied((x, y), DRONOID_RADIUS)
     }
 
     fn decide(&mut self, di: usize) {
@@ -1089,13 +1171,8 @@ impl World {
                 let Some(t) = self.nearest(x, y, owner, id, thing::ORE).filter(|t| t.gap < REACH) else {
                     return false;
                 };
-                let oi = self.ore_index(t.id).unwrap();
-                let o = &mut self.ores[oi];
-                o.amount -= 1;
-                let (ox, oy, left) = (o.x, o.y, o.amount);
-                if left <= 0 {
-                    self.ore_grid.remove(ox, oy, t.id);
-                }
+                let (ox, oy) = (x + t.dx, y + t.dy);
+                let left = self.take_crystal(t.id);
                 self.players[owner as usize].mined += 1;
                 face(self, ox, oy);
                 let d = &mut self.dronoids[di];
@@ -1130,13 +1207,13 @@ impl World {
                 }
                 let dronoid = self
                     .nearest(x, y, owner, id, thing::ENEMY)
-                    .filter(|t| t.gap <= ATTACK_RANGE && self.dronoid(t.id).is_some_and(|d| !self.shielded(d.owner)));
+                    .filter(|t| t.gap <= ATTACK_RANGE && self.dronoid(t.id as u32).is_some_and(|d| !self.shielded(d.owner)));
                 let base = self
                     .nearest(x, y, owner, id, thing::EBASE)
-                    .filter(|t| t.gap <= ATTACK_RANGE && self.factory(t.id).is_some_and(|f| !self.shielded(f.owner)));
+                    .filter(|t| t.gap <= ATTACK_RANGE && self.factory(t.id as u32).is_some_and(|f| !self.shielded(f.owner)));
                 let (tx, ty) = match (dronoid, base) {
                     (Some(t), b) if b.is_none_or(|b| t.gap <= b.gap) => {
-                        let ti = self.dronoid_index(t.id).unwrap();
+                        let ti = self.dronoid_index(t.id as u32).unwrap();
                         let victim = &mut self.dronoids[ti];
                         victim.hp -= ATTACK_DAMAGE;
                         let (vx, vy, vo, dead) = (victim.x, victim.y, victim.owner, victim.hp <= 0);
@@ -1147,7 +1224,7 @@ impl World {
                         (vx, vy)
                     }
                     (_, Some(b)) => {
-                        let fi = self.factory_index(b.id).unwrap();
+                        let fi = self.factory_index(b.id as u32).unwrap();
                         let f = &mut self.factories[fi];
                         f.hp -= ATTACK_DAMAGE;
                         let (fx, fy, fo, dead) = (f.x, f.y, f.owner, f.hp <= 0);
@@ -1166,6 +1243,26 @@ impl World {
                 true
             }
         }
+    }
+
+    /// One crystal less in a deposit. Returns how many are left.
+    fn take_crystal(&mut self, id: u64) -> i32 {
+        if id >= NATURAL {
+            let whole = self.terrain.deposit(id).map_or(0, |d| d.amount);
+            let until = self.tick + DEPOSIT_REGROW_TICKS;
+            let worn = self.worn.entry(id).or_insert(Worn { left: whole, until });
+            worn.left -= 1;
+            worn.until = until;
+            return worn.left;
+        }
+        let oi = self.ore_index(id as u32).unwrap();
+        let o = &mut self.ores[oi];
+        o.amount -= 1;
+        let (ox, oy, left) = (o.x, o.y, o.amount);
+        if left <= 0 {
+            self.ore_grid.remove(ox, oy, id as u32);
+        }
+        left
     }
 
     fn advance(&mut self, di: usize) {
@@ -1224,8 +1321,8 @@ impl Senses for DronoidView<'_> {
         match sensor {
             Sensor::Cargo => self.cargo,
             Sensor::Hp => self.hp,
-            Sensor::PosX => self.x / FP,
-            Sensor::PosY => self.y / FP,
+            Sensor::PosX => self.x.div_euclid(FP),
+            Sensor::PosY => self.y.div_euclid(FP),
             Sensor::Look => w.look(self.x, self.y, self.owner, self.id, arg),
             Sensor::Scan => near().map(|t| compass(t.dx, t.dy)).unwrap_or(vm::NONE),
             Sensor::Dist => near().map(|t| t.gap / FP).unwrap_or(vm::NONE),
@@ -1308,7 +1405,7 @@ pub(crate) mod tests {
         assert!(w.players[0].alive, "waiting to land is not losing");
         // The landing may be far from everything: we own nothing yet.
         let (hx, hy) = w.players[0].home;
-        let far = (hx + 200 * FP).min(w.size - 30 * FP);
+        let far = hx + 200 * FP;
         let m = programs::builtin("mineur").unwrap();
         let spot = (0..40)
             .map(|k| (far - k * FP, hy))
@@ -1328,18 +1425,80 @@ pub(crate) mod tests {
         assert!(w.explored(0, ax, ay), "arrival scan");
         assert!(!w.explored(0, bx, by), "the other colony is far away and unknown");
         // A dronoid far from home maps what it passes by.
-        let far = (ax + if ax < w.size / 2 { 80 } else { -80 } * FP, ay);
+        let far = (ax + 80 * FP, ay);
         assert!(!w.explored(0, far.0, far.1));
         let di = w.dronoids.iter().position(|d| d.owner == 0).expect("a dronoid");
         w.dronoids[di].x = far.0;
         w.dronoids[di].y = far.1;
+        w.dronoids[di].doing = Doing::Idle;
+        w.dronoids[di].busy = 1;
         w.step(&[]);
         assert!(w.explored(0, far.0, far.1));
         assert!(w.explored(0, far.0 + VISION_DRONOID / 2, far.1));
         assert!(!w.explored(1, far.0, far.1), "exploration is per player");
         let copy = World::from_bytes(&w.to_bytes()).unwrap();
-        assert_eq!(copy.players[0].explored, w.players[0].explored);
-        assert!(!w.explored(0, -5, 3) && !w.explored(0, w.size + 9, 0));
+        assert_eq!(copy.players[0].seen, w.players[0].seen);
+        assert!(!w.explored(0, -9000 * FP, 3) && !w.explored(0, 9000 * FP, 0));
+    }
+
+    #[test]
+    fn mined_deposits_are_all_that_is_kept_and_they_come_back() {
+        let mut w = world_with(&["a"]);
+        let (hx, hy) = w.players[0].home;
+        let mut found = None;
+        w.ores_near(hx, hy, 40 * FP, |o| found = found.or(Some(o)));
+        let o = found.expect("crystals by the starting place");
+        assert_eq!(w.take_crystal(o.id), o.amount - 1);
+
+        let copy = World::from_bytes(&w.to_bytes()).unwrap();
+        assert_eq!(copy.worn.get(&o.id), w.worn.get(&o.id));
+        let mut amount = None;
+        copy.ores_near(o.x, o.y, FP, |q| {
+            if q.id == o.id {
+                amount = Some(q.amount);
+            }
+        });
+        assert_eq!(amount, Some(o.amount - 1));
+
+        w.tick = w.worn[&o.id].until.next_multiple_of(REGROW_TICKS);
+        w.step(&[]);
+        assert!(!w.worn.contains_key(&o.id));
+    }
+
+    #[test]
+    fn newcomers_to_an_older_world_arrive_around_its_first_sector() {
+        let mut w = World::with_first_sector(4);
+        let id = w.join("nouveau", false).unwrap();
+        let (x, y) = w.players[id as usize].home;
+        assert!(x < 0 || y < 0 || x >= w.size || y >= w.size, "{},{}", x / FP, y / FP);
+        assert!(w.explored(id, x, y));
+        assert!(!w.rocks.is_empty(), "the first sector keeps its asteroids");
+        let mut crystals = 0;
+        w.ores_near(x, y, 30 * FP, |_| crystals += 1);
+        assert!(crystals > 0);
+    }
+
+    #[test]
+    fn the_far_reaches_work_like_anywhere_else() {
+        let mut w = world_with(&["a"]);
+        let scout = programs::builtin("eclaireur").unwrap();
+        let f = w.factories[0].id;
+        w.step(&[(0, Command::SetProgram { factory: f, name: scout.name.into(), source: scout.source.into() })]);
+        let far = (-WORLD_EXTENT + 60 * FP, WORLD_EXTENT - 60 * FP);
+        for (i, d) in w.dronoids.iter_mut().enumerate() {
+            d.x = far.0 + i as i32 * 2 * FP;
+            d.y = far.1;
+            d.doing = Doing::Idle;
+            d.busy = 1;
+        }
+        let at_start = w.dronoids.len();
+        for _ in 0..400 {
+            w.step(&[]);
+        }
+        assert!(at_start > 0 && w.explored(0, far.0, far.1));
+        assert!(w.dronoids.iter().any(|d| d.x < -WORLD_EXTENT / 2 && (d.x, d.y) != far), "a scout got moving out there");
+        // The very edge stops bodies, and only that.
+        assert!(w.blocked((WORLD_EXTENT - FP, 0), (WORLD_EXTENT, 0), DRONOID_RADIUS));
     }
 
     #[test]
@@ -1389,7 +1548,7 @@ pub(crate) mod tests {
 
     #[test]
     fn crystals_grow_back() {
-        let mut w = World::new(9);
+        let mut w = World::with_first_sector(9);
         let target = w.ores.len();
         w.ores.truncate(target / 2);
         w.rebuild_caches();

@@ -19,7 +19,7 @@ use crate::gfx::{self, mix, pal, player_color, with_alpha, Bloom, Fog};
 use crate::library::{self, Library};
 use crate::platform::Settings;
 use crate::ui::{self, TextField, Ui};
-use crate::view::{draw_minimap, drift, fp, fpv, Cam, Highlight, Sight, WorldView, FOG_UNKNOWN};
+use crate::view::{draw_minimap, fp, fpv, Cam, Highlight, Sight, WorldView, FOG_UNKNOWN};
 
 /// Hash checks happen this often (must match the server).
 const HASH_EVERY: u64 = 50;
@@ -149,7 +149,7 @@ impl Game {
         let first = world.factories.iter().find(|f| f.owner == me);
         let center = first.map(|f| fpv(f.x, f.y)).unwrap_or(home);
         let start = first.map(|f| f.id);
-        let sight = Sight::of(&world, me, 0.0);
+        let sight = Sight::of(&world, me, 0.0, Rect::new(center.x - 300.0, center.y - 300.0, 600.0, 600.0));
         let mut g = Game {
             world,
             me,
@@ -399,7 +399,7 @@ impl Game {
         }
         self.cam.shake = self.view.shake_offset();
 
-        self.sight = Sight::of(&self.world, self.me, self.alpha());
+        self.sight = Sight::of(&self.world, self.me, self.alpha(), self.cam.sight_area());
         bloom.begin();
         let hl = self.highlight(ui);
         self.view.draw(&self.world, &self.cam, self.alpha(), &hl, &self.sight);
@@ -439,7 +439,7 @@ impl Game {
                         Rect::new(screen_width() - s - 12.0, screen_height() - s - 12.0, s, s)
                     };
                     ui.block(mm);
-                    if let Some(p) = draw_minimap(&self.world, &self.cam, mm, &self.sight, ui.mouse, ui.pressed || (ui.down && ui.hover(mm))) {
+                    if let Some(p) = draw_minimap(&self.world, &self.cam, mm, &self.sight, ui.mouse, ui.pressed) {
                         ui.pressed = false;
                         acts.push(Act::CenterOn(p));
                     }
@@ -1414,7 +1414,6 @@ impl Game {
     fn world_input(&mut self, ui: &mut Ui, lib: &Library, acts: &mut Vec<Act>) {
         let over = ui.over_ui();
         let dt = get_frame_time().min(0.1);
-        let looked_from = self.cam.center;
 
         if !over && ui.wheel != 0.0 {
             let before = self.cam.s2w(ui.mouse);
@@ -1494,8 +1493,8 @@ impl Game {
             }
         }
 
-        let size = fp(self.world.size);
-        self.cam.center = vec2(drift(looked_from.x, self.cam.center.x, size), drift(looked_from.y, self.cam.center.y, size));
+        let limit = fp(WORLD_EXTENT);
+        self.cam.center = self.cam.center.clamp(Vec2::splat(-limit), Vec2::splat(limit));
 
         if ui.touch {
             if !tapped {
@@ -1523,7 +1522,7 @@ impl Game {
             return;
         }
         if let Tool::Target(fid) = self.tool {
-            for (i, v) in [(0u8, mx / FP), (1, my / FP), (2, 1)] {
+            for (i, v) in [(0u8, mx.div_euclid(FP)), (1, my.div_euclid(FP)), (2, 1)] {
                 acts.push(Act::Issue(Command::SetMemory { factory: fid, index: i, value: v }));
             }
             self.tool = Tool::None;

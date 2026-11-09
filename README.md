@@ -23,9 +23,10 @@ Rust stable récent (édition 2024). Dépendances : `macroquad` (rendu), `serde`
 
 ## Le secteur
 
-- Un espace continu de 768 × 768 unités : ceintures d'astéroïdes, champs de
-  cristaux qui **repoussent** ailleurs à mesure qu'on les épuise, et des colonies IA
-  qui vivent leur vie.
+- Un espace **immense** (un million d'unités de large, onze jours de voyage en ligne
+  droite pour un dronoid), généré à mesure qu'on le découvre : ceintures d'astéroïdes,
+  régions désertes ou encombrées, champs de cristaux qui **repoussent** quelques
+  heures après avoir été épuisés, et des colonies IA qui vivent leur vie.
 - **Arrivée** : 170 cristaux, rien d'autre. On choisit où poser sa première usine
   (loin des autres colonies). Un **bouclier** protège les nouveaux venus 10 minutes
   à partir du moment où ils se posent : ils ne peuvent ni être attaqués, ni attaquer.
@@ -117,8 +118,9 @@ Le serveur (`dronoids-server`) possède le monde de référence et fait tourner 
 client rejoue ces commandes sur sa propre copie. La simulation est entièrement
 déterministe (entiers en virgule fixe, table de sinus, `atan2` et racines
 entières, RNG maison), donc seules les commandes transitent, jamais les milliers de
-dronoids. Un arrivant reçoit un instantané du monde (les astéroïdes sont recréés à
-partir de la graine), puis le flux de commandes. Les clients envoient un hash
+dronoids. Astéroïdes et cristaux ne sont jamais envoyés : chaque machine les calcule
+à partir de la graine et de l'endroit regardé, et seuls les gisements entamés sont
+gardés. Un arrivant reçoit un instantané du monde, puis le flux de commandes. Les clients envoient un hash
 régulier ; un client qui diverge, ou qui a pris trop de retard (onglet en
 arrière-plan), reçoit un nouvel instantané.
 

@@ -1,60 +1,68 @@
-//! Uniform bucket grid for neighbourhood queries in the continuous world.
+//! Sparse bucket grid for neighbourhood queries in a world without bounds.
 
-#[derive(Clone, Debug, Default)]
+use std::collections::HashMap;
+
+use crate::rules::FP;
+
+#[derive(Clone, Debug)]
 pub struct Grid {
     cell: i32,
-    n: i32,
-    cells: Vec<Vec<u32>>,
+    cells: HashMap<(i32, i32), Vec<u32>>,
+}
+
+impl Default for Grid {
+    fn default() -> Grid {
+        Grid::new(8 * FP)
+    }
 }
 
 impl Grid {
-    pub fn new(size: i32, cell: i32) -> Grid {
-        let n = (size / cell + 1).max(1);
-        Grid { cell, n, cells: vec![vec![]; (n * n) as usize] }
+    pub fn new(cell: i32) -> Grid {
+        Grid { cell, cells: HashMap::new() }
     }
 
-    fn coord(&self, v: i32) -> i32 {
-        (v / self.cell).clamp(0, self.n - 1)
-    }
-
-    fn slot(&self, x: i32, y: i32) -> usize {
-        (self.coord(y) * self.n + self.coord(x)) as usize
+    fn at(&self, x: i32, y: i32) -> (i32, i32) {
+        (x.div_euclid(self.cell), y.div_euclid(self.cell))
     }
 
     pub fn clear(&mut self) {
-        for c in &mut self.cells {
-            c.clear();
-        }
+        self.cells.clear();
     }
 
     pub fn insert(&mut self, x: i32, y: i32, id: u32) {
-        if self.cells.is_empty() {
-            return;
-        }
-        let s = self.slot(x, y);
-        self.cells[s].push(id);
+        let at = self.at(x, y);
+        self.cells.entry(at).or_default().push(id);
     }
 
     pub fn remove(&mut self, x: i32, y: i32, id: u32) {
-        if self.cells.is_empty() {
-            return;
+        let at = self.at(x, y);
+        if let Some(c) = self.cells.get_mut(&at) {
+            c.retain(|v| *v != id);
+            if c.is_empty() {
+                self.cells.remove(&at);
+            }
         }
-        let s = self.slot(x, y);
-        self.cells[s].retain(|v| *v != id);
     }
 
-    /// Every id stored in a cell touching the square [x-r, x+r]².
-    pub fn query(&self, x: i32, y: i32, r: i32, out: &mut Vec<u32>) {
+    /// Every id stored in a cell touching the rectangle, cell by cell (so
+    /// always in the same order: nothing iterates over the hash map).
+    pub fn query_rect(&self, x0: i32, y0: i32, x1: i32, y1: i32, out: &mut Vec<u32>) {
         out.clear();
         if self.cells.is_empty() {
             return;
         }
-        let (x0, x1) = (self.coord(x - r), self.coord(x + r));
-        let (y0, y1) = (self.coord(y - r), self.coord(y + r));
-        for cy in y0..=y1 {
-            for cx in x0..=x1 {
-                out.extend_from_slice(&self.cells[(cy * self.n + cx) as usize]);
+        let ((cx0, cy0), (cx1, cy1)) = (self.at(x0, y0), self.at(x1, y1));
+        for cy in cy0..=cy1 {
+            for cx in cx0..=cx1 {
+                if let Some(c) = self.cells.get(&(cx, cy)) {
+                    out.extend_from_slice(c);
+                }
             }
         }
+    }
+
+    /// Every id stored in a cell touching the square [x-r, x+r]².
+    pub fn query(&self, x: i32, y: i32, r: i32, out: &mut Vec<u32>) {
+        self.query_rect(x - r, y - r, x + r, y + r, out);
     }
 }

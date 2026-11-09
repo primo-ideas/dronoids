@@ -8,6 +8,7 @@ use std::f32::consts::{PI, TAU};
 use macroquad::prelude::*;
 
 use dronoids::rules::*;
+use dronoids::sim::fog::FogMap;
 use dronoids::sim::{ore_radius, Doing, Event, World};
 
 use crate::fx::Fx;
@@ -28,6 +29,16 @@ impl Cam {
 
     pub fn s2w(&self, s: Vec2) -> Vec2 {
         (s - vec2(screen_width(), screen_height()) * 0.5) / self.zoom + self.center + self.shake
+    }
+
+    /// What a `Sight` needs to know about: the view and the map around it.
+    pub fn sight_area(&self) -> Rect {
+        let tl = self.s2w(Vec2::ZERO);
+        let br = self.s2w(vec2(screen_width(), screen_height()));
+        let m = MAP_SPAN / 2.0 + 8.0;
+        let (x0, y0) = (tl.x.min(self.center.x - m), tl.y.min(self.center.y - m));
+        let (x1, y1) = (br.x.max(self.center.x + m), br.y.max(self.center.y + m));
+        Rect::new(x0, y0, x1 - x0, y1 - y0)
     }
 
     fn visible(&self, p: Vec2, margin: f32) -> bool {
@@ -62,27 +73,19 @@ fn hash(a: u32, b: u32) -> f32 {
 /// a matter of what we choose to draw.
 pub struct Sight {
     me: Option<u8>,
-    /// Visible cells (`VIS_CELL` units) over the whole world.
-    vis: Vec<bool>,
-    n: i32,
-    /// The player's explored map (copied from the world).
-    explored: Vec<u64>,
-    fog_n: i32,
+    /// The player's map of explored space, around where we are looking.
+    explored: FogMap,
     /// Vision circles: centre and radius, in world units.
     pub sources: Vec<(Vec2, f32)>,
 }
 
-const VIS_CELL: f32 = 2.0;
-
 impl Sight {
     /// No fog at all (title screen).
     pub fn all() -> Sight {
-        Sight { me: None, vis: vec![], n: 0, explored: vec![], fog_n: 0, sources: vec![] }
+        Sight { me: None, explored: FogMap::default(), sources: vec![] }
     }
 
-    pub fn of(world: &World, me: u8, alpha: f32) -> Sight {
-        let size = fp(world.size);
-        let n = (size / VIS_CELL).ceil() as i32;
+    pub fn of(world: &World, me: u8, alpha: f32, area: Rect) -> Sight {
         let mut sources: Vec<(Vec2, f32)> = vec![];
         for f in world.factories.iter().filter(|f| f.owner == me) {
             sources.push((fpv(f.x, f.y), fp(VISION_FACTORY)));
@@ -98,21 +101,11 @@ impl Sight {
             // Before landing, the arrival scan shows where to settle.
             sources.push((fpv(p.home.0, p.home.1), fp(ARRIVAL_SCAN)));
         }
-        let mut vis = vec![false; (n * n) as usize];
-        for (c, r) in &sources {
-            let (x0, x1) = (((c.x - r) / VIS_CELL).floor().max(0.0) as i32, ((c.x + r) / VIS_CELL).ceil().min(n as f32 - 1.0) as i32);
-            let (y0, y1) = (((c.y - r) / VIS_CELL).floor().max(0.0) as i32, ((c.y + r) / VIS_CELL).ceil().min(n as f32 - 1.0) as i32);
-            for cy in y0..=y1 {
-                for cx in x0..=x1 {
-                    let m = vec2((cx as f32 + 0.5) * VIS_CELL, (cy as f32 + 0.5) * VIS_CELL);
-                    if m.distance_squared(*c) <= r * r {
-                        vis[(cy * n + cx) as usize] = true;
-                    }
-                }
-            }
-        }
-        let explored = world.players.get(me as usize).map(|p| p.explored.clone()).unwrap_or_default();
-        Sight { me: Some(me), vis, n, explored, fog_n: world.fog_side(), sources }
+        let cell = fp(FOG_CELL);
+        let (x0, y0) = ((area.x / cell).floor() as i32, (area.y / cell).floor() as i32);
+        let (x1, y1) = (((area.x + area.w) / cell).ceil() as i32, ((area.y + area.h) / cell).ceil() as i32);
+        let explored = world.players.get(me as usize).map(|p| p.seen.around(x0, y0, x1, y1)).unwrap_or_default();
+        Sight { me: Some(me), explored, sources }
     }
 
     pub fn me(&self) -> Option<u8> {
@@ -125,11 +118,7 @@ impl Sight {
 
     /// Seen right now.
     pub fn visible(&self, p: Vec2) -> bool {
-        if self.me.is_none() {
-            return true;
-        }
-        let (cx, cy) = ((p.x / VIS_CELL).floor() as i32, (p.y / VIS_CELL).floor() as i32);
-        cx >= 0 && cy >= 0 && cx < self.n && cy < self.n && self.vis[(cy * self.n + cx) as usize]
+        self.me.is_none() || self.sources.iter().any(|(c, r)| c.distance_squared(p) <= r * r)
     }
 
     /// Seen at some point (terrain is remembered).
@@ -141,11 +130,7 @@ impl Sight {
     }
 
     pub fn explored_cell(&self, cx: i32, cy: i32) -> bool {
-        if cx < 0 || cy < 0 || cx >= self.fog_n || cy >= self.fog_n {
-            return false;
-        }
-        let i = (cy * self.fog_n + cx) as usize;
-        self.explored.get(i / 64).is_some_and(|w| w & (1 << (i % 64)) != 0)
+        self.explored.get(cx, cy)
     }
 
     /// Is this unit drawn? Our own always, others only in sight.
@@ -160,26 +145,8 @@ impl Sight {
         let cell = fp(FOG_CELL);
         let tl = cam.s2w(vec2(0.0, 0.0));
         let br = cam.s2w(vec2(screen_width(), screen_height()));
-        let (x0, y0) = (((tl.x / cell).floor() as i32 - 1).max(0), ((tl.y / cell).floor() as i32 - 1).max(0));
-        let (x1, y1) = (((br.x / cell).ceil() as i32 + 1).min(self.fog_n - 1), ((br.y / cell).ceil() as i32 + 1).min(self.fog_n - 1));
-        // Frays can be on screen when the edge they start from is not.
-        let last = self.fog_n - 1;
-        let (fx0, fy0) = (((tl.x / cell).floor() as i32 - FRAY_CELLS).max(0), ((tl.y / cell).floor() as i32 - FRAY_CELLS).max(0));
-        let (fx1, fy1) = (((br.x / cell).ceil() as i32 + FRAY_CELLS).min(last), ((br.y / cell).ceil() as i32 + FRAY_CELLS).min(last));
-        for cy in fy0..=fy1 {
-            for cx in [0, last] {
-                if (fx0..=fx1).contains(&cx) && self.explored_cell(cx, cy) {
-                    self.fray(cam, cx, cy);
-                }
-            }
-        }
-        for cx in fx0..=fx1 {
-            for cy in [0, last] {
-                if (fy0..=fy1).contains(&cy) && self.explored_cell(cx, cy) {
-                    self.fray(cam, cx, cy);
-                }
-            }
-        }
+        let (x0, y0) = ((tl.x / cell).floor() as i32 - 1, (tl.y / cell).floor() as i32 - 1);
+        let (x1, y1) = ((br.x / cell).ceil() as i32 + 1, (br.y / cell).ceil() as i32 + 1);
         for cy in y0..=y1 {
             for cx in x0..=x1 {
                 if self.explored_cell(cx, cy) {
@@ -193,61 +160,6 @@ impl Sight {
             draw_circle(s.x, s.y, r * z, WHITE);
         }
     }
-
-    /// What we know never ends on the straight edge of the sector: from a
-    /// cell on that edge, the veil frays out into the dark, farther here
-    /// and less far there, so that seen from afar the end meanders too.
-    fn fray(&self, cam: &Cam, cx: i32, cy: i32) {
-        let cell = fp(FOG_CELL);
-        let last = self.fog_n - 1;
-        let out = vec2(
-            if cx == 0 { -1.0 } else if cx == last { 1.0 } else { 0.0 },
-            if cy == 0 { -1.0 } else if cy == last { 1.0 } else { 0.0 },
-        );
-        let side = (if out.x != 0.0 { cx.signum() as u32 + 3 } else { cy.signum() as u32 + 5 }) * 97;
-        let run = if out.y == 0.0 { cy } else { cx } as f32;
-        let reach = 2.0 + 14.0 * (0.7 * wander(run / 11.0, side) + 0.3 * wander(run / 4.0, side + 7));
-        let tangent = vec2(-out.y, out.x);
-        let middle = vec2(cx as f32 + 0.5, cy as f32 + 0.5);
-        let seed = (cx as u32).wrapping_mul(73) ^ (cy as u32).wrapping_mul(151);
-        // From the far end inwards: the brighter patches stay on top.
-        for step in (1..=reach as u32).rev() {
-            let s = step as f32;
-            let t = s / (reach + 1.0);
-            let h = hash(seed, step);
-            // Less and less likely, the farther out.
-            if h > 1.0 - t * 0.7 {
-                continue;
-            }
-            let spot = middle + out * s * (0.8 + 0.3 * h) + tangent * ((h * 7.0).fract() - 0.5) * 2.5;
-            let c = cam.w2s(spot * cell);
-            draw_circle(c.x, c.y, cell * cam.zoom * (1.05 - 0.4 * t), mix(FOG_UNKNOWN, FOG_EXPLORED, (1.0 - t).powi(2) * 0.9));
-        }
-    }
-}
-
-/// How many fog cells a frayed edge can reach past the sector.
-const FRAY_CELLS: i32 = 20;
-
-/// Smooth noise in 0..1 along a line.
-fn wander(t: f32, seed: u32) -> f32 {
-    let (i, f) = (t.floor(), t.fract());
-    let (a, b) = (hash(i as u32, seed), hash(i as u32 + 1, seed));
-    a + (b - a) * f * f * (3.0 - 2.0 * f)
-}
-
-/// How far past the sector the camera can wander.
-const DRIFT: f32 = 240.0;
-
-/// Where a camera coordinate going from `from` to `to` really ends up in a
-/// sector `size` wide. Inside it, anywhere. Past it, each step outward counts
-/// for less the farther out it goes: the view slows down to nothing in the
-/// dark, it never comes up against a wall.
-pub fn drift(from: f32, to: f32, size: f32) -> f32 {
-    let beyond = (-from).max(from - size);
-    let outward = if from < 0.0 { to < from } else { to > from };
-    let to = if beyond > 0.0 && outward { from + (to - from) * (1.0 - beyond / DRIFT).max(0.0).powi(2) } else { to };
-    to.clamp(-DRIFT, size + DRIFT)
 }
 
 /// How dark space is where we have never been, and how veiled where we have.
@@ -272,7 +184,6 @@ pub struct WorldView {
     angles: HashMap<u32, f32>,
     pub time: f32,
     pub shake: f32,
-    rock_shapes: Vec<Vec<Vec2>>,
     stars: Vec<(Vec2, f32, f32)>,
 }
 
@@ -285,7 +196,7 @@ impl Default for WorldView {
                 (p, depth, 0.25 + 0.75 * hash(i, 4))
             })
             .collect();
-        WorldView { fx: Fx::default(), angles: HashMap::new(), time: 0.0, shake: 0.0, rock_shapes: vec![], stars }
+        WorldView { fx: Fx::default(), angles: HashMap::new(), time: 0.0, shake: 0.0, stars }
     }
 }
 
@@ -396,21 +307,6 @@ impl WorldView {
             let alive: std::collections::HashSet<u32> = world.dronoids.iter().map(|d| d.id).collect();
             self.angles.retain(|id, _| alive.contains(id));
         }
-        if self.rock_shapes.len() != world.rocks.len() {
-            self.rock_shapes = world
-                .rocks
-                .iter()
-                .map(|r| {
-                    let n = 9 + (r.seed % 5) as usize;
-                    (0..n)
-                        .map(|i| {
-                            let a = i as f32 / n as f32 * TAU + hash(r.seed, i as u32) * 0.4;
-                            Vec2::from_angle(a) * (0.78 + 0.27 * hash(r.seed, 100 + i as u32))
-                        })
-                        .collect()
-                })
-                .collect();
-        }
     }
 
     pub fn shake_offset(&self) -> Vec2 {
@@ -466,54 +362,58 @@ impl WorldView {
             }
         }
 
+        // Whatever the view reaches of the terrain.
+        let tl = cam.s2w(Vec2::ZERO);
+        let br = cam.s2w(vec2(screen_width(), screen_height()));
+        let fixed = |v: f32| (v * FP as f32) as i32;
+        let (x0, y0, x1, y1) = (fixed(tl.x - 9.0), fixed(tl.y - 9.0), fixed(br.x + 9.0), fixed(br.y + 9.0));
+
         // Asteroids.
         let edge = (z * 0.08).clamp(1.2, 3.0);
-        for (i, r) in world.rocks.iter().enumerate() {
+        world.rocks_in(x0, y0, x1, y1, |_, r| {
             let c = fpv(r.x, r.y);
             let rad = fp(r.r);
             if !cam.visible(c, rad + 1.0) || !(sight.explored(c) || sight.explored(c + vec2(rad, 0.0)) || sight.explored(c - vec2(rad, 0.0)) || sight.explored(c + vec2(0.0, rad)) || sight.explored(c - vec2(0.0, rad))) {
-                continue;
+                return;
             }
             let sc = cam.w2s(c);
-            let shape = self.rock_shapes.get(i);
-            match shape {
-                Some(pts) if z * rad > 6.0 => {
-                    let outer: Vec<Vec2> = pts.iter().map(|p| sc + *p * rad * z).collect();
-                    let inner: Vec<Vec2> = pts.iter().map(|p| sc + *p * rad * z * 0.55).collect();
-                    let shade = 0.8 + 0.4 * hash(r.seed, 7);
-                    for k in 0..outer.len() {
-                        draw_triangle(sc, outer[k], outer[(k + 1) % outer.len()], scale_rgb(pal::WALL_FILL, shade));
-                    }
-                    poly_lines(&inner, 1.0, with_alpha(pal::WALL_EDGE, 0.18));
-                    poly_lines(&outer, edge, pal::WALL_EDGE);
+            if z * rad > 6.0 {
+                let pts = rock_outline(r.seed);
+                let outer: Vec<Vec2> = pts.iter().map(|p| sc + *p * rad * z).collect();
+                let inner: Vec<Vec2> = pts.iter().map(|p| sc + *p * rad * z * 0.55).collect();
+                let shade = 0.8 + 0.4 * hash(r.seed, 7);
+                for k in 0..outer.len() {
+                    draw_triangle(sc, outer[k], outer[(k + 1) % outer.len()], scale_rgb(pal::WALL_FILL, shade));
                 }
-                _ => {
-                    draw_circle(sc.x, sc.y, rad * z, pal::WALL_FILL);
-                    draw_circle_lines(sc.x, sc.y, rad * z, 1.0, pal::WALL_EDGE);
-                }
+                poly_lines(&inner, 1.0, with_alpha(pal::WALL_EDGE, 0.18));
+                poly_lines(&outer, edge, pal::WALL_EDGE);
+            } else {
+                draw_circle(sc.x, sc.y, rad * z, pal::WALL_FILL);
+                draw_circle_lines(sc.x, sc.y, rad * z, 1.0, pal::WALL_EDGE);
             }
-        }
+        });
 
         // Crystals.
-        for o in &world.ores {
+        world.ores_in(x0, y0, x1, y1, |o| {
             let c = fpv(o.x, o.y);
             if !cam.visible(c, 1.5) || !sight.explored(c) {
-                continue;
+                return;
             }
             let sc = cam.w2s(c);
             let r = fp(ore_radius(o.amount)) * z;
-            let h = hash(o.id, 3);
+            let id = (o.id as u32) ^ ((o.id >> 32) as u32).wrapping_mul(2_654_435_761);
+            let h = hash(id, 3);
             let pulse = 0.75 + 0.25 * (t * 1.6 + h * 20.0).sin();
             if z < 5.0 {
                 draw_circle(sc.x, sc.y, r.max(1.0), with_alpha(pal::ORE, 0.8 * pulse));
-                continue;
+                return;
             }
             // A cluster of crystal shards pointing outwards.
             let base = h * TAU;
-            let shards = 3 + (o.id % 3) as usize;
+            let shards = 3 + (id % 3) as usize;
             for k in 0..shards {
-                let a = base + k as f32 * TAU / shards as f32 + hash(o.id, k as u32) * 0.8;
-                let len = r * (0.9 + 0.6 * hash(o.id, 10 + k as u32));
+                let a = base + k as f32 * TAU / shards as f32 + hash(id, k as u32) * 0.8;
+                let len = r * (0.9 + 0.6 * hash(id, 10 + k as u32));
                 let dir = Vec2::from_angle(a);
                 let side = dir.perp() * r * 0.28;
                 let root = sc - dir * r * 0.15;
@@ -522,7 +422,7 @@ impl WorldView {
                 poly_lines(&shard, (z * 0.04).max(1.0), with_alpha(pal::ORE, 0.95 * pulse));
             }
             draw_circle(sc.x, sc.y, r * 0.2, with_alpha(pal::ORE_CORE, pulse));
-        }
+        });
 
         // Mining beams (continuous while a dronoid digs).
         for d in &world.dronoids {
@@ -651,60 +551,87 @@ impl WorldView {
     }
 }
 
-/// Overview of the whole world. Returns the clicked world position.
+/// The irregular outline of an asteroid, around the unit circle.
+fn rock_outline(seed: u32) -> Vec<Vec2> {
+    let n = 9 + (seed % 5) as usize;
+    (0..n)
+        .map(|i| {
+            let a = i as f32 / n as f32 * TAU + hash(seed, i as u32) * 0.4;
+            Vec2::from_angle(a) * (0.78 + 0.27 * hash(seed, 100 + i as u32))
+        })
+        .collect()
+}
+
+/// How many units across the map shows.
+pub const MAP_SPAN: f32 = 360.0;
+
+/// A small round sonar of the surroundings, centred on where we are looking
+/// and fading out at its rim: there is no overview of a world this large.
+/// Returns the clicked world position.
 pub fn draw_minimap(world: &World, cam: &Cam, r: Rect, sight: &Sight, mouse: Vec2, clicked: bool) -> Option<Vec2> {
     let me = sight.me().unwrap_or(u8::MAX);
-    // No frame: what we know floats in a soft patch of dark.
     let middle = r.point() + r.size() / 2.0;
+    let radius = r.w.min(r.h) / 2.0;
+    let k = 2.0 * radius / MAP_SPAN;
     for i in 0..8 {
-        draw_circle(middle.x, middle.y, r.w.max(r.h) * (0.68 - i as f32 * 0.05), with_alpha(pal::BG, 0.16));
+        draw_circle(middle.x, middle.y, radius * (1.36 - i as f32 * 0.1), with_alpha(pal::BG, 0.16));
     }
-    let size = fp(world.size);
-    let k = r.w.min(r.h) / size;
-    let at = |x: i32, y: i32| vec2(r.x + fp(x) * k, r.y + fp(y) * k);
-    // Explored space shows as a faint wash, which fades out towards the end
-    // of the sector; the rest stays black. (Opaque: overlaps draw no grid.)
+    let at = |p: Vec2| middle + (p - cam.center) * k;
+    let fade = |p: Vec2| ((1.0 - p.distance(middle) / radius) * 4.0).clamp(0.0, 1.0);
+    // Explored space shows as a faint wash; the rest stays black. (Opaque:
+    // overlaps draw no grid.)
     if sight.fogged() {
-        let cell = fp(FOG_CELL) * k;
-        let n = world.fog_side();
+        let cell = fp(FOG_CELL);
+        let side = cell * k;
+        let (cx, cy) = ((cam.center.x / cell).floor() as i32, (cam.center.y / cell).floor() as i32);
+        let half = (MAP_SPAN / 2.0 / cell).ceil() as i32;
         let dark = Color::new(0.012, 0.016, 0.04, 1.0);
-        for cy in 0..n {
-            for cx in 0..n {
-                if sight.explored_cell(cx, cy) {
-                    let edge = cx.min(cy).min(n - 1 - cx).min(n - 1 - cy) as f32;
-                    let wash = mix(dark, Color::new(0.075, 0.1, 0.19, 1.0), (edge / 8.0).min(1.0));
-                    draw_rectangle(r.x + cx as f32 * cell, r.y + cy as f32 * cell, cell + 0.3, cell + 0.3, wash);
+        let light = Color::new(0.075, 0.1, 0.19, 1.0);
+        for j in cy - half..=cy + half {
+            for i in cx - half..=cx + half {
+                if sight.explored_cell(i, j) {
+                    let p = at(vec2(i as f32 * cell, j as f32 * cell));
+                    let t = fade(p + Vec2::splat(side / 2.0));
+                    if t > 0.0 {
+                        draw_rectangle(p.x, p.y, side + 0.3, side + 0.3, mix(dark, light, t));
+                    }
                 }
             }
         }
     }
-    for rock in world.rocks.iter().filter(|k| sight.explored(fpv(k.x, k.y))) {
-        let p = at(rock.x, rock.y);
-        draw_circle(p.x, p.y, (fp(rock.r) * k).max(0.7), scale_rgb(pal::WALL_EDGE, 0.45));
-    }
-    for o in world.ores.iter().filter(|o| sight.explored(fpv(o.x, o.y))) {
-        let p = at(o.x, o.y);
-        draw_rectangle(p.x, p.y, 1.2, 1.2, with_alpha(pal::ORE, 0.7));
-    }
+    let reach = (MAP_SPAN / 2.0 * FP as f32) as i32;
+    let (mx, my) = ((cam.center.x * FP as f32) as i32, (cam.center.y * FP as f32) as i32);
+    world.rocks_in(mx - reach, my - reach, mx + reach, my + reach, |_, rock| {
+        let c = fpv(rock.x, rock.y);
+        let (p, t) = (at(c), fade(at(c)));
+        if t > 0.0 && sight.explored(c) {
+            draw_circle(p.x, p.y, (fp(rock.r) * k).max(0.7), with_alpha(scale_rgb(pal::WALL_EDGE, 0.45), t));
+        }
+    });
+    world.ores_in(mx - reach, my - reach, mx + reach, my + reach, |o| {
+        let c = fpv(o.x, o.y);
+        let (p, t) = (at(c), fade(at(c)));
+        if t > 0.0 && sight.explored(c) {
+            draw_rectangle(p.x, p.y, 1.2, 1.2, with_alpha(pal::ORE, 0.7 * t));
+        }
+    });
     for d in world.dronoids.iter().filter(|d| sight.shows(d.owner, fpv(d.x, d.y))) {
-        let p = at(d.x, d.y);
-        draw_rectangle(p.x - 0.7, p.y - 0.7, 1.6, 1.6, player_color(d.owner));
+        let (p, t) = (at(fpv(d.x, d.y)), fade(at(fpv(d.x, d.y))));
+        if t > 0.0 {
+            draw_rectangle(p.x - 0.7, p.y - 0.7, 1.6, 1.6, with_alpha(player_color(d.owner), t));
+        }
     }
     for f in world.factories.iter().filter(|f| sight.shows(f.owner, fpv(f.x, f.y))) {
-        let p = at(f.x, f.y);
-        let s = if f.owner == me { 5.0 } else { 4.0 };
-        draw_rectangle(p.x - s / 2.0, p.y - s / 2.0, s, s, player_color(f.owner));
+        let (p, t) = (at(fpv(f.x, f.y)), fade(at(fpv(f.x, f.y))));
+        if t > 0.0 {
+            let s = if f.owner == me { 5.0 } else { 4.0 };
+            draw_rectangle(p.x - s / 2.0, p.y - s / 2.0, s, s, with_alpha(player_color(f.owner), t));
+        }
     }
-    // Where we are looking: a small glow (gone if we have wandered off the map).
-    let here = r.point() + cam.center * k;
-    if r.contains(here) {
-        draw_circle(here.x, here.y, 5.0, with_alpha(WHITE, 0.12));
-        draw_circle(here.x, here.y, 2.0, with_alpha(WHITE, 0.75));
-    }
-    if clicked && r.contains(mouse) {
-        return Some(vec2((mouse.x - r.x) / k, (mouse.y - r.y) / k));
-    }
-    None
+    // Where we are looking.
+    draw_circle(middle.x, middle.y, 5.0, with_alpha(WHITE, 0.12));
+    draw_circle(middle.x, middle.y, 2.0, with_alpha(WHITE, 0.75));
+    (clicked && mouse.distance(middle) <= radius).then(|| cam.center + (mouse - middle) / k)
 }
 
 #[cfg(test)]
@@ -712,26 +639,6 @@ mod tests {
     use super::*;
     use dronoids::programs;
     use dronoids::sim::Command;
-
-    #[test]
-    fn the_camera_fades_out_past_the_sector_and_never_hits_a_wall() {
-        let size = 768.0;
-        // Inside, and on the way back, it goes where it is told.
-        assert_eq!(drift(100.0, 130.0, size), 130.0);
-        assert_eq!(drift(-100.0, -40.0, size), -40.0);
-        assert_eq!(drift(size + 100.0, size + 20.0, size), size + 20.0);
-        // Pushing outward on either side: steps shrink but never stop dead.
-        for (start, step) in [(0.0, -2.0), (size, 2.0)] {
-            let (mut at, mut last) = (start, f32::MAX);
-            for _ in 0..500 {
-                let next = drift(at, at + step, size);
-                let moved = (next - at).abs();
-                assert!(moved <= last + 1e-4 && moved > 0.0, "{moved} after {last}");
-                (at, last) = (next, moved);
-            }
-            assert!((at - start).abs() < DRIFT);
-        }
-    }
 
     #[test]
     fn enemies_only_show_within_sight() {
@@ -747,7 +654,7 @@ mod tests {
         }
         let mine = w.factories.iter().find(|f| f.owner == 0).unwrap().clone();
         let theirs = w.factories.iter().find(|f| f.owner == 1).unwrap().clone();
-        let sight = Sight::of(&w, 0, 1.0);
+        let sight = Sight::of(&w, 0, 1.0, Rect::new(-3000.0, -3000.0, 6000.0, 6000.0));
         assert!(sight.shows(0, fpv(mine.x, mine.y)));
         assert!(!sight.shows(1, fpv(theirs.x, theirs.y)), "a far colony hides in the fog");
         assert!(!sight.explored(fpv(theirs.x, theirs.y)));
@@ -758,7 +665,7 @@ mod tests {
         w.dronoids[di].y = mine.y;
         w.dronoids[di].prev_x = w.dronoids[di].x;
         w.dronoids[di].prev_y = w.dronoids[di].y;
-        let sight = Sight::of(&w, 0, 1.0);
+        let sight = Sight::of(&w, 0, 1.0, Rect::new(-3000.0, -3000.0, 6000.0, 6000.0));
         assert!(sight.shows(1, near));
         assert!(Sight::all().shows(1, fpv(theirs.x, theirs.y)), "the title screen sees everything");
     }

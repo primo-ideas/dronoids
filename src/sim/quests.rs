@@ -47,7 +47,7 @@ pub fn progress(w: &World, player: u8, i: usize) -> (i64, i64) {
         0 => (w.factory_count(player).min(1) as i64, 1),
         1 => (p.mined.min(MINED_GOAL), MINED_GOAL),
         2 => ((p.flags & FLAG_OWN_PROGRAM != 0) as i64, 1),
-        3 => ((p.explored.iter().map(|w| w.count_ones() as i64).sum::<i64>()).min(MAPPED_GOAL), MAPPED_GOAL),
+        3 => (p.seen.count().min(MAPPED_GOAL), MAPPED_GOAL),
         4 => (w.factory_count(player).min(2) as i64, 2),
         _ => (0, 1),
     }

@@ -58,7 +58,8 @@ pub struct Bot {
 /// Programs given to successive new factories.
 const BUILD_ORDER: &[&str] = &["mineur", "eclaireur", "mineur", "chasseur", "gardien", "mineur", "chasseur", "chasseur"];
 
-const DENSITY_CELL: i32 = 8 * FP;
+/// How far around a building site crystals count.
+const SITE_ORE_REACH: i32 = 12 * FP;
 /// Colonies only send raids this far from home: the world is big enough
 /// for newcomers to grow in peace if they settle away from them.
 const RAID_RANGE: i32 = 170 * FP;
@@ -152,26 +153,16 @@ impl Bot {
             .map(|f| (dist2(f.x - me.home.0, f.y - me.home.1), (f.x, f.y)))
             .filter(|(d, _)| *d <= range)
             .min()
-            .map(|(_, (x, y))| (x / FP, y / FP))
+            .map(|(_, (x, y))| (x.div_euclid(FP), y.div_euclid(FP)))
     }
 
     /// Best buildable spot near our units: lots of crystals around, not
     /// too close to our other factories.
     fn pick_site(&self, w: &World) -> Option<(i32, i32)> {
         let me = self.player;
-        let n = w.size / DENSITY_CELL + 1;
-        let mut density = vec![0i32; (n * n) as usize];
-        for o in &w.ores {
-            density[((o.y / DENSITY_CELL) * n + o.x / DENSITY_CELL) as usize] += o.amount;
-        }
         let ore_around = |x: i32, y: i32| {
-            let (cx, cy) = (x / DENSITY_CELL, y / DENSITY_CELL);
             let mut s = 0;
-            for j in (cy - 1).max(0)..=(cy + 1).min(n - 1) {
-                for i in (cx - 1).max(0)..=(cx + 1).min(n - 1) {
-                    s += density[(j * n + i) as usize];
-                }
-            }
+            w.ores_near(x, y, SITE_ORE_REACH, |o| s += o.amount);
             s
         };
         let anchors: Vec<(i32, i32)> = w

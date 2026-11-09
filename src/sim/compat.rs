@@ -106,7 +106,6 @@ fn upgrade<P>(old: WorldOld<P>, player: impl Fn(P) -> Player) -> World {
     w.ore_target = old.ore_target;
     // The map comes from the seed and the saved size, as for any snapshot.
     w.rocks.clear();
-    w.slots.clear();
     w
 }
 
@@ -124,6 +123,7 @@ impl PlayerV3 {
             home: self.home,
             shield_until: self.shield_until,
             explored: vec![],
+            seen: Default::default(),
             quests: 0,
             flags: 0,
         }
@@ -144,6 +144,7 @@ impl PlayerV4 {
             home: self.home,
             shield_until: self.shield_until,
             explored: self.explored,
+            seen: Default::default(),
             quests: 0,
             flags: 0,
         }
@@ -195,12 +196,29 @@ mod tests {
         ore_target: u32,
     }
 
+    /// A player's explored map as it used to be stored.
+    fn old_bits(w: &World, p: &Player) -> Vec<u64> {
+        let n = (w.size + crate::rules::FOG_CELL - 1) / crate::rules::FOG_CELL;
+        let mut bits = vec![0u64; ((n * n) as usize).div_ceil(64)];
+        for cy in 0..n {
+            for cx in 0..n {
+                if p.seen.get(cx, cy) {
+                    let i = (cy * n + cx) as usize;
+                    bits[i / 64] |= 1 << (i % 64);
+                }
+            }
+        }
+        bits
+    }
+
     /// What a protocol-3 or protocol-4 server would have written for this world.
     fn as_old(w: &World, version: u32) -> Vec<u8> {
+        let bits: Vec<Vec<u64>> = w.players.iter().map(|p| old_bits(w, p)).collect();
         let players = w
             .players
             .iter()
-            .map(|p| PlayerOut {
+            .zip(&bits)
+            .map(|(p, bits)| PlayerOut {
                 id: p.id,
                 name: &p.name,
                 minerals: p.minerals,
@@ -211,7 +229,7 @@ mod tests {
                 kills: p.kills,
                 home: p.home,
                 shield_until: p.shield_until,
-                explored: (version >= 4).then_some(&p.explored[..]),
+                explored: (version >= 4).then_some(&bits[..]),
             })
             .collect();
         bincode::serialize(&WorldOut {
@@ -232,13 +250,23 @@ mod tests {
 
     /// A sector with a bit of history: two colonies, dronoids out, a bot.
     fn lived_in() -> World {
-        let mut w = World::new(11);
+        let mut w = World::with_first_sector(11);
         let m = programs::builtin("mineur").unwrap();
-        for name in ["ana", "bob"] {
+        // Everyone lives in the first sector, as in the worlds of that time.
+        let slots = crate::sim::map::generate(11, crate::rules::WORLD_SIZE).slots;
+        let settle = |w: &mut World, id: u8, i: usize| {
+            let p = &mut w.players[id as usize];
+            p.home = slots[i];
+            p.seen = Default::default();
+            w.reveal(id, slots[i].0, slots[i].1, ARRIVAL_SCAN);
+        };
+        for (i, name) in ["ana", "bob"].into_iter().enumerate() {
             let id = w.join(name, false).unwrap();
+            settle(&mut w, id, i);
             land(&mut w, id, m.source);
         }
-        w.join("IA Vega", true);
+        let id = w.join("IA Vega", true).unwrap();
+        settle(&mut w, id, 2);
         for _ in 0..300 {
             w.step(&[]);
         }
@@ -272,7 +300,14 @@ mod tests {
         assert_eq!(version, 4);
         same_sector(&w, &old);
         for (p, q) in w.players.iter().zip(&old.players) {
-            assert_eq!(p.explored, q.explored);
+            // (Those maps stopped at the edge of the sector.)
+            let n = (w.size + crate::rules::FOG_CELL - 1) / crate::rules::FOG_CELL;
+            for cy in 0..n {
+                for cx in 0..n {
+                    assert_eq!(p.seen.get(cx, cy), q.seen.get(cx, cy));
+                }
+            }
+            assert!(q.seen.count() > 0 && q.explored.is_empty());
             assert_eq!((q.quests, q.flags), (0, 0));
         }
     }

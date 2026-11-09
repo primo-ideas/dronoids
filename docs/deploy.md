@@ -42,6 +42,11 @@ joignable.
 
 ## La sauvegarde du secteur
 
+Le monde est généré à la demande à partir de sa graine : le fichier ne contient que
+ce que les joueurs ont changé (usines, dronoids, cartes explorées, gisements entamés).
+Le carré de 768 unités des premières versions reste au centre du secteur `primo`, tel
+qu'il était ; tout autour, le terrain est calculé.
+
 Depuis le protocole 5, `primo.world` est en JSON : une version suivante peut ajouter
 des champs (avec une valeur par défaut) et relire le secteur. Le serveur relit aussi
 les sauvegardes bincode des versions précédentes (protocoles 3 et 4) ; il en garde

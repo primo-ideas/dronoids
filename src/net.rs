@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::sim::Command;
 
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 pub const DEFAULT_PORT: u16 = 8082;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

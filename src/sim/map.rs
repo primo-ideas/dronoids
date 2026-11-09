@@ -71,7 +71,7 @@ pub fn generate(seed: u64, size_units: i32) -> GeneratedMap {
     let detail = Noise::new(&mut rng, size, 13 * FP);
     let mut rocks: Vec<Rock> = vec![];
     let cell = 16 * FP;
-    let mut rock_grid = super::grid::Grid::new(size, cell);
+    let mut rock_grid = super::grid::Grid::new(cell);
     let mut near = vec![];
     let attempts = (size_units as i64 * size_units as i64 / 30) as usize;
     for _ in 0..attempts {
@@ -99,7 +99,7 @@ pub fn generate(seed: u64, size_units: i32) -> GeneratedMap {
 
     // 3. Crystal fields.
     let mut ores: Vec<(i32, i32, i32)> = vec![];
-    let mut ore_grid = super::grid::Grid::new(size, cell);
+    let mut ore_grid = super::grid::Grid::new(cell);
     let mut cluster = |rng: &mut Rng, ores: &mut Vec<(i32, i32, i32)>, cx: i32, cy: i32, n: usize, rich: i32| {
         let mut placed = 0;
         for k in 0..n * 6 {
