@@ -292,6 +292,9 @@ impl World {
         } else {
             serde_json::from_slice(bytes).map_err(|e| e.to_string())?
         };
+        for p in &mut w.programs {
+            p.source = programs::reworded(&p.source);
+        }
         w.rebuild_caches();
         Ok(w)
     }
@@ -1256,6 +1259,15 @@ pub(crate) mod tests {
             land(&mut w, i as u8, m.source);
         }
         w
+    }
+
+    #[test]
+    fn saved_programs_get_the_new_wording() {
+        let hunter = programs::builtin("chasseur").unwrap().source;
+        let mut w = World::new(1);
+        w.programs.push(ProgEntry { name: "chasseur".into(), source: hunter.replace("dronoids", "drones"), code: None });
+        let back = World::from_save(&w.to_save()).unwrap();
+        assert_eq!(back.programs.last().unwrap().source, hunter);
     }
 
     #[test]

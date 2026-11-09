@@ -790,7 +790,7 @@ impl Game {
             }
             if let Some(id) = debug_id {
                 let alive = self.world.drone(id).is_some();
-                let title = if alive { format!("Drone #{id}") } else { format!("Drone #{id} (détruit)") };
+                let title = if alive { format!("Dronoid #{id}") } else { format!("Dronoid #{id} (détruit)") };
                 gfx::text(&title, h.x, h.y + 8.0, 16.0, if alive { pal::ACCENT } else { pal::BAD });
                 let tx = h.x + gfx::text_width(&title, 16.0) + 12.0;
                 let runs = format!("exécute « {} »", self.edit_name.text);
@@ -840,7 +840,7 @@ impl Game {
             }
         } else if let Some(id) = debug_id {
             let alive = self.world.drone(id).is_some();
-            let title = if alive { format!("Drone #{id}") } else { format!("Drone #{id} (détruit)") };
+            let title = if alive { format!("Dronoid #{id}") } else { format!("Dronoid #{id} (détruit)") };
             gfx::text(&title, x, h.y + 7.0, 16.0, if alive { pal::ACCENT } else { pal::BAD });
             x += gfx::text_width(&title, 16.0) + 14.0;
             gfx::text(&format!("exécute « {} »", self.edit_name.text), x, h.y + 9.0, 13.0, pal::DIM);
@@ -970,7 +970,7 @@ impl Game {
 
     fn debug_side(&self, ui: &mut Ui, r: Rect, id: u32, acts: &mut Vec<Act>) {
         let Some(d) = self.world.drone(id) else {
-            gfx::text("Drone détruit.", r.x + 10.0, r.y + 10.0, 14.0, pal::BAD);
+            gfx::text("Dronoid détruit.", r.x + 10.0, r.y + 10.0, 14.0, pal::BAD);
             return;
         };
         // Under the code on a small screen, the panel is wide: two columns.
@@ -1018,7 +1018,7 @@ impl Game {
             y += HIVE_MEM.div_ceil(4) as f32 * cell_h + 6.0;
         }
         let fr = Rect::new(x, y.min(r.y + r.h - 32.0), col_w - 20.0, 26.0);
-        if ui.button_ex(fr, if self.follow { "La caméra le suit" } else { "Suivre ce drone" }, self.follow, true, pal::ACCENT) {
+        if ui.button_ex(fr, if self.follow { "La caméra le suit" } else { "Suivre ce dronoid" }, self.follow, true, pal::ACCENT) {
             acts.push(Act::Follow(!self.follow));
         }
     }
@@ -1275,7 +1275,8 @@ impl Game {
                 }
                 cy += 36.0;
                 let n = self.world.drones_of_factory(id);
-                gfx::text(&format!("drones {n}/{}", f.quota), x + 12.0, cy + 7.0, 13.0, pal::DIM);
+                let count = format!("dronoids {n}/{}", f.quota);
+                gfx::text(&count, x + 12.0, cy + 7.0, gfx::fit_size(&count, 13.0, 96.0), pal::DIM);
                 if ui.button(Rect::new(x + 112.0, cy, 28.0, 26.0), "−") && f.quota > 0 {
                     acts.push(Act::Issue(Command::SetQuota { factory: id, quota: f.quota - 1 }));
                 }
@@ -1756,7 +1757,7 @@ fn help_overlay(ui: &mut Ui, acts: &mut Vec<Act>, scroll: &mut f32) {
     if ui.button(Rect::new(r.x + r.w - 40.0, r.y + 10.0, 30.0, 28.0), "×") {
         acts.push(Act::ToggleHelp);
     }
-    gfx::text("DASM, le langage des drones", r.x + 20.0, r.y + 16.0, 18.0, pal::ACCENT);
+    gfx::text("DASM, le langage des dronoids", r.x + 20.0, r.y + 16.0, 18.0, pal::ACCENT);
     gfx::text(HELP_INTRO, r.x + 20.0, r.y + 42.0, 13.0, pal::DIM);
 
     let col_w = (w - 60.0) / 2.0;
@@ -1790,7 +1791,7 @@ fn help_overlay(ui: &mut Ui, acts: &mut Vec<Act>, scroll: &mut f32) {
     }
 }
 
-const HELP_INTRO: &str = "Un drone libre exécute ses instructions jusqu'à une ACTION, qui prend du temps ; puis il recommence.";
+const HELP_INTRO: &str = "Un dronoid libre exécute ses instructions jusqu'à une ACTION, qui prend du temps ; puis il recommence.";
 
 const HELP_CATS: [(Cat, &str); 4] = [
     (Cat::Action, "actions · prennent du temps, mettent ok à 1 ou 0"),
@@ -1805,7 +1806,7 @@ fn help_sections(touch: bool) -> Vec<(&'static str, Vec<String>)> {
     let lines = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let mut out = vec![
         ("registres", lines(&[
-            "a b c d   registres libres du drone",
+            "a b c d   registres libres du dronoid",
             "ok        1 si la dernière action a réussi, sinon 0",
             "valeurs : registre, nombre (-3, 42) ou constante",
         ])),
@@ -1825,14 +1826,14 @@ fn help_sections(touch: bool) -> Vec<(&'static str, Vec<String>)> {
             "un MOVE = 1 unité ; astéroïdes, cristaux et usines bloquent",
         ])),
         ("mémoire de ruche", vec![
-            format!("{HIVE_MEM} cases partagées par les drones d'une usine (PEEK / POKE)"),
+            format!("{HIVE_MEM} cases partagées par les dronoids d'une usine (PEEK / POKE)"),
             "« Cibler » écrit 0 = X, 1 = Y, 2 = 1".into(),
         ]),
     ];
     if touch {
         out.push(("au doigt", lines(&[
             "un doigt glissé : déplacer la carte ; deux doigts : zoomer",
-            "toucher : choisir une usine ou un drone ; deux fois sur une usine : son programme",
+            "toucher : choisir une usine ou un dronoid ; deux fois sur une usine : son programme",
             "éditeur : glisser pour faire défiler, toucher pour placer le curseur et écrire",
         ])));
     } else {
@@ -1855,7 +1856,7 @@ fn help_scrolling(ui: &mut Ui, acts: &mut Vec<Act>, scroll: &mut f32) {
     if ui.button(Rect::new(r.x + r.w - 42.0, r.y + 8.0, 34.0, 32.0), "×") {
         acts.push(Act::ToggleHelp);
     }
-    let title = "DASM, le langage des drones";
+    let title = "DASM, le langage des dronoids";
     gfx::text(title, r.x + 14.0, r.y + 16.0, gfx::fit_size(title, 18.0, r.w - 70.0), pal::ACCENT);
     let body = Rect::new(r.x + 14.0, r.y + 50.0, r.w - 28.0, r.h - 58.0);
 
@@ -1910,5 +1911,46 @@ fn help_scrolling(ui: &mut Ui, acts: &mut Vec<Act>, scroll: &mut f32) {
         let bar = body.h * body.h / total;
         let by = body.y + (body.h - bar) * *scroll / max;
         draw_rectangle(r.x + r.w - 5.0, by, 2.0, bar, with_alpha(pal::ACCENT, 0.5));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The units are dronoids: the military word must never reach the screen.
+    #[test]
+    fn players_only_ever_read_dronoid() {
+        let banned = concat!("dron", "e");
+        let said = |text: &str, whose: &str| assert!(!text.to_lowercase().contains(banned), "{whose} : {text}");
+        for q in QUESTS.iter() {
+            said(q.title, "objectif");
+            said(q.hint, "objectif");
+        }
+        for m in vm::MNEMONICS.iter() {
+            said(m.syntax, "aide");
+            said(m.help, "aide");
+        }
+        for b in programs::BUILTINS {
+            said(b.source, b.name);
+            said(b.summary, b.name);
+        }
+        said(programs::TEMPLATE, "modèle");
+        said(include_str!("../web/index.html"), "page");
+        // Every string literal of the code that draws the screens.
+        let screens = [
+            ("game.rs", include_str!("game.rs")),
+            ("menu.rs", include_str!("menu.rs")),
+            ("ui.rs", include_str!("ui.rs")),
+            ("editor.rs", include_str!("editor.rs")),
+            ("view.rs", include_str!("view.rs")),
+        ];
+        for (name, code) in screens {
+            for line in code.lines().filter(|l| !l.trim_start().starts_with("//")) {
+                for literal in line.split('"').skip(1).step_by(2) {
+                    said(literal, name);
+                }
+            }
+        }
     }
 }

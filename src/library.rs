@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use dronoids::programs::{BUILTINS, TEMPLATE};
+use dronoids::programs::{self, BUILTINS, TEMPLATE};
 use dronoids::vm;
 
 pub struct Entry {
@@ -93,6 +93,13 @@ mod disk {
 impl Library {
     pub fn load() -> Library {
         let mut all = disk::read_all();
+        for (name, source) in all.clone() {
+            let clean = programs::reworded(&source);
+            if clean != source {
+                all.insert(name.clone(), clean.clone());
+                let _ = disk::write(&name, &clean, &all);
+            }
+        }
         for b in BUILTINS {
             match all.get(b.name) {
                 // Written for an older version of the language: keep it aside.

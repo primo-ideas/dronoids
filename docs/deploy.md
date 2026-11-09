@@ -47,7 +47,7 @@ des champs (avec une valeur par défaut) et relire le secteur. Le serveur relit 
 les sauvegardes bincode des versions précédentes (protocoles 3 et 4) ; il en garde
 alors l'original dans `primo.old.world` avant de l'écraser au nouveau format. Les
 joueurs d'un secteur au protocole 3, d'avant le brouillard, retrouvent une carte de
-ce que voient leurs usines et leurs drones. Une sauvegarde illisible n'est jamais
+ce que voient leurs usines et leurs dronoids. Une sauvegarde illisible n'est jamais
 écrasée : elle est mise de côté (`primo.unreadable-<horodatage>.world`) et le serveur part
 d'un secteur neuf, ce que son journal signale.
 

@@ -148,7 +148,7 @@ impl Menu {
             poly_lines(&regular(c, 11.0, 6, PI / 6.0 + self.view.time * 0.4 * (i as f32 - 1.0)), 2.0, with_alpha(col, 0.85));
         }
         gfx::text_centered("DRONOIDS", sw / 2.0, ty, 54.0, mix(pal::ACCENT, WHITE, 0.2));
-        let tagline = "un secteur partagé · des drones que vous programmez";
+        let tagline = "un secteur partagé · des dronoids que vous programmez";
         gfx::text_centered(tagline, sw / 2.0, ty + 66.0, gfx::fit_size(tagline, 15.0, sw - 24.0), with_alpha(pal::PINK, 0.85));
         bloom.finish();
 

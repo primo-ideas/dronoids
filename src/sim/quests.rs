@@ -14,7 +14,7 @@ pub struct Quest {
 
 pub const QUESTS: &[Quest] = &[
     Quest { title: "Posez votre première usine", hint: "clic gauche sur un espace libre", reward: 0 },
-    Quest { title: "Extrayez 100 cristaux", hint: "vos drones minent tout seuls", reward: 40 },
+    Quest { title: "Extrayez 100 cristaux", hint: "vos dronoids minent tout seuls", reward: 40 },
     Quest { title: "Appliquez un programme de votre cru", hint: "« Programme » (E), modifiez, Ctrl+S", reward: 60 },
     Quest { title: "Cartographiez les environs", hint: "un éclaireur va loin", reward: 50 },
     Quest { title: "Fondez une deuxième usine", hint: "B, près de vos unités", reward: 80 },

@@ -104,7 +104,7 @@ vider:
     Builtin {
         name: "chasseur",
         summary: "Traque les ennemis, sinon file vers la cible de l'usine.",
-        source: r#"; CHASSEUR -- traque les drones ennemis à portée,
+        source: r#"; CHASSEUR -- traque les dronoids ennemis à portée,
 ; sinon attaque l'usine ennemie la plus proche
 ; (repérée jusqu'à 40 unités), sinon file vers la
 ; cible de son usine : mémoire 0 = X, 1 = Y, 2 = 1
@@ -221,10 +221,24 @@ pub fn builtin(name: &str) -> Option<&'static Builtin> {
     BUILTINS.iter().find(|b| b.name == name)
 }
 
+/// Copies of the built-in programs kept by players and saved sectors still
+/// have this comment in its former wording.
+pub fn reworded(source: &str) -> String {
+    source.replace("traque les drones ennemis", "traque les dronoids ennemis")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::vm::assemble;
+
+    #[test]
+    fn an_old_copy_of_a_builtin_becomes_the_builtin_again() {
+        let hunter = builtin("chasseur").unwrap().source;
+        let old = hunter.replace("dronoids", "drones");
+        assert_ne!(old, hunter);
+        assert_eq!(reworded(&old), hunter);
+    }
 
     #[test]
     fn builtins_assemble() {

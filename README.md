@@ -2,7 +2,7 @@
 
 Un secteur spatial partagé et persistant, vue du dessus, géométrique et néon.
 On y arrive **sans rien**, sinon de quoi bâtir une usine. L'usine fabrique des
-**drones**, qui suivent à la lettre un **programme** écrit dans un petit assembleur
+**dronoids**, qui suivent à la lettre un **programme** écrit dans un petit assembleur
 ludique, **DASM**. Les programmes fournis sont volontairement naïfs : le jeu, c'est
 d'en écrire de meilleurs. Votre colonie continue de travailler quand vous partez.
 
@@ -29,19 +29,19 @@ Rust stable récent (édition 2024). Dépendances : `macroquad` (rendu), `serde`
 - **Arrivée** : 170 cristaux, rien d'autre. On choisit où poser sa première usine
   (loin des autres colonies). Un **bouclier** protège les nouveaux venus 10 minutes
   à partir du moment où ils se posent : ils ne peuvent ni être attaqués, ni attaquer.
-  Une usine neuve sort ses deux premiers drones vite.
+  Une usine neuve sort ses deux premiers dronoids vite.
 - **Premiers pas** : cinq objectifs, l'un après l'autre (se poser, extraire 100
   cristaux, appliquer un programme de son cru, cartographier les environs, fonder une
   deuxième usine), chacun avec sa petite récompense en cristaux. Ils font partie du
   monde : la progression suit le joueur d'une session et d'un appareil à l'autre.
 - **Brouillard de guerre** : on ne voit qu'autour de ses usines (18 unités) et de
-  ses drones (12). L'espace déjà exploré reste en mémoire, voilé (astéroïdes et
+  ses dronoids (12). L'espace déjà exploré reste en mémoire, voilé (astéroïdes et
   cristaux, mais aucune unité étrangère) ; l'inconnu reste noir. La carte explorée
-  est propre à chaque joueur et persiste : vos drones cartographient aussi pendant
+  est propre à chaque joueur et persiste : vos dronoids cartographient aussi pendant
   votre absence. (Chaque client rejoue tout le monde : le brouillard est un choix
   d'affichage, pas une protection.)
 - **Rythme lent** : 4 ticks par seconde ; un pas prend 1 s, extraire un cristal 2 s,
-  une usine produit ensuite un drone toutes les 30 s.
+  une usine produit ensuite un dronoid toutes les 30 s.
 - Les IA ne lancent de raids qu'autour de chez elles : s'installer loin d'elles,
   c'est grandir en paix.
 - Votre pseudo est protégé par un jeton secret gardé par votre navigateur (ou
@@ -56,7 +56,7 @@ Rust stable récent (édition 2024). Dépendances : `macroquad` (rendu), `serde`
 | Clic droit glissé, molette | déplacer la caméra, zoomer |
 | ZQSD / WASD / flèches | déplacer la caméra |
 | `B` | nouvelle usine (Maj+clic pour en poser plusieurs) |
-| `E` / `P` | programme de l'usine, débogueur du drone / tous les programmes |
+| `E` / `P` | programme de l'usine, débogueur du dronoid / tous les programmes |
 | `T` | poser la cible de l'usine (lue par `chasseur`) |
 | `M`, `L`, `H`, `Tab` | carte, colonies, retour à la base, usine suivante |
 | `F1` | aide du langage |
@@ -117,7 +117,7 @@ Le serveur (`dronoids-server`) possède le monde de référence et fait tourner 
 client rejoue ces commandes sur sa propre copie. La simulation est entièrement
 déterministe (entiers en virgule fixe, table de sinus, `atan2` et racines
 entières, RNG maison), donc seules les commandes transitent, jamais les milliers de
-drones. Un arrivant reçoit un instantané du monde (les astéroïdes sont recréés à
+dronoids. Un arrivant reçoit un instantané du monde (les astéroïdes sont recréés à
 partir de la graine), puis le flux de commandes. Les clients envoient un hash
 régulier ; un client qui diverge, ou qui a pris trop de retard (onglet en
 arrière-plan), reçoit un nouvel instantané.
