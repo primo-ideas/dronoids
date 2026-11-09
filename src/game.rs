@@ -19,7 +19,7 @@ use crate::gfx::{self, mix, pal, player_color, with_alpha, Bloom, Fog};
 use crate::library::{self, Library};
 use crate::platform::Settings;
 use crate::ui::{self, TextField, Ui};
-use crate::view::{draw_minimap, fp, fpv, Cam, Highlight, Sight, WorldView, FOG_UNKNOWN};
+use crate::view::{draw_minimap, drift, fp, fpv, Cam, Highlight, Sight, WorldView, FOG_UNKNOWN};
 
 /// Hash checks happen this often (must match the server).
 const HASH_EVERY: u64 = 50;
@@ -1413,6 +1413,7 @@ impl Game {
     fn world_input(&mut self, ui: &mut Ui, lib: &Library, acts: &mut Vec<Act>) {
         let over = ui.over_ui();
         let dt = get_frame_time().min(0.1);
+        let looked_from = self.cam.center;
 
         if !over && ui.wheel != 0.0 {
             let before = self.cam.s2w(ui.mouse);
@@ -1493,7 +1494,7 @@ impl Game {
         }
 
         let size = fp(self.world.size);
-        self.cam.center = self.cam.center.clamp(Vec2::ZERO, Vec2::splat(size));
+        self.cam.center = vec2(drift(looked_from.x, self.cam.center.x, size), drift(looked_from.y, self.cam.center.y, size));
 
         if ui.touch {
             if !tapped {

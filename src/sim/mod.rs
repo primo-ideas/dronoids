@@ -555,7 +555,7 @@ impl World {
             return Err("vous êtes éliminé");
         }
         if !self.inside(x, y, FACTORY_RADIUS + FP) {
-            return Err("hors du monde");
+            return Err("trop loin de vos unités");
         }
         if p.minerals < FACTORY_COST {
             return Err("pas assez de minerai");

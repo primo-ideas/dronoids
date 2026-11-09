@@ -162,6 +162,24 @@ impl Sight {
         let br = cam.s2w(vec2(screen_width(), screen_height()));
         let (x0, y0) = (((tl.x / cell).floor() as i32 - 1).max(0), ((tl.y / cell).floor() as i32 - 1).max(0));
         let (x1, y1) = (((br.x / cell).ceil() as i32 + 1).min(self.fog_n - 1), ((br.y / cell).ceil() as i32 + 1).min(self.fog_n - 1));
+        // Frays can be on screen when the edge they start from is not.
+        let last = self.fog_n - 1;
+        let (fx0, fy0) = (((tl.x / cell).floor() as i32 - FRAY_CELLS).max(0), ((tl.y / cell).floor() as i32 - FRAY_CELLS).max(0));
+        let (fx1, fy1) = (((br.x / cell).ceil() as i32 + FRAY_CELLS).min(last), ((br.y / cell).ceil() as i32 + FRAY_CELLS).min(last));
+        for cy in fy0..=fy1 {
+            for cx in [0, last] {
+                if (fx0..=fx1).contains(&cx) && self.explored_cell(cx, cy) {
+                    self.fray(cam, cx, cy);
+                }
+            }
+        }
+        for cx in fx0..=fx1 {
+            for cy in [0, last] {
+                if (fy0..=fy1).contains(&cy) && self.explored_cell(cx, cy) {
+                    self.fray(cam, cx, cy);
+                }
+            }
+        }
         for cy in y0..=y1 {
             for cx in x0..=x1 {
                 if self.explored_cell(cx, cy) {
@@ -175,6 +193,61 @@ impl Sight {
             draw_circle(s.x, s.y, r * z, WHITE);
         }
     }
+
+    /// What we know never ends on the straight edge of the sector: from a
+    /// cell on that edge, the veil frays out into the dark, farther here
+    /// and less far there, so that seen from afar the end meanders too.
+    fn fray(&self, cam: &Cam, cx: i32, cy: i32) {
+        let cell = fp(FOG_CELL);
+        let last = self.fog_n - 1;
+        let out = vec2(
+            if cx == 0 { -1.0 } else if cx == last { 1.0 } else { 0.0 },
+            if cy == 0 { -1.0 } else if cy == last { 1.0 } else { 0.0 },
+        );
+        let side = (if out.x != 0.0 { cx.signum() as u32 + 3 } else { cy.signum() as u32 + 5 }) * 97;
+        let run = if out.y == 0.0 { cy } else { cx } as f32;
+        let reach = 2.0 + 14.0 * (0.7 * wander(run / 11.0, side) + 0.3 * wander(run / 4.0, side + 7));
+        let tangent = vec2(-out.y, out.x);
+        let middle = vec2(cx as f32 + 0.5, cy as f32 + 0.5);
+        let seed = (cx as u32).wrapping_mul(73) ^ (cy as u32).wrapping_mul(151);
+        // From the far end inwards: the brighter patches stay on top.
+        for step in (1..=reach as u32).rev() {
+            let s = step as f32;
+            let t = s / (reach + 1.0);
+            let h = hash(seed, step);
+            // Less and less likely, the farther out.
+            if h > 1.0 - t * 0.7 {
+                continue;
+            }
+            let spot = middle + out * s * (0.8 + 0.3 * h) + tangent * ((h * 7.0).fract() - 0.5) * 2.5;
+            let c = cam.w2s(spot * cell);
+            draw_circle(c.x, c.y, cell * cam.zoom * (1.05 - 0.4 * t), mix(FOG_UNKNOWN, FOG_EXPLORED, (1.0 - t).powi(2) * 0.9));
+        }
+    }
+}
+
+/// How many fog cells a frayed edge can reach past the sector.
+const FRAY_CELLS: i32 = 20;
+
+/// Smooth noise in 0..1 along a line.
+fn wander(t: f32, seed: u32) -> f32 {
+    let (i, f) = (t.floor(), t.fract());
+    let (a, b) = (hash(i as u32, seed), hash(i as u32 + 1, seed));
+    a + (b - a) * f * f * (3.0 - 2.0 * f)
+}
+
+/// How far past the sector the camera can wander.
+const DRIFT: f32 = 240.0;
+
+/// Where a camera coordinate going from `from` to `to` really ends up in a
+/// sector `size` wide. Inside it, anywhere. Past it, each step outward counts
+/// for less the farther out it goes: the view slows down to nothing in the
+/// dark, it never comes up against a wall.
+pub fn drift(from: f32, to: f32, size: f32) -> f32 {
+    let beyond = (-from).max(from - size);
+    let outward = if from < 0.0 { to < from } else { to > from };
+    let to = if beyond > 0.0 && outward { from + (to - from) * (1.0 - beyond / DRIFT).max(0.0).powi(2) } else { to };
+    to.clamp(-DRIFT, size + DRIFT)
 }
 
 /// How dark space is where we have never been, and how veiled where we have.
@@ -381,12 +454,6 @@ impl WorldView {
         let alpha = alpha.clamp(0.0, 1.0);
         self.draw_stars(cam);
 
-        // World border.
-        let size = fp(world.size);
-        let a = cam.w2s(Vec2::ZERO);
-        let b = cam.w2s(vec2(size, size));
-        draw_rectangle_lines(a.x, a.y, b.x - a.x, b.y - a.y, 3.0, with_alpha(pal::VIOLET, 0.5));
-
         if let Some(owner) = hl.build_range_for {
             let col = with_alpha(pal::GOOD, 0.10);
             for f in world.factories.iter().filter(|f| f.owner == owner) {
@@ -587,18 +654,26 @@ impl WorldView {
 /// Overview of the whole world. Returns the clicked world position.
 pub fn draw_minimap(world: &World, cam: &Cam, r: Rect, sight: &Sight, mouse: Vec2, clicked: bool) -> Option<Vec2> {
     let me = sight.me().unwrap_or(u8::MAX);
-    draw_rectangle(r.x, r.y, r.w, r.h, pal::PANEL);
+    // No frame: what we know floats in a soft patch of dark.
+    let middle = r.point() + r.size() / 2.0;
+    for i in 0..8 {
+        draw_circle(middle.x, middle.y, r.w.max(r.h) * (0.68 - i as f32 * 0.05), with_alpha(pal::BG, 0.16));
+    }
     let size = fp(world.size);
     let k = r.w.min(r.h) / size;
     let at = |x: i32, y: i32| vec2(r.x + fp(x) * k, r.y + fp(y) * k);
-    // Explored space shows as a faint wash; the rest stays black.
+    // Explored space shows as a faint wash, which fades out towards the end
+    // of the sector; the rest stays black. (Opaque: overlaps draw no grid.)
     if sight.fogged() {
         let cell = fp(FOG_CELL) * k;
         let n = world.fog_side();
+        let dark = Color::new(0.012, 0.016, 0.04, 1.0);
         for cy in 0..n {
             for cx in 0..n {
                 if sight.explored_cell(cx, cy) {
-                    draw_rectangle(r.x + cx as f32 * cell, r.y + cy as f32 * cell, cell + 0.3, cell + 0.3, Color::new(0.12, 0.16, 0.3, 0.55));
+                    let edge = cx.min(cy).min(n - 1 - cx).min(n - 1 - cy) as f32;
+                    let wash = mix(dark, Color::new(0.075, 0.1, 0.19, 1.0), (edge / 8.0).min(1.0));
+                    draw_rectangle(r.x + cx as f32 * cell, r.y + cy as f32 * cell, cell + 0.3, cell + 0.3, wash);
                 }
             }
         }
@@ -620,16 +695,12 @@ pub fn draw_minimap(world: &World, cam: &Cam, r: Rect, sight: &Sight, mouse: Vec
         let s = if f.owner == me { 5.0 } else { 4.0 };
         draw_rectangle(p.x - s / 2.0, p.y - s / 2.0, s, s, player_color(f.owner));
     }
-    let tl = cam.s2w(vec2(0.0, 0.0));
-    let br = cam.s2w(vec2(screen_width(), screen_height()));
-    let vx = (r.x + tl.x * k).max(r.x);
-    let vy = (r.y + tl.y * k).max(r.y);
-    let vw = (r.x + br.x * k).min(r.x + r.w) - vx;
-    let vh = (r.y + br.y * k).min(r.y + r.h) - vy;
-    if vw > 0.0 && vh > 0.0 {
-        draw_rectangle_lines(vx, vy, vw, vh, 1.5, with_alpha(WHITE, 0.7));
+    // Where we are looking: a small glow (gone if we have wandered off the map).
+    let here = r.point() + cam.center * k;
+    if r.contains(here) {
+        draw_circle(here.x, here.y, 5.0, with_alpha(WHITE, 0.12));
+        draw_circle(here.x, here.y, 2.0, with_alpha(WHITE, 0.75));
     }
-    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5, pal::PANEL_EDGE);
     if clicked && r.contains(mouse) {
         return Some(vec2((mouse.x - r.x) / k, (mouse.y - r.y) / k));
     }
@@ -641,6 +712,26 @@ mod tests {
     use super::*;
     use dronoids::programs;
     use dronoids::sim::Command;
+
+    #[test]
+    fn the_camera_fades_out_past_the_sector_and_never_hits_a_wall() {
+        let size = 768.0;
+        // Inside, and on the way back, it goes where it is told.
+        assert_eq!(drift(100.0, 130.0, size), 130.0);
+        assert_eq!(drift(-100.0, -40.0, size), -40.0);
+        assert_eq!(drift(size + 100.0, size + 20.0, size), size + 20.0);
+        // Pushing outward on either side: steps shrink but never stop dead.
+        for (start, step) in [(0.0, -2.0), (size, 2.0)] {
+            let (mut at, mut last) = (start, f32::MAX);
+            for _ in 0..500 {
+                let next = drift(at, at + step, size);
+                let moved = (next - at).abs();
+                assert!(moved <= last + 1e-4 && moved > 0.0, "{moved} after {last}");
+                (at, last) = (next, moved);
+            }
+            assert!((at - start).abs() < DRIFT);
+        }
+    }
 
     #[test]
     fn enemies_only_show_within_sight() {
