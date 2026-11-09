@@ -179,7 +179,7 @@ impl Bot {
             .iter()
             .filter(|f| f.owner == me)
             .map(|f| (f.x, f.y))
-            .chain(w.drones.iter().filter(|d| d.owner == me).step_by(3).take(30).map(|d| (d.x, d.y)))
+            .chain(w.dronoids.iter().filter(|d| d.owner == me).step_by(3).take(30).map(|d| (d.x, d.y)))
             .collect();
         let mut best: Option<(i32, (i32, i32))> = None;
         for (k, (ax, ay)) in anchors.iter().enumerate() {
@@ -273,15 +273,15 @@ mod tests {
             let summary: Vec<String> = w
                 .players
                 .iter()
-                .map(|p| format!("{}:{}f/{}d{}", p.id, w.factory_count(p.id), w.drone_count(p.id), if p.alive { "" } else { "✗" }))
+                .map(|p| format!("{}:{}f/{}d{}", p.id, w.factory_count(p.id), w.dronoid_count(p.id), if p.alive { "" } else { "✗" }))
                 .collect();
             println!(
-                "{level:?}: {} ticks ({:.1} min) in {:?} = {:.3} ms/tick, {} drones; {}",
+                "{level:?}: {} ticks ({:.1} min) in {:?} = {:.3} ms/tick, {} dronoids; {}",
                 w.tick,
                 w.tick as f32 / TICKS_PER_SEC / 60.0,
                 el,
                 el.as_secs_f64() * 1000.0 / w.tick as f64,
-                w.drones.len(),
+                w.dronoids.len(),
                 summary.join(" ")
             );
         }

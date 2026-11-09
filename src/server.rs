@@ -1,7 +1,7 @@
 //! World server. It owns the authoritative world, runs the computer
 //! colonies, and each tick broadcasts the ordered list of commands; clients
 //! replay them on their own copy (deterministic simulation), so only
-//! commands travel — never the thousands of drones. A newcomer receives a
+//! commands travel — never the thousands of dronoids. A newcomer receives a
 //! snapshot, then the frames. Clients report hashes; a client that drifts
 //! (or falls behind, like a hidden browser tab) gets a fresh snapshot.
 //!

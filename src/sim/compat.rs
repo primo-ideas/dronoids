@@ -10,9 +10,9 @@ use bincode::Options;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
-use super::{Drone, Factory, Ore, Player, ProgEntry, World};
+use super::{Dronoid, Factory, Ore, Player, ProgEntry, World};
 use crate::rng::Rng;
-use crate::rules::{ARRIVAL_SCAN, VISION_DRONE, VISION_FACTORY};
+use crate::rules::{ARRIVAL_SCAN, VISION_DRONOID, VISION_FACTORY};
 
 /// Player as saved by protocol 3 (before the fog of war).
 #[derive(Deserialize)]
@@ -23,7 +23,7 @@ struct PlayerV3 {
     alive: bool,
     bot: bool,
     mined: i64,
-    drones_built: u32,
+    dronoids_built: u32,
     kills: u32,
     home: (i32, i32),
     shield_until: u64,
@@ -38,7 +38,7 @@ struct PlayerV4 {
     alive: bool,
     bot: bool,
     mined: i64,
-    drones_built: u32,
+    dronoids_built: u32,
     kills: u32,
     home: (i32, i32),
     shield_until: u64,
@@ -54,7 +54,7 @@ struct WorldOld<P> {
     ores: Vec<Ore>,
     players: Vec<P>,
     factories: Vec<Factory>,
-    drones: Vec<Drone>,
+    dronoids: Vec<Dronoid>,
     programs: Vec<ProgEntry>,
     next_id: u32,
     rng: Rng,
@@ -82,8 +82,8 @@ pub(super) fn from_bincode(bytes: &[u8]) -> Result<(World, u32), String> {
         // Nothing was mapped yet: start from what each colony sees today.
         let homes = w.players.iter().filter(|p| p.alive).map(|p| (p.id, p.home.0, p.home.1, ARRIVAL_SCAN));
         let factories = w.factories.iter().map(|f| (f.owner, f.x, f.y, VISION_FACTORY));
-        let drones = w.drones.iter().map(|d| (d.owner, d.x, d.y, VISION_DRONE));
-        let units: Vec<(u8, i32, i32, i32)> = homes.chain(factories).chain(drones).collect();
+        let dronoids = w.dronoids.iter().map(|d| (d.owner, d.x, d.y, VISION_DRONOID));
+        let units: Vec<(u8, i32, i32, i32)> = homes.chain(factories).chain(dronoids).collect();
         for (owner, x, y, r) in units {
             w.reveal(owner, x, y, r);
         }
@@ -99,7 +99,7 @@ fn upgrade<P>(old: WorldOld<P>, player: impl Fn(P) -> Player) -> World {
     w.ores = old.ores;
     w.players = old.players.into_iter().map(player).collect();
     w.factories = old.factories;
-    w.drones = old.drones;
+    w.dronoids = old.dronoids;
     w.programs = old.programs;
     w.next_id = old.next_id;
     w.rng = old.rng;
@@ -119,7 +119,7 @@ impl PlayerV3 {
             alive: self.alive,
             bot: self.bot,
             mined: self.mined,
-            drones_built: self.drones_built,
+            dronoids_built: self.dronoids_built,
             kills: self.kills,
             home: self.home,
             shield_until: self.shield_until,
@@ -139,7 +139,7 @@ impl PlayerV4 {
             alive: self.alive,
             bot: self.bot,
             mined: self.mined,
-            drones_built: self.drones_built,
+            dronoids_built: self.dronoids_built,
             kills: self.kills,
             home: self.home,
             shield_until: self.shield_until,
@@ -167,7 +167,7 @@ mod tests {
         alive: bool,
         bot: bool,
         mined: i64,
-        drones_built: u32,
+        dronoids_built: u32,
         kills: u32,
         home: (i32, i32),
         shield_until: u64,
@@ -188,7 +188,7 @@ mod tests {
         ores: &'a [Ore],
         players: Vec<PlayerOut<'a>>,
         factories: &'a [Factory],
-        drones: &'a [Drone],
+        dronoids: &'a [Dronoid],
         programs: &'a [ProgEntry],
         next_id: u32,
         rng: &'a Rng,
@@ -207,7 +207,7 @@ mod tests {
                 alive: p.alive,
                 bot: p.bot,
                 mined: p.mined,
-                drones_built: p.drones_built,
+                dronoids_built: p.dronoids_built,
                 kills: p.kills,
                 home: p.home,
                 shield_until: p.shield_until,
@@ -221,7 +221,7 @@ mod tests {
             ores: &w.ores,
             players,
             factories: &w.factories,
-            drones: &w.drones,
+            dronoids: &w.dronoids,
             programs: &w.programs,
             next_id: w.next_id,
             rng: &w.rng,
@@ -230,7 +230,7 @@ mod tests {
         .unwrap()
     }
 
-    /// A sector with a bit of history: two colonies, drones out, a bot.
+    /// A sector with a bit of history: two colonies, dronoids out, a bot.
     fn lived_in() -> World {
         let mut w = World::new(11);
         let m = programs::builtin("mineur").unwrap();
@@ -242,7 +242,7 @@ mod tests {
         for _ in 0..300 {
             w.step(&[]);
         }
-        assert!(w.drones.len() >= 2);
+        assert!(w.dronoids.len() >= 2);
         w
     }
 
@@ -258,7 +258,7 @@ mod tests {
         assert_eq!((a.tick, a.seed, a.size), (b.tick, b.seed, b.size));
         assert_eq!(a.ores, b.ores);
         assert_eq!(a.factories.len(), b.factories.len());
-        assert_eq!(a.drones.len(), b.drones.len());
+        assert_eq!(a.dronoids.len(), b.dronoids.len());
         assert_eq!(a.rocks, b.rocks, "the map comes back from the seed");
         for (p, q) in a.players.iter().zip(&b.players) {
             assert_eq!((&p.name, p.minerals, p.alive, p.bot, p.mined), (&q.name, q.minerals, q.alive, q.bot, q.mined));
@@ -286,7 +286,7 @@ mod tests {
         let f = old.factories.iter().find(|f| f.owner == 1).unwrap();
         assert!(old.explored(1, f.x, f.y));
         assert!(!old.explored(0, f.x, f.y), "nobody learns where the others are");
-        let d = old.drones.iter().find(|d| d.owner == 0).unwrap();
+        let d = old.dronoids.iter().find(|d| d.owner == 0).unwrap();
         assert!(old.explored(0, d.x, d.y));
     }
 

@@ -45,7 +45,7 @@ pub enum Driver {
 pub enum Sel {
     None,
     Factory(u32),
-    Drone(u32),
+    Dronoid(u32),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -392,8 +392,8 @@ impl Game {
         }
 
         if self.follow
-            && let Sel::Drone(id) = self.sel
-            && let Some(p) = WorldView::drone_pos(&self.world, id, self.alpha())
+            && let Sel::Dronoid(id) = self.sel
+            && let Some(p) = WorldView::dronoid_pos(&self.world, id, self.alpha())
         {
             self.cam.center = self.cam.center.lerp(p, (dt * 5.0).min(1.0));
         }
@@ -469,7 +469,7 @@ impl Game {
         // Someone else's unit that slips into the fog is no longer selected.
         let lost = match self.sel {
             Sel::Factory(id) => self.world.factory(id).is_some_and(|f| !self.sight.shows(f.owner, fpv(f.x, f.y))),
-            Sel::Drone(id) => self.world.drone(id).is_some_and(|d| !self.sight.shows(d.owner, fpv(d.x, d.y))),
+            Sel::Dronoid(id) => self.world.dronoid(id).is_some_and(|d| !self.sight.shows(d.owner, fpv(d.x, d.y))),
             Sel::None => false,
         };
         if lost {
@@ -477,7 +477,7 @@ impl Game {
         }
         match self.sel {
             Sel::Factory(id) if self.world.factory(id).is_none() => self.sel = Sel::None,
-            Sel::Drone(id) if self.world.drone(id).is_none() => {
+            Sel::Dronoid(id) if self.world.dronoid(id).is_none() => {
                 self.sel = Sel::None;
                 self.follow = false;
             }
@@ -526,7 +526,7 @@ impl Game {
         });
         Highlight {
             factory: if let Sel::Factory(id) = self.sel { Some(id) } else { None },
-            drone: if let Sel::Drone(id) = self.sel { Some(id) } else { None },
+            dronoid: if let Sel::Dronoid(id) = self.sel { Some(id) } else { None },
             ghost,
             build_range_for: (self.tool == Tool::Build && !self.landing()).then_some(self.me),
             target,
@@ -543,7 +543,7 @@ impl Game {
             Act::Select(s) => {
                 self.sel = s;
                 self.program_menu = None;
-                if !matches!(s, Sel::Drone(_)) {
+                if !matches!(s, Sel::Dronoid(_)) {
                     self.follow = false;
                 }
             }
@@ -639,7 +639,7 @@ impl Game {
     }
 
     fn open_debug(&mut self, id: u32) {
-        let Some(d) = self.world.drone(id) else { return };
+        let Some(d) = self.world.dronoid(id) else { return };
         let (prog, factory) = (d.prog, d.factory);
         self.editor.set_text(&self.world.programs[prog as usize].source);
         self.editor.read_only = true;
@@ -649,7 +649,7 @@ impl Game {
         self.edit_factory = Some(factory);
         self.editor_open = true;
         self.editor.focused = false;
-        self.sel = Sel::Drone(id);
+        self.sel = Sel::Dronoid(id);
         self.follow = true;
     }
 
@@ -695,7 +695,7 @@ impl Game {
         let (sw, sh) = (screen_width(), screen_height());
         let debug = matches!(self.edit_target, EditTarget::Debug(_));
         if ui::compact() {
-            // The whole screen: two rows of buttons, the code, the drone's
+            // The whole screen: two rows of buttons, the code, the dronoid's
             // state under it when debugging; the program list folds over the code.
             let win = Rect::new(4.0, 4.0, sw - 8.0, sh - 8.0);
             let header = Rect::new(win.x + 6.0, win.y + 6.0, win.w - 12.0, 32.0);
@@ -764,7 +764,7 @@ impl Game {
         let debug_id = if let EditTarget::Debug(id) = self.edit_target { Some(id) } else { None };
 
         if let Some(id) = debug_id {
-            match self.world.drone(id) {
+            match self.world.dronoid(id) {
                 Some(d) => {
                     if d.prog != self.debug_prog {
                         self.debug_prog = d.prog;
@@ -789,7 +789,7 @@ impl Game {
                 acts.push(Act::CloseEditor);
             }
             if let Some(id) = debug_id {
-                let alive = self.world.drone(id).is_some();
+                let alive = self.world.dronoid(id).is_some();
                 let title = if alive { format!("Dronoid #{id}") } else { format!("Dronoid #{id} (détruit)") };
                 gfx::text(&title, h.x, h.y + 8.0, 16.0, if alive { pal::ACCENT } else { pal::BAD });
                 let tx = h.x + gfx::text_width(&title, 16.0) + 12.0;
@@ -839,7 +839,7 @@ impl Game {
                 }
             }
         } else if let Some(id) = debug_id {
-            let alive = self.world.drone(id).is_some();
+            let alive = self.world.dronoid(id).is_some();
             let title = if alive { format!("Dronoid #{id}") } else { format!("Dronoid #{id} (détruit)") };
             gfx::text(&title, x, h.y + 7.0, 16.0, if alive { pal::ACCENT } else { pal::BAD });
             x += gfx::text_width(&title, 16.0) + 14.0;
@@ -969,7 +969,7 @@ impl Game {
     }
 
     fn debug_side(&self, ui: &mut Ui, r: Rect, id: u32, acts: &mut Vec<Act>) {
-        let Some(d) = self.world.drone(id) else {
+        let Some(d) = self.world.dronoid(id) else {
             gfx::text("Dronoid détruit.", r.x + 10.0, r.y + 10.0, 14.0, pal::BAD);
             return;
         };
@@ -997,7 +997,7 @@ impl Game {
             ("soute", format!("{}/{}", d.cargo, CARGO_CAP)),
             ("cap", format!("{}°", d.heading)),
             ("position", format!("{}, {}", d.x / FP, d.y / FP)),
-            ("PV", format!("{}/{}", d.hp, DRONE_HP)),
+            ("PV", format!("{}/{}", d.hp, DRONOID_HP)),
         ];
         for (k, v) in rows {
             gfx::text(k, x, y, 12.0, pal::DIM);
@@ -1155,7 +1155,7 @@ impl Game {
             .world
             .players
             .iter()
-            .map(|p| (p.id, self.world.factory_count(p.id), self.world.drone_count(p.id), p.alive))
+            .map(|p| (p.id, self.world.factory_count(p.id), self.world.dronoid_count(p.id), p.alive))
             .collect();
         rows.sort_by_key(|r| (!r.3, std::cmp::Reverse(r.1 * 20 + r.2), r.0));
         let shown = rows.len().min(14);
@@ -1219,7 +1219,7 @@ impl Game {
                 Some(_) => 44.0,
                 None => return None,
             },
-            Sel::Drone(id) => match self.world.drone(id) {
+            Sel::Dronoid(id) => match self.world.dronoid(id) {
                 Some(d) if d.owner == self.me => 76.0,
                 Some(_) => 44.0,
                 None => return None,
@@ -1274,7 +1274,7 @@ impl Game {
                     acts.push(Act::ToggleProgramMenu(id));
                 }
                 cy += 36.0;
-                let n = self.world.drones_of_factory(id);
+                let n = self.world.dronoids_of_factory(id);
                 let count = format!("dronoids {n}/{}", f.quota);
                 gfx::text(&count, x + 12.0, cy + 7.0, gfx::fit_size(&count, 13.0, 96.0), pal::DIM);
                 if ui.button(Rect::new(x + 112.0, cy, 28.0, 26.0), "−") && f.quota > 0 {
@@ -1325,10 +1325,10 @@ impl Game {
                     }
                 }
             }
-            Sel::Drone(id) => {
-                let Some(d) = self.world.drone(id) else { return };
+            Sel::Dronoid(id) => {
+                let Some(d) = self.world.dronoid(id) else { return };
                 ui.panel(r);
-                health(d.hp, DRONE_HP);
+                health(d.hp, DRONOID_HP);
                 let (state, col) = doing_label(d.doing);
                 if d.owner != self.me {
                     theirs(d.owner, &state);
@@ -1532,12 +1532,12 @@ impl Game {
         let wp = self.cam.s2w(ui.mouse);
         let alpha = self.alpha();
         let pick = (0.9f32).max(10.0 / self.cam.zoom);
-        let drone = self
+        let dronoid = self
             .world
-            .drones
+            .dronoids
             .iter()
-            .filter_map(|d| WorldView::drone_pos(&self.world, d.id, alpha).map(|p| (d.id, p.distance(wp))))
-            .filter(|(id, dist)| *dist < pick && self.world.drone(*id).is_some_and(|d| self.sight.shows(d.owner, fpv(d.x, d.y))))
+            .filter_map(|d| WorldView::dronoid_pos(&self.world, d.id, alpha).map(|p| (d.id, p.distance(wp))))
+            .filter(|(id, dist)| *dist < pick && self.world.dronoid(*id).is_some_and(|d| self.sight.shows(d.owner, fpv(d.x, d.y))))
             .min_by(|a, b| a.1.total_cmp(&b.1));
         let factory = self
             .world
@@ -1546,9 +1546,9 @@ impl Game {
             .map(|f| (f.id, fpv(f.x, f.y).distance(wp)))
             .filter(|(id, d)| *d < fp(FACTORY_RADIUS) + 0.4 && self.world.factory(*id).is_some_and(|f| self.sight.shows(f.owner, fpv(f.x, f.y))))
             .min_by(|a, b| a.1.total_cmp(&b.1));
-        let sel = match (drone, factory) {
-            (_, Some((id, _))) if drone.is_none_or(|d| d.1 > 0.5) => Sel::Factory(id),
-            (Some((id, _)), _) => Sel::Drone(id),
+        let sel = match (dronoid, factory) {
+            (_, Some((id, _))) if dronoid.is_none_or(|d| d.1 > 0.5) => Sel::Factory(id),
+            (Some((id, _)), _) => Sel::Dronoid(id),
             _ => Sel::None,
         };
         if ui.double_click
@@ -1621,8 +1621,8 @@ impl Game {
                         acts.push(Act::OpenProgram(self.world.program_name(f.prog).to_string(), Some(id)));
                     }
                 }
-                Sel::Drone(id) => {
-                    if self.world.drone(id).is_some_and(|d| d.owner == self.me) {
+                Sel::Dronoid(id) => {
+                    if self.world.dronoid(id).is_some_and(|d| d.owner == self.me) {
                         acts.push(Act::OpenDebug(id));
                     }
                 }
@@ -1697,8 +1697,8 @@ impl Game {
         }
     }
 
-    pub fn debug_first_drone(&mut self) {
-        if let Some(id) = self.world.drones.iter().find(|d| d.owner == self.me).map(|d| d.id) {
+    pub fn debug_first_dronoid(&mut self) {
+        if let Some(id) = self.world.dronoids.iter().find(|d| d.owner == self.me).map(|d| d.id) {
             self.open_debug(id);
         }
     }

@@ -1,5 +1,5 @@
 //! The deterministic simulation of a large, continuous world: asteroids,
-//! crystal deposits, factories and drones moving freely.
+//! crystal deposits, factories and dronoids moving freely.
 //!
 //! Positions are fixed-point integers (`rules::FP` per unit) and angles are
 //! whole degrees: given the same seed and the same commands, every machine
@@ -56,7 +56,9 @@ pub struct Player {
     pub alive: bool,
     pub bot: bool,
     pub mined: i64,
-    pub drones_built: u32,
+    // The name in saves written before the rename.
+    #[serde(alias = "drones_built")]
+    pub dronoids_built: u32,
     pub kills: u32,
     /// Suggested landing place (and camera start).
     pub home: (i32, i32),
@@ -84,11 +86,11 @@ pub struct Factory {
     pub enabled: bool,
     pub mem: [i32; HIVE_MEM],
     pub spawned: u32,
-    /// Maximum number of living drones from this factory.
+    /// Maximum number of living dronoids from this factory.
     pub quota: u8,
 }
 
-/// What a drone is busy doing.
+/// What a dronoid is busy doing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Doing {
     Idle,
@@ -102,14 +104,14 @@ pub enum Doing {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Drone {
+pub struct Dronoid {
     pub id: u32,
     pub owner: u8,
     pub x: i32,
     pub y: i32,
     pub prev_x: i32,
     pub prev_y: i32,
-    /// Compass angle the drone faces.
+    /// Compass angle the dronoid faces.
     pub heading: i32,
     pub hp: i32,
     pub cargo: i32,
@@ -139,7 +141,7 @@ pub enum Event {
     Mine { owner: u8, x: i32, y: i32, tx: i32, ty: i32, depleted: bool },
     Drop { owner: u8, x: i32, y: i32, tx: i32, ty: i32, amount: i32 },
     Attack { owner: u8, x: i32, y: i32, tx: i32, ty: i32 },
-    DroneDestroyed { owner: u8, x: i32, y: i32 },
+    DronoidDestroyed { owner: u8, x: i32, y: i32 },
     FactoryDestroyed { owner: u8, x: i32, y: i32 },
     FactoryBuilt { owner: u8, x: i32, y: i32 },
     PlayerJoined { player: u8 },
@@ -154,14 +156,14 @@ pub enum Command {
     /// Enter the world (or come back after being eliminated).
     Join { name: String, bot: bool },
     PlaceFactory { x: i32, y: i32, name: String, source: String },
-    /// Give one factory a program; its living drones are reprogrammed too.
+    /// Give one factory a program; its living dronoids are reprogrammed too.
     SetProgram { factory: u32, name: String, source: String },
-    /// New version of a named program: every factory and drone of this
+    /// New version of a named program: every factory and dronoid of this
     /// player running a program with that name switches to it.
     UpdateProgram { name: String, source: String },
     ToggleFactory { factory: u32 },
     SetQuota { factory: u32, quota: u8 },
-    /// Write a cell of a factory's hive memory (e.g. a target for its drones).
+    /// Write a cell of a factory's hive memory (e.g. a target for its dronoids).
     SetMemory { factory: u32, index: u8, value: i32 },
 }
 
@@ -186,7 +188,9 @@ pub struct World {
     pub ores: Vec<Ore>,
     pub players: Vec<Player>,
     pub factories: Vec<Factory>,
-    pub drones: Vec<Drone>,
+    // The name in saves written before the rename.
+    #[serde(alias = "drones")]
+    pub dronoids: Vec<Dronoid>,
     pub programs: Vec<ProgEntry>,
     #[serde(skip)]
     pub slots: Vec<(i32, i32)>,
@@ -202,7 +206,7 @@ pub struct World {
     #[serde(skip)]
     ore_grid: Grid,
     #[serde(skip)]
-    drone_grid: Grid,
+    dronoid_grid: Grid,
 }
 
 fn gap_between(dx: i32, dy: i32, r1: i32, r2: i32) -> i32 {
@@ -231,7 +235,7 @@ impl World {
             ores,
             players: vec![],
             factories: vec![],
-            drones: vec![],
+            dronoids: vec![],
             programs: vec![],
             slots: m.slots,
             next_id,
@@ -240,7 +244,7 @@ impl World {
             events: vec![],
             rock_grid: Grid::default(),
             ore_grid: Grid::default(),
-            drone_grid: Grid::default(),
+            dronoid_grid: Grid::default(),
         };
         w.rebuild_caches();
         w
@@ -264,8 +268,8 @@ impl World {
         for o in &self.ores {
             self.ore_grid.insert(o.x, o.y, o.id);
         }
-        self.drone_grid = Grid::new(self.size, GRID_CELL);
-        self.index_drones();
+        self.dronoid_grid = Grid::new(self.size, GRID_CELL);
+        self.index_dronoids();
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -305,10 +309,10 @@ impl World {
         bytes.first() != Some(&b'{')
     }
 
-    fn index_drones(&mut self) {
-        self.drone_grid.clear();
-        for (i, d) in self.drones.iter().enumerate() {
-            self.drone_grid.insert(d.x, d.y, i as u32);
+    fn index_dronoids(&mut self) {
+        self.dronoid_grid.clear();
+        for (i, d) in self.dronoids.iter().enumerate() {
+            self.dronoid_grid.insert(d.x, d.y, i as u32);
         }
     }
 
@@ -338,8 +342,8 @@ impl World {
 
     // ----- queries -------------------------------------------------------------
 
-    pub fn drone_index(&self, id: u32) -> Option<usize> {
-        self.drones.binary_search_by_key(&id, |d| d.id).ok()
+    pub fn dronoid_index(&self, id: u32) -> Option<usize> {
+        self.dronoids.binary_search_by_key(&id, |d| d.id).ok()
     }
 
     pub fn factory_index(&self, id: u32) -> Option<usize> {
@@ -350,8 +354,8 @@ impl World {
         self.ores.binary_search_by_key(&id, |o| o.id).ok()
     }
 
-    pub fn drone(&self, id: u32) -> Option<&Drone> {
-        self.drone_index(id).map(|i| &self.drones[i])
+    pub fn dronoid(&self, id: u32) -> Option<&Dronoid> {
+        self.dronoid_index(id).map(|i| &self.dronoids[i])
     }
 
     pub fn factory(&self, id: u32) -> Option<&Factory> {
@@ -362,12 +366,12 @@ impl World {
         self.players.iter().find(|p| p.name == name)
     }
 
-    pub fn drones_of_factory(&self, factory: u32) -> usize {
-        self.drones.iter().filter(|d| d.factory == factory && d.hp > 0).count()
+    pub fn dronoids_of_factory(&self, factory: u32) -> usize {
+        self.dronoids.iter().filter(|d| d.factory == factory && d.hp > 0).count()
     }
 
-    pub fn drone_count(&self, owner: u8) -> usize {
-        self.drones.iter().filter(|d| d.owner == owner && d.hp > 0).count()
+    pub fn dronoid_count(&self, owner: u8) -> usize {
+        self.dronoids.iter().filter(|d| d.owner == owner && d.hp > 0).count()
     }
 
     pub fn factory_count(&self, owner: u8) -> usize {
@@ -408,7 +412,7 @@ impl World {
         self.factories.iter().any(|f| f.hp > 0 && hits(f.x, f.y, FACTORY_RADIUS))
     }
 
-    /// Nearest `target` seen by a drone of `owner` at (x, y).
+    /// Nearest `target` seen by a dronoid of `owner` at (x, y).
     pub fn nearest(&self, x: i32, y: i32, owner: u8, me: u32, target: i32) -> Option<Target> {
         let mut best: Option<Target> = None;
         let mut consider = |t: Target, range: i32| {
@@ -423,7 +427,7 @@ impl World {
                 let range = if own { i32::MAX } else { EBASE_RANGE };
                 for f in self.factories.iter().filter(|f| f.hp > 0 && (f.owner == owner) == own) {
                     let (dx, dy) = (f.x - x, f.y - y);
-                    consider(Target { dx, dy, gap: gap_between(dx, dy, DRONE_RADIUS, FACTORY_RADIUS), id: f.id }, range);
+                    consider(Target { dx, dy, gap: gap_between(dx, dy, DRONOID_RADIUS, FACTORY_RADIUS), id: f.id }, range);
                 }
             }
             thing::ORE => {
@@ -435,7 +439,7 @@ impl World {
                         continue;
                     }
                     let (dx, dy) = (o.x - x, o.y - y);
-                    consider(Target { dx, dy, gap: gap_between(dx, dy, DRONE_RADIUS, o.radius()), id: o.id }, SENSOR_RANGE);
+                    consider(Target { dx, dy, gap: gap_between(dx, dy, DRONOID_RADIUS, o.radius()), id: o.id }, SENSOR_RANGE);
                 }
             }
             thing::WALL => {
@@ -443,19 +447,19 @@ impl World {
                 for &i in &near {
                     let k = &self.rocks[i as usize];
                     let (dx, dy) = (k.x - x, k.y - y);
-                    consider(Target { dx, dy, gap: gap_between(dx, dy, DRONE_RADIUS, k.r), id: i }, SENSOR_RANGE);
+                    consider(Target { dx, dy, gap: gap_between(dx, dy, DRONOID_RADIUS, k.r), id: i }, SENSOR_RANGE);
                 }
             }
             thing::ALLY | thing::ENEMY => {
                 let ally = target == thing::ALLY;
-                self.drone_grid.query(x, y, SENSOR_RANGE + 2 * FP, &mut near);
+                self.dronoid_grid.query(x, y, SENSOR_RANGE + 2 * FP, &mut near);
                 for &i in &near {
-                    let Some(d) = self.drones.get(i as usize) else { continue };
+                    let Some(d) = self.dronoids.get(i as usize) else { continue };
                     if d.hp <= 0 || d.id == me || (d.owner == owner) != ally {
                         continue;
                     }
                     let (dx, dy) = (d.x - x, d.y - y);
-                    consider(Target { dx, dy, gap: gap_between(dx, dy, DRONE_RADIUS, DRONE_RADIUS), id: d.id }, SENSOR_RANGE);
+                    consider(Target { dx, dy, gap: gap_between(dx, dy, DRONOID_RADIUS, DRONOID_RADIUS), id: d.id }, SENSOR_RANGE);
                 }
             }
             _ => {}
@@ -465,7 +469,7 @@ impl World {
 
     pub fn count_near(&self, x: i32, y: i32, owner: u8, me: u32, target: i32) -> i32 {
         let mut near = vec![];
-        let within = |dx: i32, dy: i32, r: i32, range: i32| gap_between(dx, dy, DRONE_RADIUS, r) <= range;
+        let within = |dx: i32, dy: i32, r: i32, range: i32| gap_between(dx, dy, DRONOID_RADIUS, r) <= range;
         match target {
             thing::BASE | thing::EBASE => {
                 let own = target == thing::BASE;
@@ -491,14 +495,14 @@ impl World {
             }
             thing::ALLY | thing::ENEMY => {
                 let ally = target == thing::ALLY;
-                self.drone_grid.query(x, y, SENSOR_RANGE + 2 * FP, &mut near);
+                self.dronoid_grid.query(x, y, SENSOR_RANGE + 2 * FP, &mut near);
                 near.iter()
-                    .filter_map(|&i| self.drones.get(i as usize))
+                    .filter_map(|&i| self.dronoids.get(i as usize))
                     .filter(|d| {
                         d.hp > 0
                             && d.id != me
                             && (d.owner == owner) == ally
-                            && within(d.x - x, d.y - y, DRONE_RADIUS, SENSOR_RANGE)
+                            && within(d.x - x, d.y - y, DRONOID_RADIUS, SENSOR_RANGE)
                     })
                     .count() as i32
             }
@@ -513,10 +517,10 @@ impl World {
         }
         let (dx, dy) = dir_vec(angle, LOOK_DIST);
         let (px, py) = (x + dx, y + dy);
-        if !self.inside(px, py, DRONE_RADIUS) {
+        if !self.inside(px, py, DRONOID_RADIUS) {
             return thing::WALL;
         }
-        let touches = |ox: i32, oy: i32, r: i32| dist2(ox - px, oy - py) < (r + DRONE_RADIUS) as i64 * (r + DRONE_RADIUS) as i64;
+        let touches = |ox: i32, oy: i32, r: i32| dist2(ox - px, oy - py) < (r + DRONOID_RADIUS) as i64 * (r + DRONOID_RADIUS) as i64;
         let mut near = vec![];
         self.rock_grid.query(px, py, MAX_ROCK_R + FP, &mut near);
         if near.iter().any(|&i| {
@@ -537,11 +541,11 @@ impl World {
         }) {
             return thing::ORE;
         }
-        self.drone_grid.query(px, py, 2 * FP, &mut near);
+        self.dronoid_grid.query(px, py, 2 * FP, &mut near);
         let mut found = thing::EMPTY;
         for &i in &near {
-            let Some(d) = self.drones.get(i as usize) else { continue };
-            if d.hp > 0 && d.id != me && touches(d.x, d.y, DRONE_RADIUS) {
+            let Some(d) = self.dronoids.get(i as usize) else { continue };
+            if d.hp > 0 && d.id != me && touches(d.x, d.y, DRONOID_RADIUS) {
                 found = if d.owner == owner { thing::ALLY } else { thing::ENEMY };
                 if found == thing::ENEMY {
                     break;
@@ -584,7 +588,7 @@ impl World {
         }
         let reach = sq(BUILD_RANGE + FACTORY_RADIUS);
         let near_own = self.factories.iter().any(|f| f.owner == owner && d(f.x, f.y) <= sq(BUILD_RANGE + 2 * FACTORY_RADIUS))
-            || self.drones.iter().any(|dr| dr.owner == owner && dr.hp > 0 && d(dr.x, dr.y) <= reach);
+            || self.dronoids.iter().any(|dr| dr.owner == owner && dr.hp > 0 && d(dr.x, dr.y) <= reach);
         if !near_own {
             return Err("trop loin de vos unités");
         }
@@ -593,7 +597,7 @@ impl World {
 
     /// A player owning nothing yet: the next factory is a landing.
     pub fn is_landing(&self, owner: u8) -> bool {
-        !self.factories.iter().any(|f| f.owner == owner) && !self.drones.iter().any(|d| d.owner == owner)
+        !self.factories.iter().any(|f| f.owner == owner) && !self.dronoids.iter().any(|d| d.owner == owner)
     }
 
     pub fn shielded(&self, owner: u8) -> bool {
@@ -621,7 +625,7 @@ impl World {
                 h.add(m as i64);
             }
         }
-        for d in &self.drones {
+        for d in &self.dronoids {
             for v in [d.id as i32, d.x, d.y, d.hp, d.cargo, d.busy, d.heading, d.vm.pc as i32, d.vm.ok, d.prog as i32] {
                 h.add(v as i64);
             }
@@ -769,7 +773,7 @@ impl World {
                     alive: true,
                     bot,
                     mined: 0,
-                    drones_built: 0,
+                    dronoids_built: 0,
                     kills: 0,
                     home,
                     shield_until,
@@ -866,7 +870,7 @@ impl World {
                 let Some(prog) = self.intern_program(name, source) else { return };
                 self.note_program(player, source);
                 self.factories[fi].prog = prog;
-                for d in self.drones.iter_mut().filter(|d| d.factory == *factory) {
+                for d in self.dronoids.iter_mut().filter(|d| d.factory == *factory) {
                     d.prog = prog;
                     d.vm.reset();
                 }
@@ -878,7 +882,7 @@ impl World {
                 for f in self.factories.iter_mut().filter(|f| f.owner == player && same_name[f.prog as usize]) {
                     f.prog = prog;
                 }
-                for d in self.drones.iter_mut().filter(|d| d.owner == player && same_name[d.prog as usize]) {
+                for d in self.dronoids.iter_mut().filter(|d| d.owner == player && same_name[d.prog as usize]) {
                     if d.prog != prog {
                         d.prog = prog;
                         d.vm.reset();
@@ -917,14 +921,14 @@ impl World {
             self.apply(*p, c);
         }
         let tick = self.tick;
-        for d in self.drones.iter_mut().filter(|d| d.born != tick) {
+        for d in self.dronoids.iter_mut().filter(|d| d.born != tick) {
             d.prev_x = d.x;
             d.prev_y = d.y;
         }
         self.produce();
-        self.index_drones();
-        for di in 0..self.drones.len() {
-            let d = &self.drones[di];
+        self.index_dronoids();
+        for di in 0..self.dronoids.len() {
+            let d = &self.dronoids[di];
             if d.hp <= 0 || d.born == self.tick {
                 continue;
             }
@@ -933,13 +937,13 @@ impl World {
             }
             self.advance(di);
         }
-        self.drones.retain(|d| d.hp > 0);
+        self.dronoids.retain(|d| d.hp > 0);
         self.factories.retain(|f| f.hp > 0);
         self.ores.retain(|o| o.amount > 0);
-        // Fog of war: drones map what they pass by, for their owner.
-        for i in 0..self.drones.len() {
-            let (o, x, y) = (self.drones[i].owner, self.drones[i].x, self.drones[i].y);
-            self.reveal(o, x, y, VISION_DRONE);
+        // Fog of war: dronoids map what they pass by, for their owner.
+        for i in 0..self.dronoids.len() {
+            let (o, x, y) = (self.dronoids[i].owner, self.dronoids[i].x, self.dronoids[i].y);
+            self.reveal(o, x, y, VISION_DRONOID);
         }
         self.regrow();
         self.check_players();
@@ -951,7 +955,7 @@ impl World {
     fn produce(&mut self) {
         let mut counts = [0usize; MAX_PLAYERS];
         let mut per_factory = vec![0u32; self.factories.len()];
-        for d in &self.drones {
+        for d in &self.dronoids {
             counts[d.owner as usize] += 1;
             if let Some(fi) = self.factory_index(d.factory) {
                 per_factory[fi] += 1;
@@ -966,29 +970,29 @@ impl World {
                 continue;
             }
             let owner = f.owner as usize;
-            if counts[owner] >= MAX_DRONES_PER_PLAYER || self.players[owner].minerals < DRONE_COST {
+            if counts[owner] >= MAX_DRONOIDS_PER_PLAYER || self.players[owner].minerals < DRONOID_COST {
                 continue;
             }
             let (fx, fy, fid) = (f.x, f.y, f.id);
             let base_angle = (f.spawned.wrapping_mul(137).wrapping_add(fid.wrapping_mul(31)) % 360) as i32;
-            let r = FACTORY_RADIUS + DRONE_RADIUS + FP / 4;
+            let r = FACTORY_RADIUS + DRONOID_RADIUS + FP / 4;
             let spot = (0..8).map(|k| base_angle + k * 45).find_map(|a| {
                 let (dx, dy) = dir_vec(a, r);
                 let p = (fx + dx, fy + dy);
-                (!self.blocked(p, p, DRONE_RADIUS) && !self.touches_solid(p.0, p.1)).then_some((a, p))
+                (!self.blocked(p, p, DRONOID_RADIUS) && !self.touches_solid(p.0, p.1)).then_some((a, p))
             });
             let Some((angle, (x, y))) = spot else { continue };
 
             let id = self.new_id();
             let f = &mut self.factories[fi];
-            // A new factory gets its first drones out quickly.
+            // A new factory gets its first dronoids out quickly.
             f.timer = if f.spawned < 2 { SPAWN_TICKS / 4 } else { SPAWN_TICKS };
             f.spawned += 1;
             let prog = f.prog;
-            self.players[owner].minerals -= DRONE_COST;
-            self.players[owner].drones_built += 1;
+            self.players[owner].minerals -= DRONOID_COST;
+            self.players[owner].dronoids_built += 1;
             counts[owner] += 1;
-            self.drones.push(Drone {
+            self.dronoids.push(Dronoid {
                 id,
                 owner: owner as u8,
                 x,
@@ -996,7 +1000,7 @@ impl World {
                 prev_x: fx,
                 prev_y: fy,
                 heading: geo::norm_deg(angle),
-                hp: DRONE_HP,
+                hp: DRONOID_HP,
                 cargo: 0,
                 factory: fid,
                 prog,
@@ -1012,30 +1016,30 @@ impl World {
     /// Is (x, y) inside a rock, deposit or factory (for spawn points)?
     fn touches_solid(&self, x: i32, y: i32) -> bool {
         let far = (x - 3 * self.size, y - 3 * self.size);
-        self.blocked(far, (x, y), DRONE_RADIUS)
+        self.blocked(far, (x, y), DRONOID_RADIUS)
     }
 
     fn decide(&mut self, di: usize) {
-        let d = &self.drones[di];
+        let d = &self.dronoids[di];
         let program = self.program(d.prog);
         let mut vm = d.vm.clone();
         let fi = self.factory_index(d.factory);
         let mut mem = fi.map(|i| self.factories[i].mem).unwrap_or([0; HIVE_MEM]);
-        let view = DroneView { world: self, owner: d.owner, id: d.id, x: d.x, y: d.y, cargo: d.cargo, hp: d.hp };
+        let view = DronoidView { world: self, owner: d.owner, id: d.id, x: d.x, y: d.y, cargo: d.cargo, hp: d.hp };
         let outcome = vm.run(&program, &view, &mut mem);
         if let Some(i) = fi {
             self.factories[i].mem = mem;
         }
-        self.drones[di].vm = vm;
+        self.dronoids[di].vm = vm;
         match outcome {
             None => {
-                let d = &mut self.drones[di];
+                let d = &mut self.dronoids[di];
                 d.doing = Doing::Stall;
                 d.busy = STALL_TICKS;
             }
             Some((action, arg)) => {
                 let ok = self.start(di, action, arg);
-                let d = &mut self.drones[di];
+                let d = &mut self.dronoids[di];
                 d.vm.ok = ok as i32;
                 if !ok {
                     d.doing = Doing::Fail;
@@ -1047,18 +1051,18 @@ impl World {
 
     fn start(&mut self, di: usize, action: Action, arg: i32) -> bool {
         let (x, y, owner, id) = {
-            let d = &self.drones[di];
+            let d = &self.dronoids[di];
             (d.x, d.y, d.owner, d.id)
         };
         let face = |w: &mut World, tx: i32, ty: i32| {
             let a = compass(tx - x, ty - y);
             if a >= 0 {
-                w.drones[di].heading = a;
+                w.dronoids[di].heading = a;
             }
         };
         match action {
             Action::Wait => {
-                let d = &mut self.drones[di];
+                let d = &mut self.dronoids[di];
                 d.doing = Doing::Wait;
                 d.busy = WAIT_TICKS;
                 true
@@ -1069,17 +1073,17 @@ impl World {
                 }
                 let (dx, dy) = dir_vec(arg, STEP);
                 let to = (x + dx, y + dy);
-                if self.blocked((x, y), to, DRONE_RADIUS) {
+                if self.blocked((x, y), to, DRONOID_RADIUS) {
                     return false;
                 }
-                let d = &mut self.drones[di];
+                let d = &mut self.dronoids[di];
                 d.heading = geo::norm_deg(arg);
                 d.doing = Doing::Move { fx: x, fy: y, tx: to.0, ty: to.1 };
                 d.busy = MOVE_TICKS;
                 true
             }
             Action::Mine => {
-                if self.drones[di].cargo >= CARGO_CAP {
+                if self.dronoids[di].cargo >= CARGO_CAP {
                     return false;
                 }
                 let Some(t) = self.nearest(x, y, owner, id, thing::ORE).filter(|t| t.gap < REACH) else {
@@ -1094,7 +1098,7 @@ impl World {
                 }
                 self.players[owner as usize].mined += 1;
                 face(self, ox, oy);
-                let d = &mut self.drones[di];
+                let d = &mut self.dronoids[di];
                 d.cargo += 1;
                 d.doing = Doing::Mine { tx: ox, ty: oy };
                 d.busy = MINE_TICKS;
@@ -1102,7 +1106,7 @@ impl World {
                 true
             }
             Action::Drop => {
-                let cargo = self.drones[di].cargo;
+                let cargo = self.dronoids[di].cargo;
                 if cargo == 0 {
                     return false;
                 }
@@ -1112,7 +1116,7 @@ impl World {
                 let (tx, ty) = (x + t.dx, y + t.dy);
                 self.players[owner as usize].minerals += cargo;
                 face(self, tx, ty);
-                let d = &mut self.drones[di];
+                let d = &mut self.dronoids[di];
                 d.cargo = 0;
                 d.doing = Doing::Drop { tx, ty };
                 d.busy = DROP_TICKS;
@@ -1124,21 +1128,21 @@ impl World {
                 if self.shielded(owner) {
                     return false;
                 }
-                let drone = self
+                let dronoid = self
                     .nearest(x, y, owner, id, thing::ENEMY)
-                    .filter(|t| t.gap <= ATTACK_RANGE && self.drone(t.id).is_some_and(|d| !self.shielded(d.owner)));
+                    .filter(|t| t.gap <= ATTACK_RANGE && self.dronoid(t.id).is_some_and(|d| !self.shielded(d.owner)));
                 let base = self
                     .nearest(x, y, owner, id, thing::EBASE)
                     .filter(|t| t.gap <= ATTACK_RANGE && self.factory(t.id).is_some_and(|f| !self.shielded(f.owner)));
-                let (tx, ty) = match (drone, base) {
+                let (tx, ty) = match (dronoid, base) {
                     (Some(t), b) if b.is_none_or(|b| t.gap <= b.gap) => {
-                        let ti = self.drone_index(t.id).unwrap();
-                        let victim = &mut self.drones[ti];
+                        let ti = self.dronoid_index(t.id).unwrap();
+                        let victim = &mut self.dronoids[ti];
                         victim.hp -= ATTACK_DAMAGE;
                         let (vx, vy, vo, dead) = (victim.x, victim.y, victim.owner, victim.hp <= 0);
                         if dead {
                             self.players[owner as usize].kills += 1;
-                            self.events.push(Event::DroneDestroyed { owner: vo, x: vx, y: vy });
+                            self.events.push(Event::DronoidDestroyed { owner: vo, x: vx, y: vy });
                         }
                         (vx, vy)
                     }
@@ -1155,7 +1159,7 @@ impl World {
                     _ => return false,
                 };
                 face(self, tx, ty);
-                let d = &mut self.drones[di];
+                let d = &mut self.dronoids[di];
                 d.doing = Doing::Attack { tx, ty };
                 d.busy = ATTACK_TICKS;
                 self.events.push(Event::Attack { owner, x, y, tx, ty });
@@ -1165,7 +1169,7 @@ impl World {
     }
 
     fn advance(&mut self, di: usize) {
-        let d = &mut self.drones[di];
+        let d = &mut self.dronoids[di];
         if d.busy <= 0 {
             return;
         }
@@ -1192,18 +1196,18 @@ impl World {
             let has_factory = self.factories.iter().any(|f| f.owner == owner);
             if !has_factory && p.minerals < FACTORY_COST {
                 self.players[pi].alive = false;
-                for d in self.drones.iter_mut().filter(|d| d.owner == owner) {
+                for d in self.dronoids.iter_mut().filter(|d| d.owner == owner) {
                     d.hp = 0;
-                    self.events.push(Event::DroneDestroyed { owner, x: d.x, y: d.y });
+                    self.events.push(Event::DronoidDestroyed { owner, x: d.x, y: d.y });
                 }
-                self.drones.retain(|d| d.hp > 0);
+                self.dronoids.retain(|d| d.hp > 0);
                 self.events.push(Event::PlayerEliminated { player: owner });
             }
         }
     }
 }
 
-struct DroneView<'a> {
+struct DronoidView<'a> {
     world: &'a World,
     owner: u8,
     id: u32,
@@ -1213,7 +1217,7 @@ struct DroneView<'a> {
     hp: i32,
 }
 
-impl Senses for DroneView<'_> {
+impl Senses for DronoidView<'_> {
     fn sense(&self, sensor: Sensor, arg: i32) -> i32 {
         let w = self.world;
         let near = || w.nearest(self.x, self.y, self.owner, self.id, arg);
@@ -1262,6 +1266,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn saves_from_before_the_rename_still_load() {
+        let m = programs::builtin("mineur").unwrap();
+        let mut w = World::new(3);
+        let id = w.join("moi", false).unwrap();
+        let (hx, hy) = w.players[id as usize].home;
+        w.step(&[(id, Command::PlaceFactory { x: hx, y: hy, name: m.name.into(), source: m.source.into() })]);
+        for _ in 0..40 {
+            w.step(&[]);
+        }
+        assert!(!w.dronoids.is_empty());
+        let now = String::from_utf8(w.to_save()).unwrap();
+        let before = now.replace("\"dronoids\":", "\"drones\":").replace("\"dronoids_built\":", "\"drones_built\":");
+        assert_ne!(before, now);
+        let back = World::from_save(before.as_bytes()).unwrap();
+        assert_eq!(back.state_hash(), w.state_hash());
+        assert_eq!(back.dronoids.len(), w.dronoids.len());
+        assert_eq!(back.players[id as usize].dronoids_built, w.players[id as usize].dronoids_built);
+    }
+
+    #[test]
     fn saved_programs_get_the_new_wording() {
         let hunter = programs::builtin("chasseur").unwrap().source;
         let mut w = World::new(1);
@@ -1275,7 +1299,7 @@ pub(crate) mod tests {
         let mut w = World::new(3);
         let id = w.join("nouveau", false).unwrap();
         assert_eq!(w.factory_count(id), 0);
-        assert_eq!(w.drone_count(id), 0);
+        assert_eq!(w.dronoid_count(id), 0);
         assert_eq!(w.players[0].minerals, START_MINERALS);
         assert!(w.is_landing(id));
         for _ in 0..50 {
@@ -1292,8 +1316,8 @@ pub(crate) mod tests {
             .expect("a free spot");
         w.step(&[(id, Command::PlaceFactory { x: spot.0, y: spot.1, name: m.name.into(), source: m.source.into() })]);
         assert_eq!(w.factory_count(id), 1);
-        // The new factory spends on its first drone right away.
-        assert_eq!(w.players[0].minerals, START_MINERALS - FACTORY_COST - DRONE_COST);
+        // The new factory spends on its first dronoid right away.
+        assert_eq!(w.players[0].minerals, START_MINERALS - FACTORY_COST - DRONOID_COST);
     }
 
     #[test]
@@ -1303,15 +1327,15 @@ pub(crate) mod tests {
         let (bx, by) = w.players[1].home;
         assert!(w.explored(0, ax, ay), "arrival scan");
         assert!(!w.explored(0, bx, by), "the other colony is far away and unknown");
-        // A drone far from home maps what it passes by.
+        // A dronoid far from home maps what it passes by.
         let far = (ax + if ax < w.size / 2 { 80 } else { -80 } * FP, ay);
         assert!(!w.explored(0, far.0, far.1));
-        let di = w.drones.iter().position(|d| d.owner == 0).expect("a drone");
-        w.drones[di].x = far.0;
-        w.drones[di].y = far.1;
+        let di = w.dronoids.iter().position(|d| d.owner == 0).expect("a dronoid");
+        w.dronoids[di].x = far.0;
+        w.dronoids[di].y = far.1;
         w.step(&[]);
         assert!(w.explored(0, far.0, far.1));
-        assert!(w.explored(0, far.0 + VISION_DRONE / 2, far.1));
+        assert!(w.explored(0, far.0 + VISION_DRONOID / 2, far.1));
         assert!(!w.explored(1, far.0, far.1), "exploration is per player");
         let copy = World::from_bytes(&w.to_bytes()).unwrap();
         assert_eq!(copy.players[0].explored, w.players[0].explored);
@@ -1337,7 +1361,7 @@ pub(crate) mod tests {
             w.step(&[]);
         }
         assert!(w.players[0].mined > 40, "mined {}", w.players[0].mined);
-        assert!(w.drone_count(0) >= 3, "drones {}", w.drone_count(0));
+        assert!(w.dronoid_count(0) >= 3, "dronoids {}", w.dronoid_count(0));
     }
 
     #[test]
@@ -1384,12 +1408,12 @@ pub(crate) mod tests {
         let mine = w.factories.iter().find(|f| f.owner == 0).unwrap().id;
         w.step(&[(0, Command::SetProgram { factory: mine, name: "chasseur".into(), source: hunter.source.into() })]);
         let park = |w: &mut World| {
-            for d in w.drones.iter_mut().filter(|d| d.owner == 0) {
+            for d in w.dronoids.iter_mut().filter(|d| d.owner == 0) {
                 d.x = f.x + FACTORY_RADIUS + 2 * FP;
                 d.y = f.y;
                 d.busy = 0;
             }
-            w.index_drones();
+            w.index_dronoids();
         };
         park(&mut w);
         for _ in 0..200 {

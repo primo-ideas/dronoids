@@ -1,4 +1,4 @@
-//! Dronoids — program drone colonies in a tiny assembly language, in
+//! Dronoids — program dronoid colonies in a tiny assembly language, in
 //! a shared, persistent sector (or offline, for practice).
 
 mod editor;
@@ -48,7 +48,7 @@ fn window_conf() -> Conf {
 /// Command-line switches, mostly for quick testing:
 /// `--offline [easy|normal|hard]`, `--ais N`, `--seed N`, `--ticks N`
 /// (fast-forward), `--land` (place the first factory), `--zoom Z`,
-/// `--editor`, `--debug-drone`, `--help-screen`, `--build`, `--map`,
+/// `--editor`, `--debug-dronoid`, `--help-screen`, `--build`, `--map`,
 /// `--players`, `--join URL`, `--name PSEUDO`,
 /// `--screenshot out.png [--after SECS | --frames N]`.
 #[derive(Default)]
@@ -60,7 +60,7 @@ struct Args {
     frames: u32,
     after: Option<f64>,
     editor: bool,
-    debug_drone: bool,
+    debug_dronoid: bool,
     help: bool,
     build: bool,
     map: bool,
@@ -103,7 +103,7 @@ fn parse_args() -> Args {
                 take = false;
                 match flag {
                     "--editor" => a.editor = true,
-                    "--debug-drone" => a.debug_drone = true,
+                    "--debug-dronoid" => a.debug_dronoid = true,
                     "--help-screen" => a.help = true,
                     "--build" => a.build = true,
                     "--map" => a.map = true,
@@ -146,8 +146,8 @@ async fn main() {
         if args.editor {
             g.open_program_by_name(&lib, "mineur");
         }
-        if args.debug_drone {
-            g.debug_first_drone();
+        if args.debug_dronoid {
+            g.debug_first_dronoid();
         }
         g.set_overlays(args.help, args.build, args.map, args.players);
         App::Game(Box::new(g))

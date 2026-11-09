@@ -1,4 +1,4 @@
-//! Draws the world: starfield, asteroids, crystals, factories, drones and
+//! Draws the world: starfield, asteroids, crystals, factories, dronoids and
 //! effects. World coordinates are in units (floats here, fixed-point in
 //! the simulation).
 
@@ -88,8 +88,8 @@ impl Sight {
             sources.push((fpv(f.x, f.y), fp(VISION_FACTORY)));
         }
         let a = alpha.clamp(0.0, 1.0);
-        for d in world.drones.iter().filter(|d| d.owner == me) {
-            sources.push((fpv(d.prev_x, d.prev_y).lerp(fpv(d.x, d.y), a), fp(VISION_DRONE)));
+        for d in world.dronoids.iter().filter(|d| d.owner == me) {
+            sources.push((fpv(d.prev_x, d.prev_y).lerp(fpv(d.x, d.y), a), fp(VISION_DRONOID)));
         }
         if let Some(p) = world.players.get(me as usize)
             && p.alive
@@ -256,7 +256,7 @@ pub const FOG_EXPLORED: Color = Color::new(0.33, 0.37, 0.52, 1.0);
 
 pub struct Highlight {
     pub factory: Option<u32>,
-    pub drone: Option<u32>,
+    pub dronoid: Option<u32>,
     /// Build ghost: world position and validity.
     pub ghost: Option<(Vec2, bool)>,
     pub build_range_for: Option<u8>,
@@ -297,7 +297,7 @@ impl WorldView {
             // Nothing to see behind the fog.
             let seen = match *e {
                 Event::Spawn { x, y, .. }
-                | Event::DroneDestroyed { x, y, .. }
+                | Event::DronoidDestroyed { x, y, .. }
                 | Event::FactoryDestroyed { x, y, .. }
                 | Event::FactoryBuilt { x, y, .. }
                 | Event::OreGrown { x, y } => sight.visible(fpv(x, y)),
@@ -335,7 +335,7 @@ impl WorldView {
                         self.fx.burst(fpv(tx, ty), c, 4, 2.5, 0.3);
                     }
                 }
-                Event::DroneDestroyed { owner, x, y } => {
+                Event::DronoidDestroyed { owner, x, y } => {
                     let at = fpv(x, y);
                     self.fx.burst(at, player_color(owner), 16, 4.0, 0.9);
                     self.fx.ring(at, player_color(owner), 1.4, 0.5);
@@ -381,7 +381,7 @@ impl WorldView {
         self.fx.update(dt);
         self.shake = (self.shake - dt).max(0.0);
         let k = (dt * 10.0).min(1.0);
-        for d in &world.drones {
+        for d in &world.dronoids {
             let target = heading_rad(d.heading);
             let a = self.angles.entry(d.id).or_insert(target);
             let mut diff = (target - *a) % TAU;
@@ -392,8 +392,8 @@ impl WorldView {
             }
             *a += diff * k;
         }
-        if self.angles.len() > world.drones.len() * 2 + 64 {
-            let alive: std::collections::HashSet<u32> = world.drones.iter().map(|d| d.id).collect();
+        if self.angles.len() > world.dronoids.len() * 2 + 64 {
+            let alive: std::collections::HashSet<u32> = world.dronoids.iter().map(|d| d.id).collect();
             self.angles.retain(|id, _| alive.contains(id));
         }
         if self.rock_shapes.len() != world.rocks.len() {
@@ -421,9 +421,9 @@ impl WorldView {
         vec2((self.time * 71.0).sin() * s, (self.time * 53.0).cos() * s)
     }
 
-    /// World position of a drone, interpolated between ticks.
-    pub fn drone_pos(world: &World, id: u32, alpha: f32) -> Option<Vec2> {
-        let d = world.drone(id)?;
+    /// World position of a dronoid, interpolated between ticks.
+    pub fn dronoid_pos(world: &World, id: u32, alpha: f32) -> Option<Vec2> {
+        let d = world.dronoid(id)?;
         Some(fpv(d.prev_x, d.prev_y).lerp(fpv(d.x, d.y), alpha.clamp(0.0, 1.0)))
     }
 
@@ -460,7 +460,7 @@ impl WorldView {
                 let c = cam.w2s(fpv(f.x, f.y));
                 draw_circle(c.x, c.y, fp(BUILD_RANGE + 2 * FACTORY_RADIUS) * z, col);
             }
-            for d in world.drones.iter().filter(|d| d.owner == owner) {
+            for d in world.dronoids.iter().filter(|d| d.owner == owner) {
                 let c = cam.w2s(fpv(d.x, d.y));
                 draw_circle(c.x, c.y, fp(BUILD_RANGE) * z, with_alpha(pal::GOOD, 0.04));
             }
@@ -524,8 +524,8 @@ impl WorldView {
             draw_circle(sc.x, sc.y, r * 0.2, with_alpha(pal::ORE_CORE, pulse));
         }
 
-        // Mining beams (continuous while a drone digs).
-        for d in &world.drones {
+        // Mining beams (continuous while a dronoid digs).
+        for d in &world.dronoids {
             if let Doing::Mine { tx, ty } = d.doing {
                 let p = fpv(d.x, d.y);
                 if !cam.visible(p, 3.0) || !sight.shows(d.owner, p) {
@@ -576,15 +576,15 @@ impl WorldView {
             }
         }
 
-        // Drones.
-        for d in &world.drones {
+        // Dronoids.
+        for d in &world.dronoids {
             let p = fpv(d.prev_x, d.prev_y).lerp(fpv(d.x, d.y), alpha);
             if !cam.visible(p, 1.0) || !sight.shows(d.owner, p) {
                 continue;
             }
             let s = cam.w2s(p);
             let pc = player_color(d.owner);
-            let size = fp(DRONE_RADIUS) * z * 1.15;
+            let size = fp(DRONOID_RADIUS) * z * 1.15;
             if size < 2.0 {
                 draw_rectangle(s.x - 1.0, s.y - 1.0, 2.0, 2.0, pc);
                 continue;
@@ -610,7 +610,7 @@ impl WorldView {
             if d.doing == Doing::Stall {
                 draw_circle(s.x, s.y - size * 1.3, (z * 0.07).max(1.5), pal::WARN);
             }
-            if hl.drone == Some(d.id) {
+            if hl.dronoid == Some(d.id) {
                 arc(s, size * 1.8, t * 2.0, t * 2.0 + TAU * 0.75, 2.0, WHITE);
             }
         }
@@ -686,7 +686,7 @@ pub fn draw_minimap(world: &World, cam: &Cam, r: Rect, sight: &Sight, mouse: Vec
         let p = at(o.x, o.y);
         draw_rectangle(p.x, p.y, 1.2, 1.2, with_alpha(pal::ORE, 0.7));
     }
-    for d in world.drones.iter().filter(|d| sight.shows(d.owner, fpv(d.x, d.y))) {
+    for d in world.dronoids.iter().filter(|d| sight.shows(d.owner, fpv(d.x, d.y))) {
         let p = at(d.x, d.y);
         draw_rectangle(p.x - 0.7, p.y - 0.7, 1.6, 1.6, player_color(d.owner));
     }
@@ -751,13 +751,13 @@ mod tests {
         assert!(sight.shows(0, fpv(mine.x, mine.y)));
         assert!(!sight.shows(1, fpv(theirs.x, theirs.y)), "a far colony hides in the fog");
         assert!(!sight.explored(fpv(theirs.x, theirs.y)));
-        // An enemy drone parked next to our factory is seen.
-        let di = w.drones.iter().position(|d| d.owner == 1).unwrap();
+        // An enemy dronoid parked next to our factory is seen.
+        let di = w.dronoids.iter().position(|d| d.owner == 1).unwrap();
         let near = fpv(mine.x + 5 * FP, mine.y);
-        w.drones[di].x = mine.x + 5 * FP;
-        w.drones[di].y = mine.y;
-        w.drones[di].prev_x = w.drones[di].x;
-        w.drones[di].prev_y = w.drones[di].y;
+        w.dronoids[di].x = mine.x + 5 * FP;
+        w.dronoids[di].y = mine.y;
+        w.dronoids[di].prev_x = w.dronoids[di].x;
+        w.dronoids[di].prev_y = w.dronoids[di].y;
         let sight = Sight::of(&w, 0, 1.0);
         assert!(sight.shows(1, near));
         assert!(Sight::all().shows(1, fpv(theirs.x, theirs.y)), "the title screen sees everything");

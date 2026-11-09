@@ -138,7 +138,7 @@ impl Menu {
         let focus = self.demo.factories.first().map(|f| vec2(fp(f.x), fp(f.y))).unwrap_or(Vec2::splat(size / 2.0));
         let center = focus + vec2(40.0 * t.sin(), 25.0 * (t * 0.7).cos());
         let cam = Cam { center, zoom: 11.0, shake: Vec2::ZERO };
-        let hl = Highlight { factory: None, drone: None, ghost: None, build_range_for: None, target: None, landing: None, me: 0 };
+        let hl = Highlight { factory: None, dronoid: None, ghost: None, build_range_for: None, target: None, landing: None, me: 0 };
         self.view.draw(&self.demo, &cam, self.acc.clamp(0.0, 1.0), &hl, &Sight::all());
         draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.01, 0.012, 0.03, 0.62));
         let ty = sh * 0.16;

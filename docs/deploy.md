@@ -29,7 +29,7 @@ préparée une fois, puis chaque mise en ligne ne remplace que le build.
 RedirectMatch permanent "^/drones(/.*)?$" "/dronoids/"
 ```
 
-Le jeu s'appelait d'abord « Game of Drones », servi sur `/drones/`. Sur une machine
+Le jeu a d'abord été servi sur `/drones/`. Sur une machine
 qui porte encore cette installation, `setup-dronoids.sh` la migre : il arrête l'ancien
 service, copie le secteur de `/home/drones/worlds`, retire l'ancien service et
 l'ancienne configuration Apache (avec sauvegardes), et `/drones/` redirige ensuite vers

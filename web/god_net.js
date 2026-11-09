@@ -35,7 +35,7 @@
         return scheme + "//" + window.location.host + dir + "ws";
     }
 
-    // The game was called "Game of Drones" before: what it stored then
+    // The game had another name before: what it stored then
     // (notably the secret that owns your name) is read back once and moved.
     function storageKey(ptr, len) {
         const name = readString(ptr, len);

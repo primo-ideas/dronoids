@@ -9,8 +9,8 @@
 #       /dronoids/ws   -> ws://127.0.0.1:8082/ws (the world server)
 #       /drones/...    -> permanent redirect to /dronoids/ (the former name)
 #
-# It also migrates the former "drones" layout (the game was called Game of
-# Drones until 2026-11-06): the sector is copied over, the old service and
+# It also migrates the former "drones" layout (the game had another name
+# until 2026-11-06): the sector is copied over, the old service and
 # Apache configuration are switched off (backed up first).
 #
 # It never touches the virtual hosts, TLS, the document root itself or any

@@ -1,16 +1,16 @@
-//! DASM — the Drone ASseMbly language.
+//! DASM — the Dronoid ASseMbly language.
 //!
 //! A deliberately small, playful assembly (in the spirit of Human Resource
-//! Machine). Each drone owns four registers `a b c d`, a read-only `ok` flag
+//! Machine). Each dronoid owns four registers `a b c d`, a read-only `ok` flag
 //! set by the last action, a tiny call stack and a private RNG. Each
-//! factory owns 16 cells of "hive memory" shared by the drones it spawned.
+//! factory owns 16 cells of "hive memory" shared by the dronoids it spawned.
 //!
 //! Directions are compass angles in degrees: 0 = north, 90 = east...
 //!
-//! When idle, a drone runs instructions until it reaches an *action*
+//! When idle, a dronoid runs instructions until it reaches an *action*
 //! (MOVE, MINE, DROP, ATTACK, WAIT), which takes some time to complete.
 //! Sensors and arithmetic are instantaneous, up to `MAX_OPS_PER_TICK`
-//! instructions; past that the drone stalls for a moment.
+//! instructions; past that the dronoid stalls for a moment.
 
 use serde::{Deserialize, Serialize};
 
@@ -535,7 +535,7 @@ impl Vm {
         }
     }
 
-    /// Restart from the top (used when a drone is reprogrammed).
+    /// Restart from the top (used when a dronoid is reprogrammed).
     pub fn reset(&mut self) {
         let rng = self.rng;
         *self = Vm::new(rng);
@@ -568,7 +568,7 @@ impl Vm {
         }
     }
 
-    /// Run until an action. `None` means the drone ran out of thinking
+    /// Run until an action. `None` means the dronoid ran out of thinking
     /// budget this tick (it simply waits, and resumes where it was).
     pub fn run(
         &mut self,

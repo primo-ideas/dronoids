@@ -1,6 +1,6 @@
 //! A small code editor for DASM: syntax highlighting, selection, clipboard,
 //! undo/redo, error markers and a "current instruction" marker for the
-//! drone debugger.
+//! dronoid debugger.
 
 use macroquad::miniquad::window::{clipboard_get, clipboard_set};
 use macroquad::prelude::*;
