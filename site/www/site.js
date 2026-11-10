@@ -4,12 +4,12 @@
 (function () {
     const api = "api/";
     const $ = (id) => document.getElementById(id);
-    const COLORS = { google: "#4285f4", discord: "#5865f2", github: "#e6edf3", twitch: "#9146ff", essai: "#7dff6a" };
+    const COLORS = { google: "#4285f4", discord: "#5865f2", github: "#e6edf3", twitch: "#9146ff", test: "#7dff6a" };
     const ERRORS = {
-        session: "La connexion a expiré en route : recommencez.",
-        refuse: "Connexion annulée.",
-        fournisseur: "Le service de connexion n'a pas répondu comme prévu : réessayez.",
-        "deja-lie": "Ce compte est déjà relié à un autre joueur de Dronoids.",
+        session: "The sign-in expired on the way: start again.",
+        refused: "Sign-in cancelled.",
+        provider: "The sign-in service did not answer as expected: try again.",
+        "already-linked": "This account is already linked to another Dronoids player.",
     };
 
     // ----- starry backdrop ---------------------------------------------------
@@ -68,9 +68,9 @@
             headers: { "Content-Type": "application/json", "X-Dronoids": "1" },
             body: JSON.stringify(body || {}),
         });
-        const data = await r.json().catch(() => ({ error: "réponse illisible" }));
+        const data = await r.json().catch(() => ({ error: "unreadable answer" }));
         if (!r.ok) {
-            throw new Error(data.error || "erreur");
+            throw new Error(data.error || "error");
         }
         return data;
     }
@@ -91,30 +91,30 @@
     function render(me) {
         const account = me.account;
         $("signed-out").hidden = account !== null;
-        $("choose").hidden = !(account && !account.pseudo);
-        $("signed-in").hidden = !(account && account.pseudo);
-        const named = account && account.pseudo;
-        $("nav-account").textContent = named ? account.pseudo : "Compte";
+        $("choose").hidden = !(account && !account.nickname);
+        $("signed-in").hidden = !(account && account.nickname);
+        const named = account && account.nickname;
+        $("nav-account").textContent = named ? account.nickname : "Account";
         $("hero-account").hidden = !!named;
         $("hero-note").hidden = !!named;
         if (!account) {
-            providerLinks($("providers"), me.providers, (p) => "Continuer avec " + p.label);
+            providerLinks($("providers"), me.providers, (p) => "Continue with " + p.label);
             $("no-provider").hidden = me.providers.length > 0;
-        } else if (!account.pseudo) {
+        } else if (!account.nickname) {
             const g = guest();
-            if (g && !$("pseudo").value) {
-                $("pseudo").value = g.name;
+            if (g && !$("nickname").value) {
+                $("nickname").value = g.name;
                 $("guest-note").textContent =
-                    "C'est le pseudo sous lequel vous jouez déjà dans ce navigateur : votre colonie viendra avec.";
+                    "It is the nickname you already play under in this browser: your colony comes along.";
                 $("guest-note").hidden = false;
             }
-            $("pseudo").focus();
+            $("nickname").focus();
         } else {
-            $("who").textContent = account.pseudo;
+            $("who").textContent = account.nickname;
             const names = Object.fromEntries(me.providers.map((p) => [p.id, p.label]));
             $("linked").textContent = account.linked.map((id) => names[id] || id).join(", ");
             const more = me.providers.filter((p) => !account.linked.includes(p.id));
-            providerLinks($("more-providers"), more, (p) => "Relier " + p.label);
+            providerLinks($("more-providers"), more, (p) => "Link " + p.label);
         }
     }
 
@@ -124,33 +124,33 @@
             render(await r.json());
         } catch (e) {
             render({ account: null, providers: [] });
-            showError("Les comptes sont momentanément indisponibles. Le jeu, lui, reste ouvert.");
+            showError("Accounts are unavailable for the moment. The game itself stays open.");
         }
     }
 
     $("choose").addEventListener("submit", async (e) => {
         e.preventDefault();
-        const pseudo = $("pseudo").value;
+        const nickname = $("nickname").value;
         const g = guest();
         try {
-            render(await post("pseudo", { pseudo, guest_token: g && g.name === pseudo.trim() ? g.token : null }));
+            render(await post("nickname", { nickname, guest_token: g && g.name === nickname.trim() ? g.token : null }));
             showError("");
         } catch (err) {
-            showError("Ce pseudo n'est pas possible : " + err.message + ".");
+            showError("This nickname cannot be used: " + err.message + ".");
         }
     });
     $("logout").addEventListener("click", async () => render(await post("logout")));
     $("delete").addEventListener("click", async () => {
-        if (confirm("Supprimer votre compte Dronoids ? C'est définitif.")) {
+        if (confirm("Delete your Dronoids account? There is no going back.")) {
             render(await post("delete"));
         }
     });
 
-    const error = new URLSearchParams(location.search).get("erreur");
+    const error = new URLSearchParams(location.search).get("error");
     if (error) {
-        showError(ERRORS[error] || "La connexion n'a pas abouti.");
-        history.replaceState(null, "", location.pathname + "#compte");
-        $("compte").scrollIntoView();
+        showError(ERRORS[error] || "The sign-in did not go through.");
+        history.replaceState(null, "", location.pathname + "#account");
+        $("account").scrollIntoView();
     }
     refresh();
 })();

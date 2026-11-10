@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the browser client into dist/dronoids/: the page, macroquad's JS
 # loader, our plugin (web/god_net.js) and the wasm module; then the whole
-# site into dist/site/: its pages (site/www/), with the game in jouer/.
+# site into dist/site/: its pages (site/www/), with the game in play/ (and,
+# in jouer/, its first address, a page that sends visitors there).
 #
 #   ./deploy/build-web.sh            release build
 #   ./deploy/build-web.sh --serve    ...then serve the game on http://127.0.0.1:8090
@@ -28,7 +29,16 @@ ls -la "$out"
 rm -rf dist/site
 mkdir -p dist/site
 cp site/www/* dist/site/
-cp -r "$out" dist/site/jouer
+cp -r "$out" dist/site/play
+mkdir -p dist/site/jouer
+cat > dist/site/jouer/index.html <<'EOF'
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Dronoids</title>
+<meta http-equiv="refresh" content="0; url=../play/">
+<link rel="canonical" href="../play/">
+<a href="../play/">Dronoids</a>
+EOF
 
 if [ "${1:-}" = "--serve" ]; then
     python -m http.server 8090 --bind 127.0.0.1 --directory "$out"

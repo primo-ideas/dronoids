@@ -45,15 +45,15 @@ mod tests {
 
     /// The same values are checked by the account service's tests
     /// (`site/test_site.py`): both sides must sign alike.
-    const SECRET: &[u8] = b"secret-de-test";
-    const TICKET: &str = "site.2000000000.899a2517086a306754d5318670bb258950402f869c7c99fd89737247d15ec10c";
+    const SECRET: &[u8] = b"test-secret";
+    const TICKET: &str = "site.2000000000.63021fc120ed4a80e22500d358c2b959808164c38a5abf31685b839b6e7a8c3b";
 
     #[test]
     fn a_ticket_is_good_for_its_name_until_it_expires() {
         let t = sign(SECRET, "Primo", 2_000_000_000);
         assert!(verify(SECRET, "Primo", &t, 1_999_999_999));
         assert!(!verify(SECRET, "Primo", &t, 2_000_000_000), "expired");
-        assert!(!verify(SECRET, "Autre", &t, 0), "another name");
+        assert!(!verify(SECRET, "Other", &t, 0), "another name");
         assert!(!verify(b"autre-secret", "Primo", &t, 0), "another secret");
         // Stretching the expiry breaks the signature.
         assert!(!verify(SECRET, "Primo", &t.replace("2000000000", "3000000000"), 0));

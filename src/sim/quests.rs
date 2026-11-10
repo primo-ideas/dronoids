@@ -13,11 +13,11 @@ pub struct Quest {
 }
 
 pub const QUESTS: &[Quest] = &[
-    Quest { title: "Posez votre première usine", hint: "clic gauche sur un espace libre", reward: 0 },
-    Quest { title: "Extrayez 100 cristaux", hint: "vos dronoids minent tout seuls", reward: 40 },
-    Quest { title: "Appliquez un programme de votre cru", hint: "« Programme » (E), modifiez, Ctrl+S", reward: 60 },
-    Quest { title: "Cartographiez les environs", hint: "un éclaireur va loin", reward: 50 },
-    Quest { title: "Fondez une deuxième usine", hint: "B, près de vos unités", reward: 80 },
+    Quest { title: "Place your first factory", hint: "left click on a free spot", reward: 0 },
+    Quest { title: "Mine 100 crystals", hint: "your dronoids mine on their own", reward: 40 },
+    Quest { title: "Apply a program of your own", hint: "Program (E), edit, Ctrl+S", reward: 60 },
+    Quest { title: "Map the surroundings", hint: "a scout goes far", reward: 50 },
+    Quest { title: "Found a second factory", hint: "B, near your units", reward: 80 },
 ];
 
 pub const MINED_GOAL: i64 = 100;
@@ -118,16 +118,16 @@ mod tests {
     fn first_steps_come_one_at_a_time_with_their_reward() {
         let mut w = World::new(5);
         let me = w.join("ana", false).unwrap();
-        let bot = w.join("IA Vega", true).unwrap();
+        let bot = w.join("AI Vega", true).unwrap();
         assert_eq!(current(&w, me), Some(0));
         assert_eq!(current(&w, bot), None, "computer colonies have no objectives");
         // Already true, but objectives go in order: landing first.
         w.players[me as usize].mined = MINED_GOAL;
         idle(&mut w);
 
-        let mineur = programs::builtin("mineur").unwrap();
-        land(&mut w, me, mineur.source);
-        land(&mut w, bot, mineur.source);
+        let miner = programs::builtin("miner").unwrap();
+        land(&mut w, me, miner.source);
+        land(&mut w, bot, miner.source);
         while done(&w, me).is_empty() {
             next_quest(&mut w);
         }
@@ -137,11 +137,11 @@ mod tests {
         assert!(w.players[me as usize].minerals >= before + QUESTS[1].reward);
 
         // A built-in program does not count as one of our own.
-        w.step(&[(me, Command::UpdateProgram { name: "mineur".into(), source: mineur.source.into() })]);
+        w.step(&[(me, Command::UpdateProgram { name: "miner".into(), source: miner.source.into() })]);
         idle(&mut w);
         assert_eq!(current(&w, me), Some(2));
-        let own = format!("; à ma façon\n{}", mineur.source);
-        w.step(&[(me, Command::UpdateProgram { name: "mineur".into(), source: own })]);
+        let own = format!("; my own way\n{}", miner.source);
+        w.step(&[(me, Command::UpdateProgram { name: "miner".into(), source: own })]);
         assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 2, reward: QUESTS[2].reward });
 
         assert!(progress(&w, me, 3).0 < MAPPED_GOAL, "the arrival scan alone is not enough");
@@ -169,7 +169,7 @@ mod tests {
             })
             .find(|p| w.can_place_factory(me, p.0, p.1).is_ok())
             .expect("room for a second factory");
-        w.step(&[(me, Command::PlaceFactory { x: spot.0, y: spot.1, name: "mineur".into(), source: mineur.source.into() })]);
+        w.step(&[(me, Command::PlaceFactory { x: spot.0, y: spot.1, name: "miner".into(), source: miner.source.into() })]);
         assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 4, reward: QUESTS[4].reward });
         assert_eq!(current(&w, me), None);
         idle(&mut w);

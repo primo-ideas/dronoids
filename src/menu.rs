@@ -45,7 +45,7 @@ pub struct Menu {
     view: WorldView,
     acc: f32,
     pub settings: Settings,
-    /// Signed in on the site: (pseudo, ticket). The game then plays under it.
+    /// Signed in on the site: (nickname, ticket). The game then plays under it.
     account: Option<(String, String)>,
     name: TextField,
     server: TextField,
@@ -95,7 +95,7 @@ impl Menu {
 
     fn remember(&mut self) {
         let n = self.name.text.trim();
-        // The account's pseudo is not the guest's name.
+        // The account's nickname is not the guest's name.
         if !n.is_empty() && self.account.is_none() {
             self.settings.name = n.chars().take(20).collect();
         }
@@ -110,7 +110,7 @@ impl Menu {
         self.screen = Screen::Connecting {
             connecting: Some(Connecting::start(&url)),
             conn: None,
-            status: "Connexion au secteur…".into(),
+            status: "Connecting to the sector…".into(),
             error: false,
         };
     }
@@ -154,7 +154,7 @@ impl Menu {
             poly_lines(&regular(c, 11.0, 6, PI / 6.0 + self.view.time * 0.4 * (i as f32 - 1.0)), 2.0, with_alpha(col, 0.85));
         }
         gfx::text_centered("DRONOIDS", sw / 2.0, ty, 54.0, mix(pal::ACCENT, WHITE, 0.2));
-        let tagline = "un secteur partagé · des dronoids que vous programmez";
+        let tagline = "a shared sector · dronoids you program";
         gfx::text_centered(tagline, sw / 2.0, ty + 66.0, gfx::fit_size(tagline, 15.0, sw - 24.0), with_alpha(pal::PINK, 0.85));
         bloom.finish();
 
@@ -174,31 +174,31 @@ impl Menu {
         draw_rectangle(x - 24.0, y - 34.0, w + 48.0, 172.0, with_alpha(pal::PANEL, 0.7));
 
         let enter = match &self.account {
-            Some((pseudo, _)) => {
-                gfx::text("compte", x, y - 18.0, 12.0, pal::DIM);
-                gfx::text(pseudo, x + 2.0, y + 7.0, 20.0, pal::ACCENT);
+            Some((nickname, _)) => {
+                gfx::text("account", x, y - 18.0, 12.0, pal::DIM);
+                gfx::text(nickname, x + 2.0, y + 7.0, 20.0, pal::ACCENT);
                 false
             }
             None => {
-                gfx::text("pseudo", x, y - 18.0, 12.0, pal::DIM);
-                self.name.ui(ui, Rect::new(x, y, w, 36.0), "votre nom")
+                gfx::text("nickname", x, y - 18.0, 12.0, pal::DIM);
+                self.name.ui(ui, Rect::new(x, y, w, 36.0), "your name")
             }
         };
         y += 48.0;
-        if ui.button_ex(Rect::new(x, y, w, 42.0), "Entrer dans le secteur", false, true, pal::ACCENT) || enter {
+        if ui.button_ex(Rect::new(x, y, w, 42.0), "Enter the sector", false, true, pal::ACCENT) || enter {
             self.connect(None);
             return MenuOut::Stay;
         }
         y += 52.0;
-        gfx::text_centered("Vous arrivez sans rien, de quoi bâtir une usine.", sw / 2.0, y, 12.0, pal::DIM);
-        gfx::text_centered("Votre colonie travaille même quand vous partez.", sw / 2.0, y + 17.0, 12.0, pal::DIM);
+        gfx::text_centered("You arrive with nothing but enough to build a factory.", sw / 2.0, y, 12.0, pal::DIM);
+        gfx::text_centered("Your colony keeps working when you leave.", sw / 2.0, y + 17.0, 12.0, pal::DIM);
         y += 50.0;
 
-        let mut labels: Vec<(&str, Fold)> = vec![("Entraînement hors ligne", Fold::Offline), ("Serveur", Fold::Server)];
+        let mut labels: Vec<(&str, Fold)> = vec![("Offline training", Fold::Offline), ("Server", Fold::Server)];
         if platform::is_web() {
-            labels.push(("Compte", Fold::None));
+            labels.push(("Account", Fold::None));
         } else {
-            labels.push(("Quitter", Fold::None));
+            labels.push(("Quit", Fold::None));
         }
         let widths: Vec<f32> = labels.iter().map(|(l, _)| gfx::text_width(l, 13.0) + 22.0).collect();
         let total: f32 = widths.iter().sum::<f32>() + 8.0 * (labels.len() as f32 - 1.0);
@@ -206,11 +206,11 @@ impl Menu {
         for ((label, fold), bw) in labels.into_iter().zip(widths) {
             let active = fold != Fold::None && self.fold == fold;
             if ui.button_ex(Rect::new(bx, y, bw, 28.0), label, active, true, pal::ACCENT) {
-                if label == "Quitter" {
+                if label == "Quit" {
                     self.remember();
                     return MenuOut::Quit;
                 }
-                if label == "Compte" {
+                if label == "Account" {
                     self.remember();
                     platform::open_site();
                 }
@@ -224,7 +224,7 @@ impl Menu {
             Fold::Offline => {
                 let r = Rect::new(x - 10.0, y, w + 20.0, 120.0);
                 ui.panel(r);
-                gfx::text("colonies IA", x, y + 16.0, 13.0, pal::TEXT);
+                gfx::text("AI colonies", x, y + 16.0, 13.0, pal::TEXT);
                 let bx = x + w - 110.0;
                 if ui.button(Rect::new(bx, y + 10.0, 28.0, 26.0), "−") && self.ais > 0 {
                     self.ais -= 1;
@@ -239,7 +239,7 @@ impl Menu {
                         self.level = l;
                     }
                 }
-                if ui.button_ex(Rect::new(x, y + 82.0, w, 28.0), "Lancer l'entraînement", false, true, pal::GOOD) {
+                if ui.button_ex(Rect::new(x, y + 82.0, w, 28.0), "Start training", false, true, pal::GOOD) {
                     self.remember();
                     return MenuOut::Offline { ais: self.ais, level: self.level, settings: self.settings.clone() };
                 }
@@ -247,7 +247,7 @@ impl Menu {
             Fold::Server => {
                 let r = Rect::new(x - 10.0, y, w + 20.0, 74.0);
                 ui.panel(r);
-                gfx::text("adresse du secteur (vide = par défaut)", x, y + 10.0, 12.0, pal::DIM);
+                gfx::text("sector address (empty = default)", x, y + 10.0, 12.0, pal::DIM);
                 let default = platform::default_server();
                 self.server.ui(ui, Rect::new(x, y + 30.0, w, 32.0), &default);
             }
@@ -271,10 +271,10 @@ impl Menu {
                 Ok(mut cn) => {
                     cn.send(&ClientMsg::Hello { version: PROTOCOL_VERSION, name, token });
                     *conn = Some(cn);
-                    *status = "Réception du secteur…".into();
+                    *status = "Receiving the sector…".into();
                 }
                 Err(e) => {
-                    *status = format!("Secteur injoignable : {e}");
+                    *status = format!("Sector unreachable: {e}");
                     *error = true;
                 }
             }
@@ -289,7 +289,7 @@ impl Menu {
                             return MenuOut::Online { conn, me: player, world: Box::new(w), name: world };
                         }
                         Err(e) => {
-                            *status = format!("Secteur illisible : {e}");
+                            *status = format!("Unreadable sector: {e}");
                             *error = true;
                         }
                     },
@@ -300,7 +300,7 @@ impl Menu {
                     NetEvent::Msg(_) => {}
                     NetEvent::Closed(e) => {
                         if !*error {
-                            *status = format!("Déconnecté : {e}");
+                            *status = format!("Disconnected: {e}");
                             *error = true;
                         }
                         *conn = None;
@@ -314,7 +314,7 @@ impl Menu {
             let dots = ".".repeat((get_time() * 2.0) as usize % 4);
             gfx::text_centered(&dots, sw / 2.0, r.y + 60.0, 18.0, pal::ACCENT);
         }
-        if ui.button(Rect::new(sw / 2.0 - 70.0, r.y + 98.0, 140.0, 30.0), if *error { "Retour" } else { "Annuler" }) {
+        if ui.button(Rect::new(sw / 2.0 - 70.0, r.y + 98.0, 140.0, 30.0), if *error { "Back" } else { "Cancel" }) {
             self.screen = Screen::Main;
         }
         MenuOut::Stay

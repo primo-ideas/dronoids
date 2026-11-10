@@ -1,23 +1,23 @@
-# Mise en ligne
+# Going online
 
-Dronoids tourne sur la machine Scaleway du mainteneur, à
-<https://primo-ideas.xyz/dronoids/>, à côté d'autres sites et jeux. La machine est
-préparée une fois, puis chaque mise en ligne ne remplace que le build.
+Dronoids runs on the maintainer's Scaleway machine, at
+<https://primo-ideas.xyz/dronoids/>, beside other sites and games. The machine is
+prepared once, and then each deployment only replaces the build.
 
-## Ce qu'il y a sur la machine
+## What is on the machine
 
 ```text
-/home/dronoids/dronoids-server              le serveur de monde (binaire Linux statique)
-/home/dronoids/worlds/primo.world           le secteur (JSON), sauvegardé toutes les 30 s et à l'arrêt
-/home/dronoids/worlds/primo.accounts.json   pseudo -> jeton secret d'invité, ou "site" (tenu par un compte)
-/home/dronoids/site/dronoids_site.py        le service des comptes (Python, bibliothèque standard)
-/home/dronoids/site/config.json             ses réglages, dont les clés de connexion (écrit une fois)
-/home/dronoids/site/accounts.db             les comptes (SQLite) : pseudo et identifiants des services
-/home/dronoids/site/secret                  secret partagé : le site signe les tickets, le serveur les vérifie
-/var/www/html/dronoids/                     le site (index.html, site.css, site.js) et le jeu dans jouer/
-/etc/systemd/system/dronoids.service        utilisateur dronoids, port 8082 sur le loopback, 6 colonies IA
-/etc/systemd/system/dronoids-site.service   le service des comptes, port 8083 sur le loopback
-/etc/apache2/conf-available/dronoids.conf   activée par a2enconf : le dossier, le proxy WebSocket et /dronoids/api/
+/home/dronoids/dronoids-server              the world server (static Linux binary)
+/home/dronoids/worlds/primo.world           the sector (JSON), saved every 30 s and on shutdown
+/home/dronoids/worlds/primo.accounts.json   nickname -> a guest's secret token, or "site" (held by an account)
+/home/dronoids/site/dronoids_site.py        the account service (Python, standard library)
+/home/dronoids/site/config.json             its settings, the sign-in keys among them (written once)
+/home/dronoids/site/accounts.db             the accounts (SQLite): nicknames and the services' identifiers
+/home/dronoids/site/secret                  shared secret: the site signs the tickets, the server checks them
+/var/www/html/dronoids/                     the site (index.html, site.css, site.js) and the game in play/
+/etc/systemd/system/dronoids.service        user dronoids, port 8082 on the loopback, 6 AI colonies
+/etc/systemd/system/dronoids-site.service   the account service, port 8083 on the loopback
+/etc/apache2/conf-available/dronoids.conf   enabled with a2enconf: the directory, the WebSocket proxy and /dronoids/api/
 ```
 
 ```apache
@@ -34,85 +34,97 @@ préparée une fois, puis chaque mise en ligne ne remplace que le build.
 RedirectMatch permanent "^/drones(/.*)?$" "/dronoids/"
 ```
 
-Le jeu a d'abord été servi sur `/drones/`. Sur une machine
-qui porte encore cette installation, `setup-dronoids.sh` la migre : il arrête l'ancien
-service, copie le secteur de `/home/drones/worlds`, retire l'ancien service et
-l'ancienne configuration Apache (avec sauvegardes), et `/drones/` redirige ensuite vers
-`/dronoids/`. Le navigateur reprend aussi ce qu'il avait stocké sous l'ancien nom
-(pseudo et jeton). Le jeu est indisponible entre ce script et la mise en ligne qui suit.
+The game was first served at `/drones/`. On a machine that still carries that
+install, `setup-dronoids.sh` migrates it: it stops the old service, copies the sector
+from `/home/drones/worlds`, removes the old service and the old Apache configuration
+(with backups), and `/drones/` then redirects to `/dronoids/`. The browser also takes
+back what it had stored under the old name (nickname and token). The game is
+unavailable between that script and the deployment that follows.
 
-Le port 8082 est le premier libre : 8081 appartient à Space Race, 3000 et 5432 à un
-autre site. Le serveur n'écoute que sur le loopback ; seul Apache, en TLS, le rend
-joignable.
+Port 8082 is the first free one: 8081 belongs to Space Race, 3000 and 5432 to another
+site. The server only listens on the loopback; only Apache, over TLS, makes it
+reachable.
 
-## La sauvegarde du secteur
+## The sector's save
 
-Le monde est généré à la demande à partir de sa graine : le fichier ne contient que
-ce que les joueurs ont changé (usines, dronoids, cartes explorées, gisements entamés).
-Le carré de 768 unités des premières versions reste au centre du secteur `primo`, tel
-qu'il était ; tout autour, le terrain est calculé.
+The world is generated on demand from its seed: the file only holds what the players
+changed (factories, dronoids, explored maps, deposits that have been mined). The
+768-unit square of the first versions stays at the center of the `primo` sector, as it
+was; all around it, the terrain is computed.
 
-Depuis le protocole 5, `primo.world` est en JSON : une version suivante peut ajouter
-des champs (avec une valeur par défaut) et relire le secteur. Le serveur relit aussi
-les sauvegardes bincode des versions précédentes (protocoles 3 et 4) ; il en garde
-alors l'original dans `primo.old.world` avant de l'écraser au nouveau format. Les
-joueurs d'un secteur au protocole 3, d'avant le brouillard, retrouvent une carte de
-ce que voient leurs usines et leurs dronoids. Une sauvegarde illisible n'est jamais
-écrasée : elle est mise de côté (`primo.unreadable-<horodatage>.world`) et le serveur part
-d'un secteur neuf, ce que son journal signale.
+Since protocol 5, `primo.world` is JSON: a later version can add fields (with a
+default value) and read the sector back. The server also reads the bincode saves of
+earlier versions (protocols 3 and 4); it then keeps the original in `primo.old.world`
+before overwriting it in the new format. The players of a protocol-3 sector, from
+before the fog, get a map of what their factories and dronoids see. An unreadable save
+is never overwritten: it is set aside (`primo.unreadable-<timestamp>.world`) and the
+server starts from a new sector, which its log says.
 
-## Préparer la machine (une fois)
+The game was in French until protocol 7. A sector saved before then is brought up to
+date when it is loaded: the built-in programs take their English names (`mineur`,
+`eclaireur`, `chasseur` and `gardien` become `miner`, `scout`, `hunter` and `guard`),
+untouched copies of them their English wording, with the same instructions line for
+line so that running dronoids carry on, and the AI colonies become `AI <star>`
+instead of `IA <star>`. Players' own programs keep their code. The players' browsers
+do the same with the programs they keep.
+
+## Preparing the machine (once)
 
 ```bash
 scp deploy/setup-dronoids.sh root@primo-ideas.xyz:/tmp/
 ssh root@primo-ideas.xyz sh /tmp/setup-dronoids.sh
 ```
 
-Le script est idempotent. Il crée l'utilisateur, le service et la configuration
-Apache ci-dessus, sauvegarde ce qu'il remplace, et teste la configuration Apache
-avant de recharger (et la remet en état si le test échoue). Il ne touche ni aux
-hôtes virtuels, ni au TLS, ni aux autres sites.
+The script is idempotent. It creates the user, the service and the Apache
+configuration above, backs up what it replaces, and tests the Apache configuration
+before reloading it (and puts it back if the test fails). It touches neither the
+virtual hosts, nor TLS, nor the other sites.
 
-## Le site et les comptes
+## The site and the accounts
 
-`https://primo-ideas.xyz/dronoids/` est le site ; le jeu est dans `jouer/`. On joue
-sans compte, comme invité : le pseudo est alors protégé par un jeton gardé dans le
-navigateur. Un compte se crée avec Google, Discord, GitHub ou Twitch ; on n'en garde
-que le pseudo et l'identifiant opaque que le service donne pour la personne (ni
-e-mail, ni nom, ni jeton d'accès).
+`https://primo-ideas.xyz/dronoids/` is the site; the game is in `play/`. Its first
+address, `jouer/`, is a page that sends visitors on to `play/`. Playing needs no
+account, as a guest: the nickname is then protected by a token kept in the browser.
+An account is made with Google, Discord, GitHub or Twitch; all that is kept is the
+nickname and the opaque identifier the service gives for the person (no email, no
+name, no access token).
 
-Quand on est connecté, la page du jeu demande au site (`api/me`) le pseudo et un
-ticket signé, valable 7 jours, que le jeu présente au serveur de monde à la place du
-jeton d'invité. Le serveur vérifie la signature avec le secret partagé
-(`--site-secret`), sans jamais interroger le site, et le nom appartient dès lors au
-compte : plus aucun jeton d'invité ne l'ouvre. Un invité qui crée son compte depuis
-le même navigateur garde son pseudo et sa colonie : le site lit son jeton et le
-compare à `primo.accounts.json`.
+When signed in, the game's page asks the site (`api/me`) for the nickname and a signed
+ticket, valid for 7 days, which the game shows the world server instead of the guest
+token. The server checks the signature with the shared secret (`--site-secret`),
+without ever asking the site, and the name then belongs to the account: no guest
+token opens it anymore. A guest who creates an account from the same browser keeps
+their nickname and their colony: the site reads their token and checks it against
+`primo.accounts.json`.
 
-### Activer la connexion par un service
+The database's columns were named in French until the site was translated: the
+service renames them (`pseudo` to `nickname`) the first time it starts on such a
+database.
 
-Le site ne propose que les services dont les clés sont renseignées. Pour chacun,
-créer une application chez le service avec, pour adresse de retour :
+### Turning on sign-in with a service
+
+The site only offers the services whose keys are filled in. For each one, create an
+application at the service with, as its redirect address:
 
 ```text
-https://primo-ideas.xyz/dronoids/api/callback/google    console.cloud.google.com → API et services → Identifiants → ID client OAuth (application Web)
+https://primo-ideas.xyz/dronoids/api/callback/google    console.cloud.google.com → APIs & Services → Credentials → OAuth client ID (web application)
 https://primo-ideas.xyz/dronoids/api/callback/discord   discord.com/developers/applications → OAuth2
 https://primo-ideas.xyz/dronoids/api/callback/github    github.com/settings/developers → OAuth Apps
 https://primo-ideas.xyz/dronoids/api/callback/twitch    dev.twitch.tv/console/apps
 ```
 
-puis recopier l'identifiant et le secret de l'application dans
-`/home/dronoids/site/config.json` (`providers` → `client_id`, `client_secret`) et
-relancer le service :
+then copy the application's identifier and secret into
+`/home/dronoids/site/config.json` (`providers` → `client_id`, `client_secret`) and
+restart the service:
 
 ```bash
 systemctl restart dronoids-site
 ```
 
-Le fichier n'est écrit qu'une fois par `setup-dronoids.sh` : les clés y restent d'une
-mise en ligne à l'autre.
+`setup-dronoids.sh` only writes that file once: the keys stay there from one
+deployment to the next.
 
-### Essayer le site sur sa machine
+### Trying the site on one's own machine
 
 ```bash
 ./deploy/build-web.sh
@@ -120,38 +132,38 @@ python site/dronoids_site.py --config site/dev-config.json
 ./target/release/dronoids-server --port 8082 --save target/site-dev/primo.world --site-secret target/site-dev/secret
 ```
 
-puis <http://localhost:8083/dronoids/>. En local seulement, un « compte d'essai » se
-connecte sans aucun service. Les tests : `python site/test_site.py`.
+then <http://localhost:8083/dronoids/>. Locally only, a "test account" signs in
+without any service. The tests: `python site/test_site.py`.
 
-## Mettre en ligne
+## Deploying
 
 ```bash
 ./deploy/deploy.sh
 ```
 
-Il compile le serveur pour `x86_64-unknown-linux-musl` (lié par `rust-lld`, voir
-`.cargo/config.toml` : Windows n'a pas de `cc`) et le client pour
-`wasm32-unknown-unknown` (réduit par `wasm-opt` s'il est installé), envoie
-l'archive, puis `deploy/install.sh` remplace le binaire, le service des comptes et le
-dossier web d'un bloc, redémarre les deux services, vérifie qu'ils tiennent debout,
-et le script récupère le site, le jeu, le module et `api/me` par HTTPS.
+It builds the server for `x86_64-unknown-linux-musl` (linked with `rust-lld`, see
+`.cargo/config.toml`: Windows has no `cc`) and the client for
+`wasm32-unknown-unknown` (shrunk by `wasm-opt` if it is installed), uploads the
+archive, then `deploy/install.sh` replaces the binary, the account service and the web
+directory in one go, restarts both services and checks that they stay up, and the
+script fetches the site, the game, the module and `api/me` over HTTPS.
 
-Quand `setup-dronoids.sh` change (comme à l'arrivée du site), le relancer avant la
-mise en ligne.
+When `setup-dronoids.sh` changes (as when the site arrived), run it again before
+deploying.
 
-Un redémarrage déconnecte les joueurs ; ils se reconnectent au même secteur, qui
-reprend depuis sa dernière sauvegarde (30 s au plus).
+A restart disconnects the players; they connect again to the same sector, which
+resumes from its last save (30 s at most).
 
-## Le client trouve son serveur
+## How the client finds its server
 
-Servie depuis `https://<site>/dronoids/jouer/`, la page se connecte à
-`wss://<site>/dronoids/ws`. Servie depuis `127.0.0.1` ou `localhost` (développement),
-elle vise `ws://127.0.0.1:8082/ws`. `?server=` remplace les deux. Le client bureau
-vise `ws://127.0.0.1:8082/ws`, ou `DRONOIDS_SERVER`, ou l'adresse saisie dans le menu
-« Serveur » (en `ws://` : pas de TLS côté bureau, passer par un tunnel SSH pour la
+Served from `https://<site>/dronoids/play/`, the page connects to
+`wss://<site>/dronoids/ws`. Served from `127.0.0.1` or `localhost` (development), it
+aims at `ws://127.0.0.1:8082/ws`. `?server=` overrides both. The desktop client aims
+at `ws://127.0.0.1:8082/ws`, or `DRONOIDS_SERVER`, or the address typed into the
+"Server" menu (over `ws://`: no TLS on the desktop, go through an SSH tunnel for
 production).
 
-## Au quotidien
+## Day to day
 
 ```bash
 systemctl status dronoids dronoids-site
@@ -160,5 +172,5 @@ journalctl -u dronoids-site -f
 systemctl restart dronoids
 ```
 
-Repartir d'un secteur neuf : arrêter le service, déplacer `primo.world` et
-`primo.accounts.json`, relancer.
+Starting from a new sector: stop the service, move `primo.world` and
+`primo.accounts.json` away, start it again.

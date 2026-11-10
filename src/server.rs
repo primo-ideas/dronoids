@@ -31,7 +31,7 @@ const SAVE_EVERY: Duration = Duration::from_secs(30);
 const PRESENCE_EVERY: u64 = 20;
 
 pub const BOT_NAMES: &[&str] = &[
-    "Orion", "Vega", "Lyra", "Rigel", "Deneb", "Sirius", "Altaïr", "Antarès", "Castor", "Pollux", "Capella", "Mira",
+    "Orion", "Vega", "Lyra", "Rigel", "Deneb", "Sirius", "Altair", "Antares", "Castor", "Pollux", "Capella", "Mira",
 ];
 
 #[derive(Clone, Debug)]
@@ -76,7 +76,7 @@ pub struct Server {
 
 pub fn bot_name(i: usize) -> String {
     let base = BOT_NAMES[i % BOT_NAMES.len()];
-    if i < BOT_NAMES.len() { format!("IA {base}") } else { format!("IA {base} {}", i / BOT_NAMES.len() + 1) }
+    if i < BOT_NAMES.len() { format!("AI {base}") } else { format!("AI {base} {}", i / BOT_NAMES.len() + 1) }
 }
 
 fn accounts_path(save: &Option<PathBuf>) -> Option<PathBuf> {
@@ -97,18 +97,18 @@ fn load_world(path: &Path, log: &mut Vec<String>) -> Option<World> {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
-            log.push(format!("lecture de {} impossible : {e}", path.display()));
+            log.push(format!("cannot read {}: {e}", path.display()));
             return None;
         }
     };
     match World::from_save(&bytes) {
         Ok(w) => {
-            log.push(format!("monde chargé depuis {}", path.display()));
+            log.push(format!("world loaded from {}", path.display()));
             if World::is_old_save(&bytes) {
                 let copy = aside("old");
                 match std::fs::write(&copy, &bytes) {
-                    Ok(()) => log.push(format!("ancien format converti, l'original est gardé dans {}", copy.display())),
-                    Err(e) => log.push(format!("copie de l'ancien format impossible ({e})")),
+                    Ok(()) => log.push(format!("old format converted, the original is kept in {}", copy.display())),
+                    Err(e) => log.push(format!("cannot copy the old format ({e})")),
                 }
             }
             Some(w)
@@ -117,8 +117,8 @@ fn load_world(path: &Path, log: &mut Vec<String>) -> Option<World> {
             let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             let moved = aside(&format!("unreadable-{stamp}"));
             match std::fs::rename(path, &moved) {
-                Ok(()) => log.push(format!("sauvegarde illisible ({e}), mise de côté dans {} ; nouveau monde", moved.display())),
-                Err(m) => log.push(format!("sauvegarde illisible ({e}) et impossible à déplacer ({m}) ; nouveau monde")),
+                Ok(()) => log.push(format!("unreadable save ({e}), set aside in {}; new world", moved.display())),
+                Err(m) => log.push(format!("unreadable save ({e}) that cannot be moved ({m}); new world")),
             }
             None
         }
@@ -197,15 +197,15 @@ impl Server {
                         let owned_by_other = !ticket_ok && self.accounts.get(&name).is_some_and(|t| *t != token);
                         let c = &mut self.clients[ci];
                         let refuse = if version != PROTOCOL_VERSION {
-                            Some("version du jeu différente : rechargez la page".to_string())
+                            Some("different game version: reload the page".to_string())
                         } else if signed_in && !ticket_ok {
-                            Some("session expirée : reconnectez-vous sur le site".into())
+                            Some("session expired: sign in again on the site".into())
                         } else if name.is_empty() || token.len() < 8 {
-                            Some("nom invalide".into())
+                            Some("invalid name".into())
                         } else if is_bot || owned_by_other {
-                            Some(format!("le nom « {name} » appartient déjà à quelqu'un"))
+                            Some(format!("the name {name} already belongs to someone"))
                         } else if connected {
-                            Some(format!("« {name} » est déjà connecté"))
+                            Some(format!("{name} is already connected"))
                         } else {
                             None
                         };
@@ -242,7 +242,7 @@ impl Server {
                             && mine != hash
                         {
                             let c = &mut self.clients[ci];
-                            self.log.push(format!("{} désynchronisé au tick {tick}", c.name.clone().unwrap_or_default()));
+                            self.log.push(format!("{} out of sync at tick {tick}", c.name.clone().unwrap_or_default()));
                             c.conn.send(&ServerMsg::Resync { snapshot: self.world.to_bytes() });
                         }
                     }
@@ -264,7 +264,7 @@ impl Server {
             self.save_accounts();
         }
         for c in self.clients.iter().filter(|c| c.gone && c.player.is_some()) {
-            self.log.push(format!("{} se déconnecte", c.name.clone().unwrap_or_default()));
+            self.log.push(format!("{} disconnects", c.name.clone().unwrap_or_default()));
         }
         self.clients.retain(|c| !c.gone);
     }
@@ -298,10 +298,10 @@ impl Server {
                     c.player = Some(p.id);
                     let snap = snapshot.get_or_insert_with(|| self.world.to_bytes()).clone();
                     c.conn.send(&ServerMsg::Welcome { player: p.id, world: self.cfg.name.clone(), snapshot: snap });
-                    self.log.push(format!("{name} entre dans le monde"));
+                    self.log.push(format!("{name} enters the world"));
                 }
                 None => {
-                    c.conn.send(&ServerMsg::Refused("le monde est plein".into()));
+                    c.conn.send(&ServerMsg::Refused("the world is full".into()));
                     c.gone = true;
                 }
             }
@@ -326,7 +326,7 @@ impl Server {
             let _ = std::fs::create_dir_all(dir);
         }
         if let Err(e) = write_whole(path, &self.world.to_save()) {
-            self.log.push(format!("sauvegarde impossible : {e}"));
+            self.log.push(format!("cannot save: {e}"));
         }
         self.save_accounts();
     }
@@ -427,7 +427,7 @@ mod tests {
     fn a_site_account_takes_over_its_name() {
         let dir = std::env::temp_dir().join(format!("dronoids-ticket-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let secret = b"secret-partage".to_vec();
+        let secret = b"shared-secret".to_vec();
         let mut server =
             Server::new(ServerConfig { save: Some(dir.join("t.world")), site_secret: Some(secret.clone()), ..cfg(0) }).unwrap();
         let later = u64::MAX / 2;
@@ -437,23 +437,23 @@ mod tests {
         };
 
         // A guest claims a name; the file says so at once.
-        let guest = hello(&mut server, "ana", "jeton-invite-ana").unwrap();
-        assert_eq!(held("ana").as_deref(), Some("jeton-invite-ana"));
+        let guest = hello(&mut server, "ana", "guest-token-ana").unwrap();
+        assert_eq!(held("ana").as_deref(), Some("guest-token-ana"));
         drop(guest);
         idle(&mut server);
 
         // Bad tickets: forged, for another name, or expired.
-        assert!(hello(&mut server, "ana", "site.9999999999.00ff").err().unwrap().contains("session expirée"));
+        assert!(hello(&mut server, "ana", "site.9999999999.00ff").err().unwrap().contains("session expired"));
         assert!(hello(&mut server, "ana", &ticket::sign(&secret, "bob", later)).is_err());
         assert!(hello(&mut server, "ana", &ticket::sign(&secret, "ana", 1)).is_err());
-        assert_eq!(held("ana").as_deref(), Some("jeton-invite-ana"));
+        assert_eq!(held("ana").as_deref(), Some("guest-token-ana"));
 
         // The account's ticket opens the name, which is then closed to guests.
         let account = hello(&mut server, "ana", &ticket::sign(&secret, "ana", later)).unwrap();
         assert_eq!(held("ana").as_deref(), Some(ticket::OWNED));
         drop(account);
         idle(&mut server);
-        assert!(hello(&mut server, "ana", "jeton-invite-ana").err().unwrap().contains("appartient"));
+        assert!(hello(&mut server, "ana", "guest-token-ana").err().unwrap().contains("belongs"));
         assert!(hello(&mut server, "ana", ticket::OWNED).is_err());
         assert!(hello(&mut server, "ana", &ticket::sign(&secret, "ana", later + 5)).is_ok());
 
@@ -506,7 +506,7 @@ mod tests {
                             w.step(&cmds);
                             if w.is_landing(c.me) && w.players[c.me as usize].minerals >= crate::rules::FACTORY_COST {
                                 let (hx, hy) = w.players[c.me as usize].home;
-                                let m = crate::programs::builtin("mineur").unwrap();
+                                let m = crate::programs::builtin("miner").unwrap();
                                 c.conn.send(&ClientMsg::Cmd(Command::PlaceFactory {
                                     x: hx,
                                     y: hy,
@@ -613,7 +613,7 @@ mod tests {
         drop(server);
 
         // Garbage: set aside, then a new world.
-        std::fs::write(&path, b"\x00\x01 abime").unwrap();
+        std::fs::write(&path, b"\x00\x01 broken").unwrap();
         let server = Server::new(with_save()).unwrap();
         assert!(!path.exists(), "the unreadable file was moved, not left to be overwritten");
         let aside: Vec<_> = std::fs::read_dir(&dir)
@@ -622,7 +622,7 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().contains("unreadable"))
             .collect();
         assert_eq!(aside.len(), 1);
-        assert_eq!(std::fs::read(aside[0].path()).unwrap(), b"\x00\x01 abime");
+        assert_eq!(std::fs::read(aside[0].path()).unwrap(), b"\x00\x01 broken");
         assert_eq!(server.world.players.len(), 2, "a fresh sector with its bots");
         drop(server);
         let _ = std::fs::remove_dir_all(&dir);

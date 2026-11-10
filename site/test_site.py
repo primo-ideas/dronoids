@@ -31,7 +31,7 @@ class FakeProvider(BaseHTTPRequestHandler):
 
     def do_GET(self):
         token = self.headers.get("Authorization", "")[len("Bearer tok-") :]
-        self.answer({"sub": token, "email": "jamais@garde.example"})
+        self.answer({"sub": token, "email": "never@kept.example"})
 
     def answer(self, body):
         data = json.dumps(body).encode()
@@ -51,10 +51,10 @@ class SiteTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         with open(os.path.join(self.dir, "secret"), "w") as f:
-            f.write("secret-de-test-assez-long")
+            f.write("a-test-secret-long-enough")
         self.names = os.path.join(self.dir, "primo.accounts.json")
         with open(self.names, "w") as f:
-            json.dump({"Ana": "jeton-invite-ana", "Zoe": ds.OWNED}, f)
+            json.dump({"Ana": "guest-token-ana", "Zoe": ds.OWNED}, f)
         self.provider = ThreadingHTTPServer(("127.0.0.1", 0), FakeProvider)
         threading.Thread(target=self.provider.serve_forever, daemon=True).start()
         fake = f"http://127.0.0.1:{self.provider.server_address[1]}"
@@ -110,14 +110,14 @@ class SiteTest(unittest.TestCase):
     def test_ticket_is_the_one_the_world_server_expects(self):
         # Same as `the_account_service_signs_alike` in src/ticket.rs.
         self.assertEqual(
-            ds.sign_ticket(b"secret-de-test", "Primo", 2_000_000_000),
-            "site.2000000000.899a2517086a306754d5318670bb258950402f869c7c99fd89737247d15ec10c",
+            ds.sign_ticket(b"test-secret", "Primo", 2_000_000_000),
+            "site.2000000000.63021fc120ed4a80e22500d358c2b959808164c38a5abf31685b839b6e7a8c3b",
         )
 
-    def test_pseudos(self):
-        self.assertEqual(ds.clean_pseudo("  Le   Pilote_7 ")[0], "Le Pilote_7")
-        for bad in ["ab", "x" * 21, "IA Vega", "a<script>", None, 42]:
-            self.assertIsNone(ds.clean_pseudo(bad)[0], bad)
+    def test_nicknames(self):
+        self.assertEqual(ds.clean_nickname("  The   Pilot_7 ")[0], "The Pilot_7")
+        for bad in ["ab", "x" * 21, "AI Vega", "a<script>", None, 42]:
+            self.assertIsNone(ds.clean_nickname(bad)[0], bad)
 
     def test_only_configured_providers_are_offered(self):
         status, me = self.call("me")
@@ -128,28 +128,28 @@ class SiteTest(unittest.TestCase):
 
     def test_a_google_sign_in_makes_an_account_then_finds_it_again(self):
         status, where = self.sign_in_with_google("p1")
-        self.assertEqual((status, where), (303, "http://localhost:1/dronoids/#compte"))
+        self.assertEqual((status, where), (303, "http://localhost:1/dronoids/#account"))
         me = self.call("me")[1]["account"]
-        self.assertEqual((me["pseudo"], me["linked"], me["ticket"]), (None, ["google"], None))
-        self.assertEqual(self.call("pseudo", {"pseudo": "Nova"})[0], 200)
+        self.assertEqual((me["nickname"], me["linked"], me["ticket"]), (None, ["google"], None))
+        self.assertEqual(self.call("nickname", {"nickname": "Nova"})[0], 200)
         me = self.call("me")[1]["account"]
-        self.assertEqual(me["pseudo"], "Nova")
+        self.assertEqual(me["nickname"], "Nova")
         self.assertTrue(me["ticket"].startswith("site."))
         # Another browser, same Google account: same account.
         other = http.cookiejar.CookieJar()
         self.sign_in_with_google("p1", other)
-        self.assertEqual(self.call("me", jar=other)[1]["account"]["pseudo"], "Nova")
+        self.assertEqual(self.call("me", jar=other)[1]["account"]["nickname"], "Nova")
         # Nothing but the provider's id is kept.
         db = self.server.RequestHandlerClass.site.db
-        self.assertNotIn("garde.example", json.dumps(db.execute("SELECT * FROM identities").fetchall()))
+        self.assertNotIn("kept.example", json.dumps(db.execute("SELECT * FROM identities").fetchall()))
 
     def test_sign_in_needs_the_state_it_started_with(self):
         self.call("login/google")
-        self.assertEqual(self.call("callback/google?code=ok-x&state=forged"), (303, "http://localhost:1/dronoids/?erreur=session#compte"))
+        self.assertEqual(self.call("callback/google?code=ok-x&state=forged"), (303, "http://localhost:1/dronoids/?error=session#account"))
         self.assertIsNone(self.call("me")[1]["account"])
         status, where = self.call("login/google")
         state = urllib.parse.parse_qs(urllib.parse.urlsplit(where).query)["state"][0]
-        self.assertEqual(self.call(f"callback/google?state={state}")[1], "http://localhost:1/dronoids/?erreur=refuse#compte")
+        self.assertEqual(self.call(f"callback/google?state={state}")[1], "http://localhost:1/dronoids/?error=refused#account")
         self.call("login/google")
         self.assertEqual(self.sign_in_with_google("x")[0], 303)
         self.assertIsNotNone(self.call("me")[1]["account"])
@@ -157,53 +157,53 @@ class SiteTest(unittest.TestCase):
     def test_a_bad_code_signs_nobody_in(self):
         status, where = self.call("login/google")
         state = urllib.parse.parse_qs(urllib.parse.urlsplit(where).query)["state"][0]
-        self.assertEqual(self.call(f"callback/google?code=nope&state={state}")[1], "http://localhost:1/dronoids/?erreur=fournisseur#compte")
+        self.assertEqual(self.call(f"callback/google?code=nope&state={state}")[1], "http://localhost:1/dronoids/?error=provider#account")
         self.assertIsNone(self.call("me")[1]["account"])
 
     def test_names_taken_in_the_game_need_their_guest_token(self):
-        self.call(f"login/{ds.DEV}?qui=a")
-        self.assertEqual(self.call("pseudo", {"pseudo": "ana"})[0], 409)
-        self.assertEqual(self.call("pseudo", {"pseudo": "Ana", "guest_token": "autre"})[0], 409)
-        self.assertEqual(self.call("pseudo", {"pseudo": "Zoe", "guest_token": ds.OWNED})[0], 409)
-        self.assertEqual(self.call("pseudo", {"pseudo": "Ana", "guest_token": "jeton-invite-ana"})[0], 200)
+        self.call(f"login/{ds.DEV}?who=a")
+        self.assertEqual(self.call("nickname", {"nickname": "ana"})[0], 409)
+        self.assertEqual(self.call("nickname", {"nickname": "Ana", "guest_token": "someone-else"})[0], 409)
+        self.assertEqual(self.call("nickname", {"nickname": "Zoe", "guest_token": ds.OWNED})[0], 409)
+        self.assertEqual(self.call("nickname", {"nickname": "Ana", "guest_token": "guest-token-ana"})[0], 200)
         # Once chosen, it stays; and nobody else can take it, whatever the case.
-        self.assertEqual(self.call("pseudo", {"pseudo": "Autre"})[0], 409)
+        self.assertEqual(self.call("nickname", {"nickname": "Other"})[0], 409)
         other = http.cookiejar.CookieJar()
-        self.call(f"login/{ds.DEV}?qui=b", jar=other)
-        self.assertEqual(self.call("pseudo", {"pseudo": "ANA"}, jar=other)[0], 409)
+        self.call(f"login/{ds.DEV}?who=b", jar=other)
+        self.assertEqual(self.call("nickname", {"nickname": "ANA"}, jar=other)[0], 409)
 
     def test_linking_a_second_provider_to_the_same_account(self):
-        self.call(f"login/{ds.DEV}?qui=a")
-        self.call("pseudo", {"pseudo": "Liee"})
+        self.call(f"login/{ds.DEV}?who=a")
+        self.call("nickname", {"nickname": "Linked"})
         self.sign_in_with_google("g1")
-        self.assertEqual(self.call("me")[1]["account"]["linked"], [ds.DEV, "google"])
+        self.assertEqual(self.call("me")[1]["account"]["linked"], sorted([ds.DEV, "google"]))
         # That Google account cannot then be linked to someone else.
         other = http.cookiejar.CookieJar()
-        self.call(f"login/{ds.DEV}?qui=b", jar=other)
-        self.assertEqual(self.sign_in_with_google("g1", other)[1], "http://localhost:1/dronoids/?erreur=deja-lie#compte")
+        self.call(f"login/{ds.DEV}?who=b", jar=other)
+        self.assertEqual(self.sign_in_with_google("g1", other)[1], "http://localhost:1/dronoids/?error=already-linked#account")
 
     def test_writes_need_the_site_header_and_origin(self):
-        self.call(f"login/{ds.DEV}?qui=a")
+        self.call(f"login/{ds.DEV}?who=a")
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar))
-        plain = urllib.request.Request(self.root + "pseudo", data=b'{"pseudo":"Piege"}', headers={"Content-Type": "application/json"})
+        plain = urllib.request.Request(self.root + "nickname", data=b'{"nickname":"Trap"}', headers={"Content-Type": "application/json"})
         with self.assertRaises(urllib.error.HTTPError) as e:
             opener.open(plain)
         self.assertEqual(e.exception.code, 403)
-        self.assertEqual(self.call("pseudo", {"pseudo": "Piege"}, {"Origin": "https://ailleurs.example"})[0], 403)
-        self.assertIsNone(self.call("me")[1]["account"]["pseudo"])
+        self.assertEqual(self.call("nickname", {"nickname": "Trap"}, {"Origin": "https://elsewhere.example"})[0], 403)
+        self.assertIsNone(self.call("me")[1]["account"]["nickname"])
 
     def test_logout_and_delete(self):
-        self.call(f"login/{ds.DEV}?qui=a")
-        self.call("pseudo", {"pseudo": "Partant"})
+        self.call(f"login/{ds.DEV}?who=a")
+        self.call("nickname", {"nickname": "Leaving"})
         self.call("logout", {})
         self.assertIsNone(self.call("me")[1]["account"])
-        self.call(f"login/{ds.DEV}?qui=a")
-        self.assertEqual(self.call("me")[1]["account"]["pseudo"], "Partant")
+        self.call(f"login/{ds.DEV}?who=a")
+        self.assertEqual(self.call("me")[1]["account"]["nickname"], "Leaving")
         self.call("delete", {})
         self.assertIsNone(self.call("me")[1]["account"])
-        self.call(f"login/{ds.DEV}?qui=a")
-        self.assertIsNone(self.call("me")[1]["account"]["pseudo"], "a fresh account")
-        self.assertEqual(self.call("pseudo", {"pseudo": "Partant"})[0], 200, "the pseudo is free again")
+        self.call(f"login/{ds.DEV}?who=a")
+        self.assertIsNone(self.call("me")[1]["account"]["nickname"], "a fresh account")
+        self.assertEqual(self.call("nickname", {"nickname": "Leaving"})[0], 200, "the nickname is free again")
 
     def test_the_test_login_only_exists_on_ones_own_machine(self):
         site = ds.Site(
@@ -216,6 +216,29 @@ class SiteTest(unittest.TestCase):
         )
         self.assertFalse(site.dev)
         self.assertEqual(site.offered(), [])
+
+
+    def test_a_database_from_before_the_translation_keeps_its_nicknames(self):
+        import sqlite3
+
+        path = os.path.join(self.dir, "old.db")
+        old = sqlite3.connect(path)
+        old.executescript(
+            """
+            CREATE TABLE accounts (id INTEGER PRIMARY KEY, pseudo TEXT, pseudo_key TEXT UNIQUE, created INTEGER NOT NULL);
+            INSERT INTO accounts VALUES (1, 'Nova', 'nova', 0);
+            """
+        )
+        old.commit()
+        old.close()
+        config = {"base_url": "http://localhost:1/dronoids", "database": path, "secret_file": os.path.join(self.dir, "secret")}
+        site = ds.Site(config)
+        self.assertEqual(site.db.execute("SELECT nickname, nickname_key FROM accounts").fetchall(), [("Nova", "nova")])
+        site.db.close()
+        # And again: nothing left to rename.
+        site = ds.Site(config)
+        self.assertEqual(site.db.execute("SELECT nickname FROM accounts").fetchall(), [("Nova",)])
+        site.db.close()
 
 
 if __name__ == "__main__":

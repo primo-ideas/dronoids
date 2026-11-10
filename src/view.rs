@@ -643,7 +643,7 @@ mod tests {
     #[test]
     fn enemies_only_show_within_sight() {
         let mut w = World::new(4);
-        let m = programs::builtin("mineur").unwrap();
+        let m = programs::builtin("miner").unwrap();
         for name in ["moi", "autre"] {
             let id = w.join(name, false).unwrap();
             let (hx, hy) = w.players[id as usize].home;

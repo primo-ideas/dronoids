@@ -17,13 +17,13 @@ URL=${URL:-https://primo-ideas.xyz/dronoids/}
 stage=target/deploy
 archive=target/dronoids-deploy.tar.gz
 
-echo "==> serveur de monde (Linux)"
+echo "==> world server (Linux)"
 cargo build --locked --release --target x86_64-unknown-linux-musl --bin dronoids-server
 
-echo "==> client web"
+echo "==> web client"
 ./deploy/build-web.sh >/dev/null
 
-echo "==> préparation"
+echo "==> staging"
 rm -rf "$stage"
 mkdir -p "$stage"
 tr -d '\r' < deploy/install.sh > "$stage/install.sh"
@@ -32,7 +32,7 @@ cp -r dist/site "$stage/web"
 tr -d '\r' < site/dronoids_site.py > "$stage/dronoids_site.py"
 tar -czf "$archive" -C "$stage" .
 
-echo "==> envoi vers $SERVER"
+echo "==> upload to $SERVER"
 scp -o BatchMode=yes "$archive" "$SERVER:/tmp/dronoids-deploy.tar.gz"
 # Plain newlines whatever this file has: a stray \r would break the remote shell.
 ssh -o BatchMode=yes "$SERVER" "$(tr -d '\r' <<'EOF'
@@ -46,9 +46,9 @@ rm -rf /tmp/dronoids-deploy /tmp/dronoids-deploy.tar.gz
 EOF
 )"
 
-echo "==> vérification de $URL"
+echo "==> checking $URL"
 curl -fsS -o /dev/null -w "    page %{http_code}\n" "$URL"
-curl -fsS -o /dev/null -w "    jeu %{http_code}\n" "${URL}jouer/"
-curl -fsS -o /dev/null -w "    module %{http_code}, %{content_type}\n" "${URL}jouer/dronoids.wasm"
-curl -fsS -o /dev/null -w "    comptes %{http_code}\n" "${URL}api/me"
-echo "Dronoids est en ligne : $URL"
+curl -fsS -o /dev/null -w "    game %{http_code}\n" "${URL}play/"
+curl -fsS -o /dev/null -w "    module %{http_code}, %{content_type}\n" "${URL}play/dronoids.wasm"
+curl -fsS -o /dev/null -w "    accounts %{http_code}\n" "${URL}api/me"
+echo "Dronoids is online: $URL"

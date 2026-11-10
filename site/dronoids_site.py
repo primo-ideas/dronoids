@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Dronoids' account service: sign-in with Google, Discord, GitHub or Twitch,
-one pseudo per account, and the ticket that tells the world server who is
+one nickname per account, and the ticket that tells the world server who is
 playing.
 
 It only needs Python's standard library. It listens on the loopback, behind
@@ -9,11 +9,11 @@ the web server, under `<site>/api/`:
     GET  api/me              who is signed in, the ticket, the providers on offer
     GET  api/login/<p>       off to the provider (or links it to the account)
     GET  api/callback/<p>    back from the provider
-    POST api/pseudo          choose the pseudo, once
+    POST api/nickname        choose the nickname, once
     POST api/logout
     POST api/delete          delete the account
 
-What is kept: the pseudo, and for each provider the opaque id it gives for
+What is kept: the nickname, and for each provider the opaque id it gives for
 the person. No e-mail address, no name, no access token.
 
     python3 dronoids_site.py --config config.json
@@ -82,7 +82,7 @@ PROVIDERS = {
     },
 }
 # A stand-in provider for trying the site on one's own machine.
-DEV = "essai"
+DEV = "test"
 
 
 def sign_ticket(secret, name, expires):
@@ -91,17 +91,17 @@ def sign_ticket(secret, name, expires):
     return f"site.{expires}.{mac.hexdigest()}"
 
 
-def clean_pseudo(raw):
-    """The pseudo as it will be kept, or why it cannot be."""
+def clean_nickname(raw):
+    """The nickname as it will be kept, or why it cannot be."""
     if not isinstance(raw, str):
-        return None, "pseudo manquant"
+        return None, "missing nickname"
     name = " ".join(raw.split())
     if not 3 <= len(name) <= 20:
-        return None, "entre 3 et 20 caractères"
+        return None, "between 3 and 20 characters"
     if not all(c.isalnum() or c in " _-" for c in name):
-        return None, "lettres, chiffres, espaces, - et _ seulement"
-    if name.casefold().startswith("ia "):
-        return None, "ce nom est réservé aux colonies du jeu"
+        return None, "letters, digits, spaces, - and _ only"
+    if name.casefold().startswith("ai "):
+        return None, "this name is kept for the game's colonies"
     return name, None
 
 
@@ -149,8 +149,8 @@ class Site:
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS accounts (
                 id INTEGER PRIMARY KEY,
-                pseudo TEXT,
-                pseudo_key TEXT UNIQUE,
+                nickname TEXT,
+                nickname_key TEXT UNIQUE,
                 created INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS identities (
@@ -166,6 +166,10 @@ class Site:
             );
             """
         )
+        # Named in French before the site was translated into English.
+        if "pseudo" in [column[1] for column in self.db.execute("PRAGMA table_info(accounts)")]:
+            self.db.execute("ALTER TABLE accounts RENAME COLUMN pseudo TO nickname")
+            self.db.execute("ALTER TABLE accounts RENAME COLUMN pseudo_key TO nickname_key")
         self.db.commit()
 
     # ----- sessions -----------------------------------------------------------
@@ -204,7 +208,7 @@ class Site:
     def offered(self):
         out = [{"id": name, "label": p["label"]} for name, p in self.providers.items()]
         if self.dev:
-            out.append({"id": DEV, "label": "Compte d'essai"})
+            out.append({"id": DEV, "label": "Test account"})
         return out
 
     def describe(self, account):
@@ -212,11 +216,11 @@ class Site:
         if account is None:
             return {"providers": self.offered(), "account": None}
         with self.lock:
-            row = self.db.execute("SELECT pseudo FROM accounts WHERE id = ?", (account,)).fetchone()
+            row = self.db.execute("SELECT nickname FROM accounts WHERE id = ?", (account,)).fetchone()
             linked = [r[0] for r in self.db.execute("SELECT provider FROM identities WHERE account = ? ORDER BY provider", (account,))]
-        pseudo = row[0] if row else None
-        ticket = sign_ticket(self.secret, pseudo, int(time.time()) + TICKET_DAYS * 86400) if pseudo else None
-        return {"providers": self.offered(), "account": {"pseudo": pseudo, "linked": linked, "ticket": ticket}}
+        nickname = row[0] if row else None
+        ticket = sign_ticket(self.secret, nickname, int(time.time()) + TICKET_DAYS * 86400) if nickname else None
+        return {"providers": self.offered(), "account": {"nickname": nickname, "linked": linked, "ticket": ticket}}
 
     def sign_in(self, provider, subject, current):
         """The account behind an identity: an existing one, the one signed in
@@ -225,7 +229,7 @@ class Site:
             row = self.db.execute("SELECT account FROM identities WHERE provider = ? AND subject = ?", (provider, subject)).fetchone()
             if row:
                 if current is not None and row[0] != current:
-                    raise Refused(409, "deja-lie")
+                    raise Refused(409, "already-linked")
                 return row[0]
             if current is None:
                 current = self.db.execute("INSERT INTO accounts (created) VALUES (?)", (int(time.time()),)).lastrowid
@@ -244,8 +248,8 @@ class Site:
         except (OSError, ValueError):
             return {}
 
-    def set_pseudo(self, account, raw, guest_token):
-        name, why = clean_pseudo(raw)
+    def set_nickname(self, account, raw, guest_token):
+        name, why = clean_nickname(raw)
         if name is None:
             raise Refused(400, why)
         # A name someone plays under as a guest only goes to whoever holds
@@ -255,19 +259,19 @@ class Site:
                 continue
             mine = taken == name and token != OWNED and isinstance(guest_token, str)
             if not (mine and hmac.compare_digest(token.encode(), guest_token.encode())):
-                raise Refused(409, "ce pseudo est déjà pris")
+                raise Refused(409, "this nickname is taken")
         with self.lock:
-            row = self.db.execute("SELECT pseudo FROM accounts WHERE id = ?", (account,)).fetchone()
+            row = self.db.execute("SELECT nickname FROM accounts WHERE id = ?", (account,)).fetchone()
             if row is None:
-                raise Refused(401, "session expirée")
+                raise Refused(401, "session expired")
             if row[0] is not None:
-                raise Refused(409, "le pseudo ne se change pas")
+                raise Refused(409, "the nickname cannot be changed")
             try:
-                self.db.execute("UPDATE accounts SET pseudo = ?, pseudo_key = ? WHERE id = ?", (name, name.casefold(), account))
+                self.db.execute("UPDATE accounts SET nickname = ?, nickname_key = ? WHERE id = ?", (name, name.casefold(), account))
                 self.db.commit()
             except sqlite3.IntegrityError:
                 self.db.rollback()
-                raise Refused(409, "ce pseudo est déjà pris") from None
+                raise Refused(409, "this nickname is taken") from None
         return name
 
     def delete(self, account):
@@ -307,7 +311,7 @@ class Site:
         agent = {"Accept": "application/json", "User-Agent": "dronoids-site"}
         token = _fetch(urllib.request.Request(p["token"], data=form, headers=agent)).get("access_token")
         if not isinstance(token, str) or not token:
-            raise Refused(502, "fournisseur")
+            raise Refused(502, "provider")
         headers = {**agent, "Authorization": f"Bearer {token}"}
         if p.get("client_id_header"):
             headers["Client-Id"] = p["client_id"]
@@ -316,9 +320,9 @@ class Site:
             for key in p["id"]:
                 found = found[key]
         except (KeyError, IndexError, TypeError):
-            raise Refused(502, "fournisseur") from None
+            raise Refused(502, "provider") from None
         if isinstance(found, bool) or not isinstance(found, (str, int)) or found == "":
-            raise Refused(502, "fournisseur")
+            raise Refused(502, "provider")
         return str(found)
 
 
@@ -327,9 +331,9 @@ def _fetch(request):
         with urllib.request.urlopen(request, timeout=10) as answer:
             data = json.loads(answer.read(1 << 20))
     except (urllib.error.URLError, OSError, ValueError):
-        raise Refused(502, "fournisseur") from None
+        raise Refused(502, "provider") from None
     if not isinstance(data, dict):
-        raise Refused(502, "fournisseur")
+        raise Refused(502, "provider")
     return data
 
 
@@ -372,7 +376,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(status, json.dumps(data, ensure_ascii=False).encode(), headers=headers)
 
     def back_home(self, error=None, headers=()):
-        where = self.site.base_url + "/" + (f"?erreur={error}" if error else "") + "#compte"
+        where = self.site.base_url + "/" + (f"?error={error}" if error else "") + "#account"
         self.reply(303, headers=[("Location", where), *headers])
 
     def route(self):
@@ -395,7 +399,7 @@ class Handler(BaseHTTPRequestHandler):
             elif route is not None and self.site.static and not route.startswith("api/"):
                 self.file(route)
             else:
-                self.json(404, {"error": "introuvable"})
+                self.json(404, {"error": "not found"})
         except Refused as e:
             self.json(e.status, {"error": e.message})
 
@@ -404,18 +408,18 @@ class Handler(BaseHTTPRequestHandler):
     def login(self, provider):
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
         if provider == DEV and self.site.dev:
-            # No provider at all: whoever asks is "essai:<qui>".
-            who = (query.get("qui") or ["moi"])[0][:40]
+            # No provider at all: whoever asks is "test:<who>".
+            who = (query.get("who") or ["me"])[0][:40]
             self.signed_in(DEV, who)
             return
         if provider not in self.site.providers:
-            raise Refused(404, "fournisseur inconnu")
+            raise Refused(404, "unknown provider")
         state = secrets.token_urlsafe(24)
         self.reply(303, headers=[("Location", self.site.authorize_url(provider, state)), self.set_cookie(STATE_COOKIE, state, 600)])
 
     def callback(self, provider):
         if provider not in self.site.providers:
-            raise Refused(404, "fournisseur inconnu")
+            raise Refused(404, "unknown provider")
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
         forget = self.set_cookie(STATE_COOKIE, "", 0)
         state, expected = (query.get("state") or [""])[0], self.cookie(STATE_COOKIE) or ""
@@ -424,7 +428,7 @@ class Handler(BaseHTTPRequestHandler):
             self.back_home("session", [forget])
         elif not code:
             # The person said no at the provider (or it failed there).
-            self.back_home("refuse", [forget])
+            self.back_home("refused", [forget])
         else:
             try:
                 subject = self.site.subject(provider, code)
@@ -451,7 +455,7 @@ class Handler(BaseHTTPRequestHandler):
         if os.path.isdir(path):
             path = os.path.join(path, "index.html")
         if not (path == root or path.startswith(root + os.sep)) or not os.path.isfile(path):
-            raise Refused(404, "introuvable")
+            raise Refused(404, "not found")
         kind = "application/wasm" if path.endswith(".wasm") else mimetypes.guess_type(path)[0] or "application/octet-stream"
         with open(path, "rb") as f:
             self.reply(200, f.read(), kind)
@@ -465,31 +469,31 @@ class Handler(BaseHTTPRequestHandler):
             # page elsewhere cannot act on a visitor's account.
             origin = self.headers.get("Origin")
             if self.headers.get("X-Dronoids") != "1" or (origin is not None and origin != self.site.origin):
-                raise Refused(403, "requête refusée")
+                raise Refused(403, "request refused")
             length = int(self.headers.get("Content-Length") or 0)
             if not 0 <= length <= 4096:
-                raise Refused(413, "requête trop longue")
+                raise Refused(413, "request too long")
             try:
                 body = json.loads(self.rfile.read(length) or b"{}")
             except ValueError:
-                raise Refused(400, "requête illisible") from None
+                raise Refused(400, "unreadable request") from None
             if not isinstance(body, dict):
-                raise Refused(400, "requête illisible")
+                raise Refused(400, "unreadable request")
             token = self.cookie(SESSION_COOKIE)
             account = self.site.account_of(token)
             if route == "api/logout":
                 self.site.close_session(token)
                 self.json(200, self.site.describe(None), [self.set_cookie(SESSION_COOKIE, "", 0)])
-            elif route in ("api/pseudo", "api/delete") and account is None:
-                raise Refused(401, "session expirée")
-            elif route == "api/pseudo":
-                self.site.set_pseudo(account, body.get("pseudo"), body.get("guest_token"))
+            elif route in ("api/nickname", "api/delete") and account is None:
+                raise Refused(401, "session expired")
+            elif route == "api/nickname":
+                self.site.set_nickname(account, body.get("nickname"), body.get("guest_token"))
                 self.json(200, self.site.describe(account))
             elif route == "api/delete":
                 self.site.delete(account)
                 self.json(200, self.site.describe(None), [self.set_cookie(SESSION_COOKIE, "", 0)])
             else:
-                raise Refused(404, "introuvable")
+                raise Refused(404, "not found")
         except Refused as e:
             self.json(e.status, {"error": e.message})
 
@@ -511,8 +515,8 @@ def main():
         config = json.load(f)
     server = serve(config)
     site = server.RequestHandlerClass.site
-    names = ", ".join(p["label"] for p in site.offered()) or "aucun (voir docs/deploy.md)"
-    print(f"comptes Dronoids sur http://{server.server_address[0]}:{server.server_address[1]}{site.path}/api/ — connexion par : {names}", flush=True)
+    names = ", ".join(p["label"] for p in site.offered()) or "none (see docs/deploy.md)"
+    print(f"Dronoids accounts on http://{server.server_address[0]}:{server.server_address[1]}{site.path}/api/ — sign-in with: {names}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

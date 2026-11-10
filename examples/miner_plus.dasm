@@ -1,0 +1,65 @@
+; MINER+ -- like the miner, but it looks ahead
+; (LOOK) and goes around obstacles instead of rushing into them.
+
+start:
+    CARGO a
+    JGE a, FULL, home
+    DIST a, ORE
+    JEQ a, NONE, explore
+    JLE a, 1, dig
+    SCAN b, ORE
+    JMP go
+home:
+    DIST a, BASE
+    JLE a, 1, unload
+    SCAN b, BASE
+go:
+    CALL clear           ; fixes course b if the way ahead is blocked
+    MOVE b
+    JMP start
+dig:
+    MINE
+    JMP start
+unload:
+    DROP
+    JMP start
+
+explore:
+    JNZ d, step          ; d = exploring course (0 = not picked yet)
+    RAND d, 359
+    INC d
+step:
+    SET b, d
+    CALL clear
+    SET d, b
+    MOVE b
+    JMP start
+
+; clear: from course b, looks for a course with no obstacle
+; just ahead: b, b+40, b-40, b+80, b-80...
+; Dronoids pass through each other: only WALL, ORE, BASE, EBASE block.
+clear:
+    SET a, 0
+try:
+    LOOK c, b
+    JEQ c, EMPTY, found
+    JEQ c, ALLY, found
+    JEQ c, ENEMY, found
+    INC a
+    JGT a, 8, found      ; never mind, go anyway
+    SET c, a
+    MOD c, 2
+    JZ c, left
+    SET c, a
+    MUL c, 40
+    ADD b, c
+    JMP turn
+left:
+    SET c, a
+    MUL c, 40
+    SUB b, c
+turn:
+    MOD b, 360
+    JMP try
+found:
+    RET

@@ -19,12 +19,12 @@
         return n;
     }
 
-    // The site's root: the game lives in its "jouer/" directory.
+    // The site's root: the game lives in its "play/" directory.
     function siteRoot() {
-        return window.location.pathname.replace(/[^/]*$/, "").replace(/jouer\/$/, "");
+        return window.location.pathname.replace(/[^/]*$/, "").replace(/play\/$/, "");
     }
 
-    // The game sits in the site: https://site/dronoids/jouer/ -> wss://site/dronoids/ws.
+    // The game sits in the site: https://site/dronoids/play/ -> wss://site/dronoids/ws.
     // A page served locally talks to a local server; ?server= overrides both.
     function defaultServer() {
         const params = new URLSearchParams(window.location.search);
@@ -157,7 +157,7 @@
         }, { passive: true });
     }
 
-    // Who is signed in on the site (pseudo and ticket), asked once before the
+    // Who is signed in on the site (nickname and ticket), asked once before the
     // game starts. Without the site, or signed out, the game plays as a guest.
     let account = null;
     window.dronoidsAccount = function () {
@@ -168,8 +168,8 @@
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (me) {
                 const a = me && me.account;
-                if (a && typeof a.pseudo === "string" && typeof a.ticket === "string") {
-                    account = a.pseudo + "\n" + a.ticket;
+                if (a && typeof a.nickname === "string" && typeof a.ticket === "string") {
+                    account = a.nickname + "\n" + a.ticket;
                 }
             })
             .catch(function () { /* no site here */ });
@@ -260,7 +260,7 @@
                 return account ? writeBytes(encoder.encode(account), ptr, cap) : 0;
             };
             env.god_open_site = function () {
-                window.location.href = siteRoot() + "#compte";
+                window.location.href = siteRoot() + "#account";
             };
             env.god_random = function () {
                 return window.crypto.getRandomValues(new Uint32Array(1))[0];

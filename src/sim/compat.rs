@@ -251,7 +251,7 @@ mod tests {
     /// A sector with a bit of history: two colonies, dronoids out, a bot.
     fn lived_in() -> World {
         let mut w = World::with_first_sector(11);
-        let m = programs::builtin("mineur").unwrap();
+        let m = programs::builtin("miner").unwrap();
         // Everyone lives in the first sector, as in the worlds of that time.
         let slots = crate::sim::map::generate(11, crate::rules::WORLD_SIZE).slots;
         let settle = |w: &mut World, id: u8, i: usize| {
@@ -265,7 +265,7 @@ mod tests {
             settle(&mut w, id, i);
             land(&mut w, id, m.source);
         }
-        let id = w.join("IA Vega", true).unwrap();
+        let id = w.join("AI Vega", true).unwrap();
         settle(&mut w, id, 2);
         for _ in 0..300 {
             w.step(&[]);
@@ -354,7 +354,7 @@ mod tests {
         let (back, version) = read(&w.to_bytes());
         assert_eq!(version, crate::net::PROTOCOL_VERSION);
         assert_eq!(back.players[0].explored, w.players[0].explored);
-        assert!(from_bincode(b"pas une sauvegarde").is_err());
+        assert!(from_bincode(b"not a save").is_err());
         assert!(from_bincode(&[]).is_err());
     }
 }

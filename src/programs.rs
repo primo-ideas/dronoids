@@ -9,222 +9,245 @@ pub struct Builtin {
 
 pub const BUILTINS: &[Builtin] = &[
     Builtin {
-        name: "mineur",
-        summary: "Va au cristal le plus proche, remplit sa soute, rentre.",
-        source: r#"; MINEUR -- le programme de départ.
-; Va au cristal le plus proche, le creuse jusqu'à
-; remplir sa soute, puis rentre décharger à l'usine.
-; Défaut : fonce tout droit et se cogne aux astéroïdes.
+        name: "miner",
+        summary: "Goes to the nearest crystal, fills its hold, comes home.",
+        source: r#"; MINER -- the starting program.
+; Goes to the nearest crystal, digs it until its
+; hold is full, then goes home to unload at the factory.
+; Flaw: rushes straight ahead and bumps into asteroids.
 
-debut:
+start:
     CARGO a
-    JGE a, FULL, rentrer
-    DIST a, ORE          ; distance au cristal le plus proche
-    JEQ a, NONE, errer   ; rien en vue ?
-    JLE a, 1, creuser    ; à portée : on creuse
-    SCAN b, ORE          ; b = angle vers le cristal
+    JGE a, FULL, home
+    DIST a, ORE          ; distance to the nearest crystal
+    JEQ a, NONE, wander  ; nothing in sight?
+    JLE a, 1, dig        ; within reach: dig
+    SCAN b, ORE          ; b = angle to the crystal
     MOVE b
-    JZ ok, esquive       ; bloqué
-    JMP debut
+    JZ ok, dodge         ; blocked
+    JMP start
 
-creuser:
+dig:
     MINE
-    JMP debut
+    JMP start
 
-rentrer:
+home:
     DIST a, BASE
-    JLE a, 1, vider
+    JLE a, 1, unload
     SCAN b, BASE
     MOVE b
-    JZ ok, esquive
-    JMP rentrer
+    JZ ok, dodge
+    JMP home
 
-vider:
+unload:
     DROP
-    JMP debut
+    JMP start
 
-esquive:                 ; un pas de côté au hasard
+dodge:                   ; a step aside, at random
     RAND c, 180
     ADD b, c
     SUB b, 90
     MOVE b
-    JMP debut
+    JMP start
 
-errer:
+wander:
     RAND b, 360
     MOVE b
     MOVE b
     MOVE b
-    JMP debut
+    JMP start
 "#,
     },
     Builtin {
-        name: "eclaireur",
-        summary: "Part en ligne droite, change de cap quand il bute.",
-        source: r#"; ECLAIREUR -- part en ligne droite et change de cap
-; quand il bute. Mine ce qu'il croise, rentre quand il
-; est plein. Utile pour découvrir des gisements lointains
-; et étendre la zone où l'on peut construire.
+        name: "scout",
+        summary: "Heads off in a straight line, turns when it runs into something.",
+        source: r#"; SCOUT -- heads off in a straight line and changes
+; course when it runs into something. Mines what it
+; comes across, goes home when it is full. Useful to find
+; faraway deposits and to widen the area one can build in.
 
-    RAND d, 360          ; d = cap
-boucle:
+    RAND d, 360          ; d = course
+loop:
     CARGO a
-    JGE a, FULL, rentrer
+    JGE a, FULL, home
     DIST a, ORE
-    JEQ a, NONE, avancer
-    JLE a, 1, creuser
-avancer:
+    JEQ a, NONE, ahead
+    JLE a, 1, dig
+ahead:
     MOVE d
-    JNZ ok, boucle
-    RAND d, 360          ; bloqué : nouveau cap
-    JMP boucle
+    JNZ ok, loop
+    RAND d, 360          ; blocked: a new course
+    JMP loop
 
-creuser:
+dig:
     MINE
-    JMP boucle
+    JMP loop
 
-rentrer:
+home:
     DIST a, BASE
-    JLE a, 1, vider
+    JLE a, 1, unload
     SCAN b, BASE
     MOVE b
-    JNZ ok, rentrer
+    JNZ ok, home
     RAND c, 180
     ADD b, c
     SUB b, 90
     MOVE b
-    JMP rentrer
+    JMP home
 
-vider:
+unload:
     DROP
     RAND d, 360
-    JMP boucle
+    JMP loop
 "#,
     },
     Builtin {
-        name: "chasseur",
-        summary: "Traque les ennemis, sinon file vers la cible de l'usine.",
-        source: r#"; CHASSEUR -- traque les dronoids ennemis à portée,
-; sinon attaque l'usine ennemie la plus proche
-; (repérée jusqu'à 40 unités), sinon file vers la
-; cible de son usine : mémoire 0 = X, 1 = Y, 2 = 1
-; si une cible est posée. Sinon, patrouille.
+        name: "hunter",
+        summary: "Hunts enemies down, or else heads for the factory's target.",
+        source: r#"; HUNTER -- hunts down enemy dronoids within range,
+; or else attacks the nearest enemy factory
+; (spotted up to 40 units away), or else heads for
+; its factory's target: memory 0 = X, 1 = Y, 2 = 1
+; when a target is set. Otherwise, patrols.
 
-chasse:
+hunt:
     DIST a, ENEMY
     JEQ a, NONE, siege
-    JLE a, 2, feu        ; à portée de tir
+    JLE a, 2, fire       ; within firing range
     SCAN b, ENEMY
     MOVE b
-    JZ ok, esquive
-    JMP chasse
+    JZ ok, dodge
+    JMP hunt
 
 siege:
     DIST a, EBASE
-    JEQ a, NONE, cible
-    JLE a, 2, feu
+    JEQ a, NONE, target
+    JLE a, 2, fire
     SCAN b, EBASE
     MOVE b
-    JZ ok, esquive
-    JMP chasse
+    JZ ok, dodge
+    JMP hunt
 
-feu:
+fire:
     ATTACK
-    JMP chasse
+    JMP hunt
 
-cible:
+target:
     PEEK a, 2
-    JZ a, patrouille     ; aucune cible posée
+    JZ a, patrol         ; no target set
     POSX a
     PEEK b, 0
-    SUB b, a             ; b = écart est-ouest
+    SUB b, a             ; b = east-west gap
     POSY a
     PEEK c, 1
-    SUB c, a             ; c = écart nord-sud
+    SUB c, a             ; c = north-south gap
     ANGLE b, b, c
-    JEQ b, NONE, patrouille
+    JEQ b, NONE, patrol
     MOVE b
-    JZ ok, esquive
-    JMP chasse
+    JZ ok, dodge
+    JMP hunt
 
-patrouille:
-    JNZ d, cap           ; d = cap (0 tant qu'il n'est pas choisi)
+patrol:
+    JNZ d, course        ; d = course (0 until one is picked)
     RAND d, 359
     INC d
-cap:
+course:
     MOVE d
-    JNZ ok, chasse
+    JNZ ok, hunt
     RAND d, 359
     INC d
-    JMP chasse
+    JMP hunt
 
-esquive:
+dodge:
     RAND c, 180
     ADD b, c
     SUB b, 90
     MOVE b
-    JMP chasse
+    JMP hunt
 "#,
     },
     Builtin {
-        name: "gardien",
-        summary: "Reste près de la base et tire sur les intrus.",
-        source: r#"; GARDIEN -- reste près de son usine et
-; tire sur tout ennemi qui s'approche.
+        name: "guard",
+        summary: "Stays near the base and fires at intruders.",
+        source: r#"; GUARD -- stays near its factory and
+; fires at any enemy that comes close.
 
-garde:
+guard:
     DIST a, ENEMY
-    JEQ a, NONE, retour
-    JLE a, 2, feu
-    JGT a, 8, retour     ; trop loin : on ne lâche pas la base
+    JEQ a, NONE, back
+    JLE a, 2, fire
+    JGT a, 8, back       ; too far: never leave the base
     SCAN b, ENEMY
     MOVE b
-    JMP garde
+    JMP guard
 
-feu:
+fire:
     ATTACK
-    JMP garde
+    JMP guard
 
-retour:
+back:
     DIST a, BASE
-    JLE a, 3, veille
+    JLE a, 3, watch
     SCAN b, BASE
     MOVE b
-    JNZ ok, garde
+    JNZ ok, guard
     RAND c, 180
     ADD b, c
     SUB b, 90
     MOVE b
-    JMP garde
+    JMP guard
 
-veille:
+watch:
     WAIT
-    JMP garde
+    JMP guard
 "#,
     },
 ];
 
 /// Template for a brand-new program.
-pub const TEMPLATE: &str = r#"; Nouveau programme.
-; Registres : a b c d (et ok, mis à 1/0 par la dernière action)
-; Angles en degrés : N=0 E=90 S=180 W=270
-; Choses : ORE ALLY ENEMY BASE EBASE WALL EMPTY
-; F1 : aide complète
+pub const TEMPLATE: &str = r#"; New program.
+; Registers: a b c d (and ok, set to 1/0 by the last action)
+; Angles in degrees: N=0 E=90 S=180 W=270
+; Things: ORE ALLY ENEMY BASE EBASE WALL EMPTY
+; F1: full help
 
-debut:
+start:
     SCAN a, ORE
     MOVE a
-    JMP debut
+    JMP start
 "#;
 
 pub fn builtin(name: &str) -> Option<&'static Builtin> {
     BUILTINS.iter().find(|b| b.name == name)
 }
 
-/// Copies of the built-in programs kept by players and saved sectors still
-/// have this comment in its former wording.
-pub fn reworded(source: &str) -> String {
-    source.replace("traque les drones ennemis", "traque les dronoids ennemis")
+/// The built-ins as they were named before the game was translated into
+/// English, with the FNV-1a hash of each wording they shipped with, so that
+/// the copies kept by players and saved sectors can be recognized.
+const FORMER: &[(&str, &str, &[u64])] = &[
+    ("mineur", "miner", &[0x400b_508f_08eb_cf55]),
+    ("eclaireur", "scout", &[0x6720_70b2_c4ee_9198]),
+    ("chasseur", "hunter", &[0xc92a_82f0_6bdb_5d46, 0xcd47_4320_75da_dfd5]),
+    ("gardien", "guard", &[0x7840_7ede_869e_ca73]),
+];
+
+fn fnv1a(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// A program kept from before the translation, as it should be now: a
+/// former built-in's name becomes the new one, and an untouched copy of a
+/// former built-in becomes that built-in, whose instructions are the same
+/// line for line. `None` when nothing changes.
+pub fn modernized(name: &str, source: &str) -> Option<(String, String)> {
+    let hash = fnv1a(source.trim());
+    let renamed = FORMER.iter().find(|f| f.0 == name).map(|f| f.1);
+    let copy_of = FORMER.iter().find(|f| f.2.contains(&hash)).map(|f| f.1);
+    if renamed.is_none() && copy_of.is_none() {
+        return None;
+    }
+    let source = copy_of.and_then(builtin).map_or(source, |b| b.source);
+    Some((renamed.unwrap_or(name).to_string(), source.to_string()))
 }
 
 #[cfg(test)]
@@ -233,11 +256,27 @@ mod tests {
     use crate::vm::assemble;
 
     #[test]
-    fn an_old_copy_of_a_builtin_becomes_the_builtin_again() {
-        let hunter = builtin("chasseur").unwrap().source;
-        let old = hunter.replace("dronoids", "drones");
-        assert_ne!(old, hunter);
-        assert_eq!(reworded(&old), hunter);
+    fn fnv1a_is_the_usual_one() {
+        assert_eq!(fnv1a("abc"), 0xe71f_a219_0541_574b);
+    }
+
+    #[test]
+    fn programs_of_other_names_are_left_alone() {
+        assert_eq!(modernized("miner", BUILTINS[0].source), None);
+        assert_eq!(modernized("mine", "; mine\nMINE\n"), None);
+    }
+
+    #[test]
+    fn a_former_name_is_renamed_and_keeps_its_own_code() {
+        let own = "; my own\nMINE\n";
+        assert_eq!(modernized("chasseur", own), Some(("hunter".into(), own.into())));
+    }
+
+    #[test]
+    fn every_former_built_in_has_its_new_one() {
+        for (old, new, _) in FORMER {
+            assert!(builtin(new).is_some(), "{old} -> {new}");
+        }
     }
 
     #[test]

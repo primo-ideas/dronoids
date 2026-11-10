@@ -16,9 +16,9 @@ pub enum Level {
 impl Level {
     pub fn label(self) -> &'static str {
         match self {
-            Level::Easy => "Facile",
+            Level::Easy => "Easy",
             Level::Normal => "Normal",
-            Level::Hard => "Difficile",
+            Level::Hard => "Hard",
         }
     }
     fn max_factories(self) -> usize {
@@ -56,7 +56,7 @@ pub struct Bot {
 }
 
 /// Programs given to successive new factories.
-const BUILD_ORDER: &[&str] = &["mineur", "eclaireur", "mineur", "chasseur", "gardien", "mineur", "chasseur", "chasseur"];
+const BUILD_ORDER: &[&str] = &["miner", "scout", "miner", "hunter", "guard", "miner", "hunter", "hunter"];
 
 /// How far around a building site crystals count.
 const SITE_ORE_REACH: i32 = 12 * FP;
@@ -96,7 +96,7 @@ impl Bot {
             if me.minerals >= FACTORY_COST
                 && let Some((x, y)) = landing_spot(w, self.player)
             {
-                let b = builtin("mineur").expect("builtin");
+                let b = builtin("miner").expect("builtin");
                 cmds.push(Command::PlaceFactory { x, y, name: b.name.into(), source: b.source.into() });
             }
             return cmds;
@@ -106,8 +106,8 @@ impl Bot {
         if me.minerals >= FACTORY_COST + 30 && w.factory_count(self.player) < self.level.max_factories()
             && let Some((x, y)) = self.pick_site(w) {
                 let mut name = BUILD_ORDER[self.built as usize % BUILD_ORDER.len()];
-                if (name == "chasseur" || name == "gardien") && !hunting {
-                    name = "mineur";
+                if (name == "hunter" || name == "guard") && !hunting {
+                    name = "miner";
                 }
                 let b = builtin(name).expect("builtin");
                 cmds.push(Command::PlaceFactory { x, y, name: b.name.into(), source: b.source.into() });
@@ -117,10 +117,10 @@ impl Bot {
         if hunting && w.tick >= self.next_convert {
             self.next_convert = w.tick + 300;
             let mine: Vec<_> = w.factories.iter().filter(|f| f.owner == self.player).collect();
-            let hunters: Vec<_> = mine.iter().filter(|f| w.program_name(f.prog) == "chasseur").collect();
+            let hunters: Vec<_> = mine.iter().filter(|f| w.program_name(f.prog) == "hunter").collect();
             if hunters.len() < mine.len() / self.level.hunter_share()
-                && let Some(f) = mine.iter().rev().find(|f| matches!(w.program_name(f.prog), "mineur" | "eclaireur")) {
-                    let b = builtin("chasseur").expect("builtin");
+                && let Some(f) = mine.iter().rev().find(|f| matches!(w.program_name(f.prog), "miner" | "scout")) {
+                    let b = builtin("hunter").expect("builtin");
                     cmds.push(Command::SetProgram { factory: f.id, name: b.name.into(), source: b.source.into() });
                 }
             // Point every hunter factory at the closest rival's home.
@@ -217,7 +217,7 @@ mod tests {
         }
         let mut list = vec![];
         for i in 0..bots {
-            let id = w.join(&format!("IA {i}"), true).unwrap();
+            let id = w.join(&format!("AI {i}"), true).unwrap();
             list.push(Bot::new(id, level));
         }
         (w, list)

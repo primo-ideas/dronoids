@@ -49,7 +49,7 @@ fn window_conf() -> Conf {
 /// `--offline [easy|normal|hard]`, `--ais N`, `--seed N`, `--ticks N`
 /// (fast-forward), `--land` (place the first factory), `--zoom Z`,
 /// `--editor`, `--debug-dronoid`, `--help-screen`, `--build`, `--map`,
-/// `--players`, `--join URL`, `--name PSEUDO`,
+/// `--players`, `--join URL`, `--name NICKNAME`,
 /// `--screenshot out.png [--after SECS | --frames N]`.
 #[derive(Default)]
 struct Args {
@@ -144,7 +144,7 @@ async fn main() {
             g.set_zoom(z);
         }
         if args.editor {
-            g.open_program_by_name(&lib, "mineur");
+            g.open_program_by_name(&lib, "miner");
         }
         if args.debug_dronoid {
             g.debug_first_dronoid();

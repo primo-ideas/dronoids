@@ -1,5 +1,5 @@
 {
-    "_": "Pour essayer le site sur sa machine : python site/dronoids_site.py --config site/dev-config.json, puis http://localhost:8083/dronoids/ (voir docs/deploy.md).",
+    "_": "To try the site on one's own machine: python site/dronoids_site.py --config site/dev-config.json, then http://localhost:8083/dronoids/ (see docs/deploy.md).",
     "base_url": "http://localhost:8083/dronoids",
     "listen": "127.0.0.1:8083",
     "database": "target/site-dev/accounts.db",

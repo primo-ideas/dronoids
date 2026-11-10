@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::sim::Command;
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 pub const DEFAULT_PORT: u16 = 8082;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,7 +53,7 @@ pub fn normalize_url(addr: &str) -> String {
 }
 
 fn decode<In: DeserializeOwned>(bytes: &[u8]) -> Result<In, String> {
-    bincode::deserialize(bytes).map_err(|e| format!("message invalide : {e}"))
+    bincode::deserialize(bytes).map_err(|e| format!("invalid message: {e}"))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -118,14 +118,14 @@ mod native {
                     }
                     Err(e) => return close(e),
                 },
-                Ok(Message::Close(_)) => return close("connexion fermée".into()),
+                Ok(Message::Close(_)) => return close("connection closed".into()),
                 Ok(_) => {}
                 Err(tungstenite::Error::Io(e)) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
                     // Pings get answered on the next write.
                     let _ = ws.flush();
                 }
                 Err(tungstenite::Error::ConnectionClosed) | Err(tungstenite::Error::AlreadyClosed) => {
-                    return close("connexion fermée".into());
+                    return close("connection closed".into());
                 }
                 Err(e) => return close(e.to_string()),
             }
@@ -174,7 +174,7 @@ mod native {
                         None
                     } else {
                         self.closed = true;
-                        Some(NetEvent::Closed("connexion perdue".into()))
+                        Some(NetEvent::Closed("connection lost".into()))
                     }
                 }
             }
@@ -205,14 +205,14 @@ mod native {
             thread::spawn(move || {
                 let r = (|| -> Result<Conn<In>, String> {
                     if url.starts_with("wss://") {
-                        return Err("wss:// n'est disponible que dans le navigateur (utilisez ws://)".into());
+                        return Err("wss:// is only available in the browser (use ws://)".into());
                     }
                     let hostport = url.trim_start_matches("ws://").split('/').next().unwrap_or_default().to_string();
                     let addr = hostport
                         .to_socket_addrs()
                         .map_err(|e| e.to_string())?
                         .next()
-                        .ok_or_else(|| "adresse introuvable".to_string())?;
+                        .ok_or_else(|| "address not found".to_string())?;
                     let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).map_err(|e| e.to_string())?;
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                     let (ws, _) = tungstenite::client(url.as_str(), stream).map_err(|e| e.to_string())?;
@@ -285,7 +285,7 @@ mod web {
             }
             if unsafe { god_ws_state(self.id) } == CLOSED {
                 self.closed = true;
-                return Some(NetEvent::Closed("connexion fermée".into()));
+                return Some(NetEvent::Closed("connection closed".into()));
             }
             None
         }
@@ -331,7 +331,7 @@ mod web {
                 CLOSED => {
                     self.id = None;
                     unsafe { god_ws_close(id) };
-                    Some(Err("serveur injoignable".into()))
+                    Some(Err("server unreachable".into()))
                 }
                 _ => None,
             }

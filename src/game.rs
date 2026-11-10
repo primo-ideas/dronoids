@@ -181,13 +181,13 @@ impl Game {
             sight,
             fog: Fog::new(),
         };
-        // A returning player's factory runs their own version of "mineur".
-        if let (Some(fid), Some(src)) = (start, lib.source_or_builtin("mineur"))
+        // A returning player's factory runs their own version of "miner".
+        if let (Some(fid), Some(src)) = (start, lib.source_or_builtin("miner"))
             && g.world.factory(fid).is_some_and(|f| {
-                g.world.programs[f.prog as usize].name == "mineur" && g.world.programs[f.prog as usize].source != src
+                g.world.programs[f.prog as usize].name == "miner" && g.world.programs[f.prog as usize].source != src
             })
         {
-            g.issue(Command::SetProgram { factory: fid, name: "mineur".into(), source: src });
+            g.issue(Command::SetProgram { factory: fid, name: "miner".into(), source: src });
         }
         g
     }
@@ -297,14 +297,14 @@ impl Game {
                                 self.world = w;
                                 *asked_snapshot = false;
                             }
-                            Err(e) => *lost = Some(format!("monde illisible : {e}")),
+                            Err(e) => *lost = Some(format!("unreadable world: {e}")),
                         },
                         NetEvent::Msg(ServerMsg::Online { players }) => *online = players,
                         NetEvent::Msg(ServerMsg::Refused(m)) => *lost = Some(m),
                         NetEvent::Msg(ServerMsg::Welcome { .. }) => {}
                         NetEvent::Closed(e) => {
                             if lost.is_none() {
-                                *lost = Some(format!("Connexion perdue : {e}"));
+                                *lost = Some(format!("Connection lost: {e}"));
                             }
                         }
                     }
@@ -349,18 +349,18 @@ impl Game {
             match e {
                 Event::PlayerJoined { player } if player != self.me && self.is_online() => {
                     let name = self.world.players[player as usize].name.clone();
-                    self.toast(format!("{name} arrive dans le secteur"), player_color(player));
+                    self.toast(format!("{name} arrives in the sector"), player_color(player));
                 }
                 Event::PlayerEliminated { player } if player == self.me => {
-                    self.toast("Votre colonie a disparu.", pal::BAD);
+                    self.toast("Your colony is gone.", pal::BAD);
                 }
                 Event::FactoryDestroyed { owner, .. } if owner == self.me => {
-                    self.toast("Une de vos usines a été détruite", pal::BAD);
+                    self.toast("One of your factories was destroyed", pal::BAD);
                 }
                 Event::QuestDone { player, quest, reward } if player == self.me => {
                     let title = QUESTS.get(quest as usize).map_or("", |q| q.title);
-                    let gain = if reward > 0 { format!(" · +{reward} cristaux") } else { String::new() };
-                    self.toast(format!("Objectif atteint : {title}{gain}"), pal::ORE);
+                    let gain = if reward > 0 { format!(" · +{reward} crystals") } else { String::new() };
+                    self.toast(format!("Objective reached: {title}{gain}"), pal::ORE);
                 }
                 _ => {}
             }
@@ -583,7 +583,7 @@ impl Game {
                 match lib.save(&name, &src) {
                     Ok(n) => {
                         self.open_program(lib, &n, self.edit_factory);
-                        self.toast(format!("Copie créée : « {n} »"), pal::GOOD);
+                        self.toast(format!("Copy created: {n}"), pal::GOOD);
                     }
                     Err(e) => self.toast(e, pal::BAD),
                 }
@@ -593,12 +593,12 @@ impl Game {
                 if let Some(src) = Library::builtin_source(&name) {
                     self.editor.set_text(src);
                     self.editor.dirty = true;
-                    self.toast("Version d'origine restaurée (pas encore appliquée)", pal::WARN);
+                    self.toast("Original version restored (not applied yet)", pal::WARN);
                 }
             }
             Act::LoadProgram(name) => {
                 if self.editor.dirty {
-                    self.toast("Modifications non appliquées abandonnées", pal::WARN);
+                    self.toast("Unapplied changes discarded", pal::WARN);
                 }
                 self.open_program(lib, &name, self.edit_factory);
             }
@@ -676,13 +676,13 @@ impl Game {
                     && self.world.program_name(f.prog) != name
                 {
                     self.issue(Command::SetProgram { factory: fid, name: name.clone(), source: src });
-                    extra = format!(", usine #{fid}");
+                    extra = format!(", factory #{fid}");
                 }
                 self.editor.dirty = false;
-                self.toast(format!("« {name} » appliqué{extra}"), pal::GOOD);
+                self.toast(format!("{name} applied{extra}"), pal::GOOD);
             }
             Err(errs) => {
-                self.toast(format!("Sauvegardé, mais {} erreur(s) : non appliqué", errs.len()), pal::BAD);
+                self.toast(format!("Saved, but {} error(s): not applied", errs.len()), pal::BAD);
             }
         }
     }
@@ -790,15 +790,15 @@ impl Game {
             }
             if let Some(id) = debug_id {
                 let alive = self.world.dronoid(id).is_some();
-                let title = if alive { format!("Dronoid #{id}") } else { format!("Dronoid #{id} (détruit)") };
+                let title = if alive { format!("Dronoid #{id}") } else { format!("Dronoid #{id} (destroyed)") };
                 gfx::text(&title, h.x, h.y + 8.0, 16.0, if alive { pal::ACCENT } else { pal::BAD });
                 let tx = h.x + gfx::text_width(&title, 16.0) + 12.0;
-                let runs = format!("exécute « {} »", self.edit_name.text);
+                let runs = format!("runs {}", self.edit_name.text);
                 gfx::text(&runs, tx, h.y + 10.0, gfx::fit_size(&runs, 13.0, close.x - tx - 8.0), pal::DIM);
-                if ui.button_ex(Rect::new(h2.x, h2.y, 136.0, h2.h), "Éditer le code", false, true, pal::GOOD) {
+                if ui.button_ex(Rect::new(h2.x, h2.y, 136.0, h2.h), "Edit the code", false, true, pal::GOOD) {
                     acts.push(Act::OpenProgram(self.edit_name.text.clone(), self.edit_factory));
                 }
-                if !self.is_online() && ui.button_ex(Rect::new(h2.x + 142.0, h2.y, 110.0, h2.h), "Pas à pas", false, true, pal::WARN) {
+                if !self.is_online() && ui.button_ex(Rect::new(h2.x + 142.0, h2.y, 110.0, h2.h), "Step by step", false, true, pal::WARN) {
                     acts.push(Act::Step);
                 }
             } else {
@@ -807,7 +807,7 @@ impl Game {
                     acts.push(Act::ToggleHelp);
                 }
                 let name_w = help.x - 22.0 - h.x;
-                self.edit_name.ui(ui, Rect::new(h.x, h.y, name_w, bh), "nom");
+                self.edit_name.ui(ui, Rect::new(h.x, h.y, name_w, bh), "name");
                 if self.edit_name.focused {
                     self.editor.focused = false;
                 }
@@ -816,11 +816,11 @@ impl Game {
                 }
                 let builtin = Library::is_builtin(&self.edit_name.text);
                 let row: [(&str, Option<Act>, bool, Color); 5] = [
-                    ("Liste", None, true, pal::ACCENT),
-                    ("Appliquer", Some(Act::Apply), true, pal::GOOD),
-                    ("Nouveau", Some(Act::NewProgram), true, pal::ACCENT),
-                    ("Dupliquer", Some(Act::Duplicate), true, pal::ACCENT),
-                    ("Origine", Some(Act::ResetBuiltin), builtin, pal::ACCENT),
+                    ("List", None, true, pal::ACCENT),
+                    ("Apply", Some(Act::Apply), true, pal::GOOD),
+                    ("New", Some(Act::NewProgram), true, pal::ACCENT),
+                    ("Duplicate", Some(Act::Duplicate), true, pal::ACCENT),
+                    ("Original", Some(Act::ResetBuiltin), builtin, pal::ACCENT),
                 ];
                 let mut bx = h2.x;
                 for (label, act, enabled, color) in row {
@@ -840,26 +840,26 @@ impl Game {
             }
         } else if let Some(id) = debug_id {
             let alive = self.world.dronoid(id).is_some();
-            let title = if alive { format!("Dronoid #{id}") } else { format!("Dronoid #{id} (détruit)") };
+            let title = if alive { format!("Dronoid #{id}") } else { format!("Dronoid #{id} (destroyed)") };
             gfx::text(&title, x, h.y + 7.0, 16.0, if alive { pal::ACCENT } else { pal::BAD });
             x += gfx::text_width(&title, 16.0) + 14.0;
-            gfx::text(&format!("exécute « {} »", self.edit_name.text), x, h.y + 9.0, 13.0, pal::DIM);
+            gfx::text(&format!("runs {}", self.edit_name.text), x, h.y + 9.0, 13.0, pal::DIM);
             let mut bx = h.x + h.w - 30.0;
             if ui.button(Rect::new(bx, h.y, 30.0, bh), "×") {
                 acts.push(Act::CloseEditor);
             }
             bx -= 128.0;
-            if ui.button_ex(Rect::new(bx, h.y, 122.0, bh), "Éditer le code", false, true, pal::GOOD) {
+            if ui.button_ex(Rect::new(bx, h.y, 122.0, bh), "Edit the code", false, true, pal::GOOD) {
                 acts.push(Act::OpenProgram(self.edit_name.text.clone(), self.edit_factory));
             }
             if !self.is_online() {
                 bx -= 128.0;
-                if ui.button_ex(Rect::new(bx, h.y, 122.0, bh), "Pas à pas", false, true, pal::WARN) {
+                if ui.button_ex(Rect::new(bx, h.y, 122.0, bh), "Step by step", false, true, pal::WARN) {
                     acts.push(Act::Step);
                 }
             }
         } else {
-            self.edit_name.ui(ui, Rect::new(x, h.y, 180.0, bh), "nom");
+            self.edit_name.ui(ui, Rect::new(x, h.y, 180.0, bh), "name");
             if self.edit_name.focused {
                 self.editor.focused = false;
             }
@@ -867,18 +867,18 @@ impl Game {
             if self.editor.dirty {
                 draw_circle(x + 6.0, h.y + bh / 2.0, 4.0, pal::WARN);
                 if ui.hover(Rect::new(x, h.y, 14.0, bh)) {
-                    ui.tooltip("Modifications non appliquées");
+                    ui.tooltip("Unapplied changes");
                 }
             }
             x += 18.0;
-            if ui.button_ex(Rect::new(x, h.y, 128.0, bh), "Appliquer", false, true, pal::GOOD) {
+            if ui.button_ex(Rect::new(x, h.y, 128.0, bh), "Apply", false, true, pal::GOOD) {
                 acts.push(Act::Apply);
             }
             x += 134.0;
             let rest = [
-                ("Nouveau", Act::NewProgram, true),
-                ("Dupliquer", Act::Duplicate, true),
-                ("Origine", Act::ResetBuiltin, Library::is_builtin(&self.edit_name.text)),
+                ("New", Act::NewProgram, true),
+                ("Duplicate", Act::Duplicate, true),
+                ("Original", Act::ResetBuiltin, Library::is_builtin(&self.edit_name.text)),
             ];
             for (label, act, enabled) in rest {
                 let w = gfx::text_width(label, 13.0) + 20.0;
@@ -943,19 +943,19 @@ impl Game {
         }
 
         // Under the code, only what calls for something: the errors, or
-        // what « Appliquer » will do once there are changes to apply.
+        // what Apply will do once there are changes to apply.
         let f = l.footer;
         let lines: Vec<(String, Color)> = if debug_id.is_some() {
             vec![]
         } else if !self.editor.errors.is_empty() {
             let bad = mix(pal::BAD, WHITE, 0.35);
-            self.editor.errors.iter().take(2).map(|e| (format!("ligne {} : {}", e.line + 1, e.msg), bad)).collect()
+            self.editor.errors.iter().take(2).map(|e| (format!("line {}: {}", e.line + 1, e.msg), bad)).collect()
         } else if self.editor.dirty {
             let users = self.users_of(&self.edit_name.text);
             if users > 0 {
-                vec![(format!("Appliquer met à jour {users} usine(s)"), pal::DIM)]
+                vec![(format!("Apply updates {users} factor{}", if users == 1 { "y" } else { "ies" }), pal::DIM)]
             } else if self.edit_factory.is_some() {
-                vec![("Appliquer donne ce programme à l'usine".into(), pal::DIM)]
+                vec![("Apply gives this program to the factory".into(), pal::DIM)]
             } else {
                 vec![]
             }
@@ -970,7 +970,7 @@ impl Game {
 
     fn debug_side(&self, ui: &mut Ui, r: Rect, id: u32, acts: &mut Vec<Act>) {
         let Some(d) = self.world.dronoid(id) else {
-            gfx::text("Dronoid détruit.", r.x + 10.0, r.y + 10.0, 14.0, pal::BAD);
+            gfx::text("Dronoid destroyed.", r.x + 10.0, r.y + 10.0, 14.0, pal::BAD);
             return;
         };
         // Under the code on a small screen, the panel is wide: two columns.
@@ -994,10 +994,10 @@ impl Game {
         }
         let cell_h = if two { 18.0 } else { 22.0 };
         let rows = [
-            ("soute", format!("{}/{}", d.cargo, CARGO_CAP)),
-            ("cap", format!("{}°", d.heading)),
+            ("hold", format!("{}/{}", d.cargo, CARGO_CAP)),
+            ("heading", format!("{}°", d.heading)),
             ("position", format!("{}, {}", d.x / FP, d.y / FP)),
-            ("PV", format!("{}/{}", d.hp, DRONOID_HP)),
+            ("HP", format!("{}/{}", d.hp, DRONOID_HP)),
         ];
         for (k, v) in rows {
             gfx::text(k, x, y, 12.0, pal::DIM);
@@ -1005,7 +1005,7 @@ impl Game {
             y += 18.0;
         }
         y += 10.0;
-        gfx::text("mémoire de ruche", x, y, 11.0, pal::FAINT);
+        gfx::text("hive memory", x, y, 11.0, pal::FAINT);
         y += 16.0;
         if let Some(f) = self.world.factory(d.factory) {
             let cw = (col_w - 20.0) / 4.0;
@@ -1018,7 +1018,7 @@ impl Game {
             y += HIVE_MEM.div_ceil(4) as f32 * cell_h + 6.0;
         }
         let fr = Rect::new(x, y.min(r.y + r.h - 32.0), col_w - 20.0, 26.0);
-        if ui.button_ex(fr, if self.follow { "La caméra le suit" } else { "Suivre ce dronoid" }, self.follow, true, pal::ACCENT) {
+        if ui.button_ex(fr, if self.follow { "The camera follows it" } else { "Follow this dronoid" }, self.follow, true, pal::ACCENT) {
             acts.push(Act::Follow(!self.follow));
         }
     }
@@ -1040,13 +1040,13 @@ impl Game {
         };
         if self.world.shielded(self.me) {
             let left = (me.shield_until - self.world.tick) as f32 / TICKS_PER_SEC;
-            note(&format!("protégé {}:{:02}", left as u32 / 60, left as u32 % 60), with_alpha(pal::ACCENT, 0.6));
+            note(&format!("shielded {}:{:02}", left as u32 / 60, left as u32 % 60), with_alpha(pal::ACCENT, 0.6));
         }
         if let Driver::Online { frames, lost, .. } = &self.driver {
             if lost.is_some() {
-                note("hors ligne", pal::BAD);
+                note("offline", pal::BAD);
             } else if frames.len() > 8 {
-                note("synchronisation…", pal::WARN);
+                note("syncing…", pal::WARN);
             }
         }
 
@@ -1083,9 +1083,9 @@ impl Game {
         let pulse = with_alpha(pal::TEXT, 0.75 + 0.25 * (get_time() as f32 * 2.0).sin());
         let say = |mouse: &str, finger: &str| -> Vec<(String, Color)> { vec![((if ui.touch { finger } else { mouse }).to_string(), pulse)] };
         let parts: Vec<(String, Color)> = match self.tool {
-            Tool::Build => say("Cliquez près de vos unités", "Touchez près de vos unités"),
-            Tool::Target(_) => say("Cliquez sur la cible", "Touchez la cible"),
-            Tool::None if self.landing() => say("Cliquez un espace libre pour votre usine", "Touchez un espace libre pour votre usine"),
+            Tool::Build => say("Click near your units", "Tap near your units"),
+            Tool::Target(_) => say("Click the target", "Tap the target"),
+            Tool::None if self.landing() => say("Click a free spot for your factory", "Tap a free spot for your factory"),
             Tool::None => {
                 let Some(i) = quests::current(&self.world, self.me) else { return y };
                 let (done, goal) = quests::progress(&self.world, self.me, i);
@@ -1111,20 +1111,20 @@ impl Game {
         let can = me.minerals >= FACTORY_COST && me.alive && !self.landing();
         let items: [(String, bool, bool, Color, Act); 5] = [
             (
-                if compact { format!("Usine {FACTORY_COST}") } else { format!("Usine · {FACTORY_COST}") },
+                if compact { format!("Factory {FACTORY_COST}") } else { format!("Factory · {FACTORY_COST}") },
                 self.tool == Tool::Build,
                 can || self.tool == Tool::Build,
                 pal::GOOD,
                 Act::Tool(Tool::Build),
             ),
             (
-                (if compact { "Code" } else { "Programmes" }).into(),
+                (if compact { "Code" } else { "Programs" }).into(),
                 self.editor_open,
                 true,
                 pal::ACCENT,
                 Act::OpenProgram(self.default_program_name(), None),
             ),
-            ("Carte".into(), self.map_open, true, pal::ACCENT, Act::ToggleMap),
+            ("Map".into(), self.map_open, true, pal::ACCENT, Act::ToggleMap),
             ("Colonies".into(), self.players_open, true, pal::ACCENT, Act::TogglePlayers),
             ("Base".into(), false, !self.landing(), pal::ACCENT, Act::CenterOn(self.home())),
         ];
@@ -1166,8 +1166,8 @@ impl Game {
         };
         ui.panel(r);
         let title = match &self.driver {
-            Driver::Online { world_name, .. } => format!("Secteur « {world_name} »"),
-            Driver::Offline { .. } => "Entraînement".into(),
+            Driver::Online { world_name, .. } => format!("Sector {world_name}"),
+            Driver::Offline { .. } => "Training".into(),
         };
         gfx::text(&title, r.x + 10.0, r.y + 7.0, 12.0, pal::DIM);
         let online: &[u8] = match &self.driver {
@@ -1206,7 +1206,7 @@ impl Game {
         {
             return self.world.program_name(f.prog).to_string();
         }
-        "mineur".into()
+        "miner".into()
     }
 
     /// Top right; on a small screen, along the bottom above the dock, and
@@ -1259,18 +1259,18 @@ impl Game {
                 health(f.hp, FACTORY_HP);
                 let pname = self.world.program_name(f.prog);
                 if f.owner != self.me {
-                    theirs(f.owner, "usine");
+                    theirs(f.owner, "factory");
                     return;
                 }
                 gfx::text(pname, x + 12.0, y + 10.0, 15.0, pal::ACCENT);
-                if !f.enabled && ui.button_ex(Rect::new(x + w - 102.0, y + 6.0, 90.0, 24.0), "Reprendre", false, true, pal::WARN) {
+                if !f.enabled && ui.button_ex(Rect::new(x + w - 102.0, y + 6.0, 90.0, 24.0), "Resume", false, true, pal::WARN) {
                     acts.push(Act::Issue(Command::ToggleFactory { factory: id }));
                 }
                 let mut cy = y + 40.0;
-                if ui.button_ex(Rect::new(x + 12.0, cy, 128.0, 28.0), "Programme", false, true, pal::GOOD) {
+                if ui.button_ex(Rect::new(x + 12.0, cy, 128.0, 28.0), "Program", false, true, pal::GOOD) {
                     acts.push(Act::OpenProgram(pname.to_string(), Some(id)));
                 }
-                if ui.button_ex(Rect::new(x + 146.0, cy, 132.0, 28.0), "Changer…", self.program_menu == Some(id), true, pal::ACCENT) {
+                if ui.button_ex(Rect::new(x + 146.0, cy, 132.0, 28.0), "Change…", self.program_menu == Some(id), true, pal::ACCENT) {
                     acts.push(Act::ToggleProgramMenu(id));
                 }
                 cy += 36.0;
@@ -1284,11 +1284,11 @@ impl Game {
                     acts.push(Act::Issue(Command::SetQuota { factory: id, quota: f.quota + 1 }));
                 }
                 let aim = Rect::new(x + 180.0, cy, 70.0, 26.0);
-                if ui.button_ex(aim, "Cibler", self.tool == Tool::Target(id), true, pal::PINK) {
+                if ui.button_ex(aim, "Target", self.tool == Tool::Target(id), true, pal::PINK) {
                     acts.push(Act::Tool(Tool::Target(id)));
                 }
                 if ui.hover(aim) {
-                    ui.tooltip("Écrit X, Y dans la mémoire 0 et 1 de l'usine (2 = 1) : « chasseur » s'y rend");
+                    ui.tooltip("Writes X, Y to the factory's memory 0 and 1 (2 = 1): hunter heads there");
                 }
                 if f.mem[2] != 0 && ui.button_ex(Rect::new(x + 254.0, cy, 24.0, 26.0), "×", false, true, pal::PINK) {
                     acts.push(Act::Issue(Command::SetMemory { factory: id, index: 2, value: 0 }));
@@ -1339,10 +1339,10 @@ impl Game {
                     let load = format!("{}/{CARGO_CAP}", d.cargo);
                     gfx::text(&load, x + w - 12.0 - gfx::text_width(&load, 13.0), y + 12.0, 13.0, pal::ORE);
                 }
-                if ui.button_ex(Rect::new(x + 12.0, y + 40.0, 128.0, 28.0), "Déboguer", false, true, pal::GOOD) {
+                if ui.button_ex(Rect::new(x + 12.0, y + 40.0, 128.0, 28.0), "Debug", false, true, pal::GOOD) {
                     acts.push(Act::OpenDebug(id));
                 }
-                if ui.button_ex(Rect::new(x + 146.0, y + 40.0, 132.0, 28.0), "Suivre", self.follow, true, pal::ACCENT) {
+                if ui.button_ex(Rect::new(x + 146.0, y + 40.0, 132.0, 28.0), "Follow", self.follow, true, pal::ACCENT) {
                     acts.push(Act::Follow(!self.follow));
                 }
             }
@@ -1373,10 +1373,10 @@ impl Game {
         if let Driver::Online { lost: Some(msg), .. } = &self.driver {
             let r = dialog(460.0, 140.0);
             ui.panel(r);
-            gfx::text_centered("Connexion interrompue", sw / 2.0, r.y + 20.0, 18.0, pal::WARN);
+            gfx::text_centered("Connection interrupted", sw / 2.0, r.y + 20.0, 18.0, pal::WARN);
             let size = gfx::fit_size(msg, 13.0, r.w - 20.0);
             gfx::text_centered(msg, sw / 2.0, r.y + 54.0, size, pal::DIM);
-            if ui.button(Rect::new(sw / 2.0 - 70.0, r.y + 92.0, 140.0, 30.0), "Retour au menu") {
+            if ui.button(Rect::new(sw / 2.0 - 70.0, r.y + 92.0, 140.0, 30.0), "Back to the menu") {
                 acts.push(Act::Menu);
             }
             return;
@@ -1385,10 +1385,10 @@ impl Game {
         if !me_alive {
             let r = dialog(440.0, 160.0);
             ui.panel(r);
-            gfx::text_centered("Votre colonie a disparu", sw / 2.0, r.y + 22.0, 20.0, pal::BAD);
-            let line = "Le secteur continue sans vous… pour l'instant.";
+            gfx::text_centered("Your colony is gone", sw / 2.0, r.y + 22.0, 20.0, pal::BAD);
+            let line = "The sector goes on without you… for now.";
             gfx::text_centered(line, sw / 2.0, r.y + 60.0, gfx::fit_size(line, 13.0, r.w - 20.0), pal::DIM);
-            if ui.button_ex(Rect::new(sw / 2.0 - 150.0, r.y + 104.0, 144.0, 32.0), "Recommencer", false, true, pal::GOOD) {
+            if ui.button_ex(Rect::new(sw / 2.0 - 150.0, r.y + 104.0, 144.0, 32.0), "Start again", false, true, pal::GOOD) {
                 acts.push(Act::Respawn);
             }
             if ui.button(Rect::new(sw / 2.0 + 6.0, r.y + 104.0, 144.0, 32.0), "Menu") {
@@ -1399,8 +1399,8 @@ impl Game {
         if !self.is_online() && me_alive && !self.over_dismissed && self.world.winner() == Some(self.me) {
             let r = dialog(400.0, 140.0);
             ui.panel(r);
-            gfx::text_centered("Secteur conquis", sw / 2.0, r.y + 22.0, 22.0, pal::GOOD);
-            if ui.button(Rect::new(sw / 2.0 - 150.0, r.y + 90.0, 144.0, 30.0), "Continuer") {
+            gfx::text_centered("Sector conquered", sw / 2.0, r.y + 22.0, 22.0, pal::GOOD);
+            if ui.button(Rect::new(sw / 2.0 - 150.0, r.y + 90.0, 144.0, 30.0), "Continue") {
                 acts.push(Act::DismissOver);
             }
             if ui.button(Rect::new(sw / 2.0 + 6.0, r.y + 90.0, 144.0, 30.0), "Menu") {
@@ -1517,7 +1517,7 @@ impl Game {
                         self.tool = Tool::None;
                     }
                 }
-                Err(why) => self.toast(format!("Impossible ici : {why}"), pal::WARN),
+                Err(why) => self.toast(format!("Not here: {why}"), pal::WARN),
             }
             return;
         }
@@ -1665,7 +1665,7 @@ impl Game {
     /// Land automatically (screenshots of a running colony).
     pub fn auto_land(&mut self) {
         let (hx, hy) = self.world.players[self.me as usize].home;
-        let m = programs::builtin("mineur").unwrap();
+        let m = programs::builtin("miner").unwrap();
         if let Some(p) = (0..10)
             .flat_map(|r| (0..360).step_by(30).map(move |a| (r, a)))
             .map(|(r, a)| {
@@ -1708,20 +1708,20 @@ impl Game {
 }
 
 pub fn bot_name(i: usize) -> String {
-    const NAMES: &[&str] = &["Orion", "Vega", "Lyra", "Rigel", "Deneb", "Sirius", "Altaïr", "Antarès"];
-    format!("IA {}", NAMES[i % NAMES.len()])
+    const NAMES: &[&str] = &["Orion", "Vega", "Lyra", "Rigel", "Deneb", "Sirius", "Altair", "Antares"];
+    format!("AI {}", NAMES[i % NAMES.len()])
 }
 
 fn doing_label(d: Doing) -> (String, Color) {
     match d {
-        Doing::Idle => ("réfléchit".into(), pal::TEXT),
-        Doing::Move { .. } => ("avance".into(), pal::TEXT),
-        Doing::Mine { .. } => ("mine".into(), pal::ORE),
-        Doing::Drop { .. } => ("décharge".into(), pal::ORE),
-        Doing::Attack { .. } => ("tire".into(), pal::BAD),
-        Doing::Wait => ("attend".into(), pal::DIM),
-        Doing::Fail => ("bloqué".into(), pal::WARN),
-        Doing::Stall => ("calcule…".into(), pal::WARN),
+        Doing::Idle => ("thinking".into(), pal::TEXT),
+        Doing::Move { .. } => ("moving".into(), pal::TEXT),
+        Doing::Mine { .. } => ("mining".into(), pal::ORE),
+        Doing::Drop { .. } => ("unloading".into(), pal::ORE),
+        Doing::Attack { .. } => ("firing".into(), pal::BAD),
+        Doing::Wait => ("waiting".into(), pal::DIM),
+        Doing::Fail => ("blocked".into(), pal::WARN),
+        Doing::Stall => ("computing…".into(), pal::WARN),
     }
 }
 
@@ -1756,7 +1756,7 @@ fn help_overlay(ui: &mut Ui, acts: &mut Vec<Act>, scroll: &mut f32) {
     if ui.button(Rect::new(r.x + r.w - 40.0, r.y + 10.0, 30.0, 28.0), "×") {
         acts.push(Act::ToggleHelp);
     }
-    gfx::text("DASM, le langage des dronoids", r.x + 20.0, r.y + 16.0, 18.0, pal::ACCENT);
+    gfx::text("DASM, the dronoids' language", r.x + 20.0, r.y + 16.0, 18.0, pal::ACCENT);
     gfx::text(HELP_INTRO, r.x + 20.0, r.y + 42.0, 13.0, pal::DIM);
 
     let col_w = (w - 60.0) / 2.0;
@@ -1790,13 +1790,13 @@ fn help_overlay(ui: &mut Ui, acts: &mut Vec<Act>, scroll: &mut f32) {
     }
 }
 
-const HELP_INTRO: &str = "Un dronoid libre exécute ses instructions jusqu'à une ACTION, qui prend du temps ; puis il recommence.";
+const HELP_INTRO: &str = "A free dronoid runs its instructions up to an ACTION, which takes time; then it starts over.";
 
 const HELP_CATS: [(Cat, &str); 4] = [
-    (Cat::Action, "actions · prennent du temps, mettent ok à 1 ou 0"),
-    (Cat::Sense, "capteurs · instantanés"),
-    (Cat::Data, "données"),
-    (Cat::Flow, "sauts"),
+    (Cat::Action, "actions · take time, set ok to 1 or 0"),
+    (Cat::Sense, "sensors · instant"),
+    (Cat::Data, "data"),
+    (Cat::Flow, "jumps"),
 ];
 
 /// The reference beside the instructions; the last part depends on
@@ -1804,43 +1804,43 @@ const HELP_CATS: [(Cat, &str); 4] = [
 fn help_sections(touch: bool) -> Vec<(&'static str, Vec<String>)> {
     let lines = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let mut out = vec![
-        ("registres", lines(&[
-            "a b c d   registres libres du dronoid",
-            "ok        1 si la dernière action a réussi, sinon 0",
-            "valeurs : registre, nombre (-3, 42) ou constante",
+        ("registers", lines(&[
+            "a b c d   the dronoid's free registers",
+            "ok        1 if the last action succeeded, else 0",
+            "values: register, number (-3, 42) or constant",
         ])),
-        ("angles · degrés, sens horaire", lines(&[
+        ("angles · degrees, clockwise", lines(&[
             "N=0  E=90  S=180  W=270  NONE=-1",
-            "ADD a, 90 = tourner à droite ; MOD a, 360 pour rester dans 0..359",
-            "x croît vers l'est, y vers le sud (POSX, POSY, DX, DY, ANGLE)",
+            "ADD a, 90 = turn right; MOD a, 360 to stay within 0..359",
+            "x grows eastwards, y southwards (POSX, POSY, DX, DY, ANGLE)",
         ])),
-        ("choses · SCAN, DIST, DX, DY, COUNT, LOOK", vec![
+        ("things · SCAN, DIST, DX, DY, COUNT, LOOK", vec![
             "EMPTY=0  WALL=1  ORE=2  ALLY=3  ENEMY=4  BASE=5  EBASE=6".into(),
-            format!("capteurs : {} unités ; EBASE : {} ; BASE : partout", SENSOR_RANGE / FP, EBASE_RANGE / FP),
-            "DIST mesure l'écart entre les deux coques (0 = au contact)".into(),
-            format!("FULL = {CARGO_CAP} (capacité de la soute)"),
+            format!("sensors: {} units; EBASE: {}; BASE: anywhere", SENSOR_RANGE / FP, EBASE_RANGE / FP),
+            "DIST measures the gap between the two hulls (0 = touching)".into(),
+            format!("FULL = {CARGO_CAP} (hold capacity)"),
         ]),
-        ("portées", lines(&[
-            "MINE / DROP : DIST ≤ 1     ATTACK : DIST ≤ 2",
-            "un MOVE = 1 unité ; astéroïdes, cristaux et usines bloquent",
+        ("ranges", lines(&[
+            "MINE / DROP: DIST ≤ 1     ATTACK: DIST ≤ 2",
+            "one MOVE = 1 unit; asteroids, crystals and factories block",
         ])),
-        ("mémoire de ruche", vec![
-            format!("{HIVE_MEM} cases partagées par les dronoids d'une usine (PEEK / POKE)"),
-            "« Cibler » écrit 0 = X, 1 = Y, 2 = 1".into(),
+        ("hive memory", vec![
+            format!("{HIVE_MEM} cells shared by a factory's dronoids (PEEK / POKE)"),
+            "Target writes 0 = X, 1 = Y, 2 = 1".into(),
         ]),
     ];
     if touch {
-        out.push(("au doigt", lines(&[
-            "un doigt glissé : déplacer la carte ; deux doigts : zoomer",
-            "toucher : choisir une usine ou un dronoid ; deux fois sur une usine : son programme",
-            "éditeur : glisser pour faire défiler, toucher pour placer le curseur et écrire",
+        out.push(("by touch", lines(&[
+            "one finger sliding: move the map; two fingers: zoom",
+            "tap: pick a factory or a dronoid; twice on a factory: its program",
+            "editor: slide to scroll, tap to place the cursor and type",
         ])));
     } else {
-        out.push(("raccourcis", lines(&[
-            "B usine · T cible · E programme/débogueur · P programmes",
-            "M carte · L colonies · H base · Tab usines suivantes",
-            "ZQSD/WASD/flèches, clic droit glissé : caméra ; molette : zoom",
-            "éditeur : Ctrl+S appliquer, Ctrl+Z/Y, Ctrl+D, Tab",
+        out.push(("shortcuts", lines(&[
+            "B factory · T target · E program/debugger · P programs",
+            "M map · L colonies · H base · Tab next factory",
+            "ZQSD/WASD/arrows, right-drag: camera; wheel: zoom",
+            "editor: Ctrl+S apply, Ctrl+Z/Y, Ctrl+D, Tab",
         ])));
     }
     out
@@ -1855,7 +1855,7 @@ fn help_scrolling(ui: &mut Ui, acts: &mut Vec<Act>, scroll: &mut f32) {
     if ui.button(Rect::new(r.x + r.w - 42.0, r.y + 8.0, 34.0, 32.0), "×") {
         acts.push(Act::ToggleHelp);
     }
-    let title = "DASM, le langage des dronoids";
+    let title = "DASM, the dronoids' language";
     gfx::text(title, r.x + 14.0, r.y + 16.0, gfx::fit_size(title, 18.0, r.w - 70.0), pal::ACCENT);
     let body = Rect::new(r.x + 14.0, r.y + 50.0, r.w - 28.0, r.h - 58.0);
 
@@ -1921,22 +1921,22 @@ mod tests {
     #[test]
     fn players_only_ever_read_dronoid() {
         let banned = concat!("dron", "e");
-        let said = |text: &str, whose: &str| assert!(!text.to_lowercase().contains(banned), "{whose} : {text}");
+        let said = |text: &str, whose: &str| assert!(!text.to_lowercase().contains(banned), "{whose}: {text}");
         for q in QUESTS.iter() {
-            said(q.title, "objectif");
-            said(q.hint, "objectif");
+            said(q.title, "objective");
+            said(q.hint, "objective");
         }
         for m in vm::MNEMONICS.iter() {
-            said(m.syntax, "aide");
-            said(m.help, "aide");
+            said(m.syntax, "help");
+            said(m.help, "help");
         }
         for b in programs::BUILTINS {
             said(b.source, b.name);
             said(b.summary, b.name);
         }
-        said(programs::TEMPLATE, "modèle");
+        said(programs::TEMPLATE, "template");
         for (page, text) in [
-            ("page du jeu", include_str!("../web/index.html").to_string()),
+            ("game page", include_str!("../web/index.html").to_string()),
             // (Its former storage key is old data, not something shown.)
             ("god_net.js", include_str!("../web/god_net.js").replace(concat!("game-of-dron", "es."), "")),
             ("site", include_str!("../site/www/index.html").to_string()),

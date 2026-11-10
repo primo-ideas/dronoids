@@ -355,8 +355,18 @@ impl World {
         } else {
             serde_json::from_slice(bytes).map_err(|e| e.to_string())?
         };
+        // Saved before the game spoke English: the built-ins under their new
+        // names and wording, and the bots under theirs.
         for p in &mut w.programs {
-            p.source = programs::reworded(&p.source);
+            if let Some((name, source)) = programs::modernized(&p.name, &p.source) {
+                p.name = name;
+                p.source = source;
+            }
+        }
+        for p in w.players.iter_mut().filter(|p| p.bot) {
+            if let Some(star) = p.name.strip_prefix("IA ") {
+                p.name = format!("AI {}", star.replace('\u{ef}', "i").replace('\u{e8}', "e"));
+            }
         }
         w.rebuild_caches();
         Ok(w)
@@ -630,39 +640,39 @@ impl World {
 
     /// Why a factory can't be placed there, if it can't.
     pub fn can_place_factory(&self, owner: u8, x: i32, y: i32) -> Result<(), &'static str> {
-        let Some(p) = self.players.get(owner as usize) else { return Err("joueur inconnu") };
+        let Some(p) = self.players.get(owner as usize) else { return Err("unknown player") };
         if !p.alive {
-            return Err("vous êtes éliminé");
+            return Err("you are eliminated");
         }
         if !self.inside(x, y, FACTORY_RADIUS + FP) {
-            return Err("trop loin de vos unités");
+            return Err("too far from your units");
         }
         if p.minerals < FACTORY_COST {
-            return Err("pas assez de minerai");
+            return Err("not enough ore");
         }
         if self.occupied((x, y), FACTORY_RADIUS + FP / 2) {
-            return Err("emplacement encombré");
+            return Err("the spot is taken");
         }
         let d = |fx: i32, fy: i32| dist2(fx - x, fy - y);
         let sq = |v: i32| v as i64 * v as i64;
         if self.factories.iter().any(|f| d(f.x, f.y) < sq(FACTORY_SPACING + 2 * FACTORY_RADIUS)) {
-            return Err("trop près d'une autre usine");
+            return Err("too close to another factory");
         }
         if self.is_landing(owner) {
             // First factory: anywhere, as long as it is not on someone's doorstep.
             if self.factories.iter().any(|f| f.owner != owner && d(f.x, f.y) < sq(LANDING_CLEARANCE)) {
-                return Err("trop près d'une autre colonie");
+                return Err("too close to another colony");
             }
             return Ok(());
         }
         if self.factories.iter().any(|f| f.owner != owner && d(f.x, f.y) < sq(ENEMY_BUILD_CLEARANCE)) {
-            return Err("trop près d'une usine ennemie");
+            return Err("too close to an enemy factory");
         }
         let reach = sq(BUILD_RANGE + FACTORY_RADIUS);
         let near_own = self.factories.iter().any(|f| f.owner == owner && d(f.x, f.y) <= sq(BUILD_RANGE + 2 * FACTORY_RADIUS))
             || self.dronoids.iter().any(|dr| dr.owner == owner && dr.hp > 0 && d(dr.x, dr.y) <= reach);
         if !near_own {
-            return Err("trop loin de vos unités");
+            return Err("too far from your units");
         }
         Ok(())
     }
@@ -1348,13 +1358,13 @@ pub(crate) mod tests {
             })
             .find(|p| w.can_place_factory(player, p.0, p.1).is_ok())
             .expect("somewhere to land");
-        w.step(&[(player, Command::PlaceFactory { x: spot.0, y: spot.1, name: "mineur".into(), source: source.into() })]);
+        w.step(&[(player, Command::PlaceFactory { x: spot.0, y: spot.1, name: "miner".into(), source: source.into() })]);
         assert_eq!(w.factory_count(player), 1);
     }
 
     fn world_with(players: &[&str]) -> World {
         let mut w = World::new(7);
-        let m = programs::builtin("mineur").unwrap();
+        let m = programs::builtin("miner").unwrap();
         for (i, p) in players.iter().enumerate() {
             w.step(&[(0, Command::Join { name: p.to_string(), bot: false })]);
             land(&mut w, i as u8, m.source);
@@ -1364,7 +1374,7 @@ pub(crate) mod tests {
 
     #[test]
     fn saves_from_before_the_rename_still_load() {
-        let m = programs::builtin("mineur").unwrap();
+        let m = programs::builtin("miner").unwrap();
         let mut w = World::new(3);
         let id = w.join("moi", false).unwrap();
         let (hx, hy) = w.players[id as usize].home;
@@ -1382,13 +1392,18 @@ pub(crate) mod tests {
         assert_eq!(back.players[id as usize].dronoids_built, w.players[id as usize].dronoids_built);
     }
 
+    /// Saved before the game spoke English: a former built-in's name and a
+    /// bot's name take their new form, a player's own code stays as it is.
     #[test]
-    fn saved_programs_get_the_new_wording() {
-        let hunter = programs::builtin("chasseur").unwrap().source;
+    fn saved_names_take_their_english_form() {
         let mut w = World::new(1);
-        w.programs.push(ProgEntry { name: "chasseur".into(), source: hunter.replace("dronoids", "drones"), code: None });
+        let bot = w.join("IA Antar\u{e8}s", true).unwrap();
+        let own = "; my own guard\nWAIT\n";
+        w.programs.push(ProgEntry { name: "gardien".into(), source: own.into(), code: None });
         let back = World::from_save(&w.to_save()).unwrap();
-        assert_eq!(back.programs.last().unwrap().source, hunter);
+        let p = back.programs.last().unwrap();
+        assert_eq!((p.name.as_str(), p.source.as_str()), ("guard", own));
+        assert_eq!(back.players[bot as usize].name, "AI Antares");
     }
 
     #[test]
@@ -1406,7 +1421,7 @@ pub(crate) mod tests {
         // The landing may be far from everything: we own nothing yet.
         let (hx, hy) = w.players[0].home;
         let far = hx + 200 * FP;
-        let m = programs::builtin("mineur").unwrap();
+        let m = programs::builtin("miner").unwrap();
         let spot = (0..40)
             .map(|k| (far - k * FP, hy))
             .find(|p| w.can_place_factory(id, p.0, p.1).is_ok())
@@ -1481,7 +1496,7 @@ pub(crate) mod tests {
     #[test]
     fn the_far_reaches_work_like_anywhere_else() {
         let mut w = world_with(&["a"]);
-        let scout = programs::builtin("eclaireur").unwrap();
+        let scout = programs::builtin("scout").unwrap();
         let f = w.factories[0].id;
         w.step(&[(0, Command::SetProgram { factory: f, name: scout.name.into(), source: scout.source.into() })]);
         let far = (-WORLD_EXTENT + 60 * FP, WORLD_EXTENT - 60 * FP);
@@ -1533,10 +1548,10 @@ pub(crate) mod tests {
         let mut b = World::from_bytes(&bytes).unwrap();
         assert_eq!(a.rocks, b.rocks, "rocks are rebuilt from the seed");
         assert_eq!(a.state_hash(), b.state_hash());
-        let hunter = programs::builtin("chasseur").unwrap();
+        let hunter = programs::builtin("hunter").unwrap();
         for t in 0..1500u64 {
             let cmds = if t == 100 {
-                vec![(1u8, Command::UpdateProgram { name: "mineur".into(), source: hunter.source.into() })]
+                vec![(1u8, Command::UpdateProgram { name: "miner".into(), source: hunter.source.into() })]
             } else {
                 vec![]
             };
@@ -1563,9 +1578,9 @@ pub(crate) mod tests {
         let mut w = world_with(&["vieux", "nouveau"]);
         w.players[0].shield_until = 0;
         let f = w.factories.iter().find(|f| f.owner == 1).unwrap().clone();
-        let hunter = programs::builtin("chasseur").unwrap();
+        let hunter = programs::builtin("hunter").unwrap();
         let mine = w.factories.iter().find(|f| f.owner == 0).unwrap().id;
-        w.step(&[(0, Command::SetProgram { factory: mine, name: "chasseur".into(), source: hunter.source.into() })]);
+        w.step(&[(0, Command::SetProgram { factory: mine, name: "hunter".into(), source: hunter.source.into() })]);
         let park = |w: &mut World| {
             for d in w.dronoids.iter_mut().filter(|d| d.owner == 0) {
                 d.x = f.x + FACTORY_RADIUS + 2 * FP;
@@ -1607,12 +1622,12 @@ pub(crate) mod tests {
         let mut w = world_with(&["a", "b"]);
         let f0 = w.factories.iter().find(|f| f.owner == 0).unwrap().clone();
         w.players[0].minerals = 0;
-        assert_eq!(w.can_place_factory(0, f0.x + 7 * FP, f0.y), Err("pas assez de minerai"));
+        assert_eq!(w.can_place_factory(0, f0.x + 7 * FP, f0.y), Err("not enough ore"));
         w.players[0].minerals = 1000;
-        assert_eq!(w.can_place_factory(0, f0.x, f0.y), Err("emplacement encombré"));
+        assert_eq!(w.can_place_factory(0, f0.x, f0.y), Err("the spot is taken"));
         let f1 = w.factories.iter().find(|f| f.owner == 1).unwrap().clone();
         assert!(w.can_place_factory(0, f1.x + 9 * FP, f1.y).is_err());
-        assert_eq!(w.can_place_factory(0, f0.x + 60 * FP, f0.y), Err("trop loin de vos unités"));
+        assert_eq!(w.can_place_factory(0, f0.x + 60 * FP, f0.y), Err("too far from your units"));
         let spot = (0..360)
             .step_by(15)
             .map(|a| {
@@ -1621,7 +1636,7 @@ pub(crate) mod tests {
             })
             .find(|p| w.can_place_factory(0, p.0, p.1).is_ok())
             .expect("a free spot");
-        let m = programs::builtin("mineur").unwrap();
+        let m = programs::builtin("miner").unwrap();
         w.step(&[(0, Command::PlaceFactory { x: spot.0, y: spot.1, name: m.name.into(), source: m.source.into() })]);
         assert_eq!(w.factory_count(0), 2);
     }
@@ -1644,30 +1659,30 @@ mod better_programs {
     #[test]
     #[ignore]
     fn compare_horizons() {
-        let better = include_str!("../../examples/mineur_plus.dasm");
-        let base = programs::builtin("mineur").unwrap().source;
+        let better = include_str!("../../examples/miner_plus.dasm");
+        let base = programs::builtin("miner").unwrap().source;
         for ticks in [4000u64, 8000, 14000] {
             let (mut a, mut b) = (0, 0);
             for seed in 1..=4 {
                 a += mined_with(base, seed, ticks);
                 b += mined_with(better, seed, ticks);
             }
-            println!("{ticks} ticks: mineur {a}  mineur+ {b}");
+            println!("{ticks} ticks: miner {a}  miner+ {b}");
         }
     }
 
     /// The whole point of the game: a smarter program out-mines the default.
     #[test]
     fn example_program_beats_builtin_miner() {
-        let better = include_str!("../../examples/mineur_plus.dasm");
+        let better = include_str!("../../examples/miner_plus.dasm");
         assert!(vm::assemble("p", better).is_ok());
-        let base = programs::builtin("mineur").unwrap().source;
+        let base = programs::builtin("miner").unwrap().source;
         let (mut a, mut b) = (0, 0);
         for seed in 1..=4 {
             a += mined_with(base, seed, 8000);
             b += mined_with(better, seed, 8000);
         }
-        println!("mineur: {a}  mineur+: {b}");
-        assert!(b > a, "mineur+ {b} should beat mineur {a}");
+        println!("miner: {a}  miner+: {b}");
+        assert!(b > a, "miner+ {b} should beat miner {a}");
     }
 }

@@ -74,7 +74,7 @@ mod imp {
     }
 
     pub fn default_name() -> String {
-        std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "Pilote".into())
+        std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "Pilot".into())
     }
 
     pub fn random_u32() -> u32 {
@@ -142,7 +142,7 @@ mod imp {
     }
 
     pub fn default_name() -> String {
-        format!("Pilote{}", random_u32() % 1000)
+        format!("Pilot{}", random_u32() % 1000)
     }
 
     pub fn random_u32() -> u32 {
@@ -159,14 +159,14 @@ mod imp {
         unsafe { god_keyboard(open as u32) };
     }
 
-    /// The pseudo and ticket of the account signed in on the site, if any.
+    /// The nickname and ticket of the account signed in on the site, if any.
     pub fn account() -> Option<(String, String)> {
         let mut buf = vec![0u8; 512];
         let n = unsafe { god_account(buf.as_mut_ptr(), buf.len()) };
         buf.truncate(n.max(0) as usize);
         let text = String::from_utf8(buf).ok()?;
-        let (pseudo, ticket) = text.split_once('\n')?;
-        (!pseudo.is_empty() && !ticket.is_empty()).then(|| (pseudo.to_string(), ticket.to_string()))
+        let (nickname, ticket) = text.split_once('\n')?;
+        (!nickname.is_empty() && !ticket.is_empty()).then(|| (nickname.to_string(), ticket.to_string()))
     }
 
     /// The site's account page (leaves the game).

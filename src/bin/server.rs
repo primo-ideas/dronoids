@@ -24,7 +24,7 @@ fn main() {
     let get = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "dronoids-server [--name NOM] [--bind 0.0.0.0] [--port {DEFAULT_PORT}] [--bots 6] [--level easy|normal|hard] [--seed N] [--save FICHIER] [--site-secret FICHIER]"
+            "dronoids-server [--name NAME] [--bind 0.0.0.0] [--port {DEFAULT_PORT}] [--bots 6] [--level easy|normal|hard] [--seed N] [--save FILE] [--site-secret FILE]"
         );
         return;
     }
@@ -37,11 +37,11 @@ fn main() {
     let site_secret = get("--site-secret").and_then(|path| match std::fs::read_to_string(&path) {
         Ok(s) if s.trim().len() >= 16 => Some(s.trim().as_bytes().to_vec()),
         Ok(_) => {
-            eprintln!("secret du site trop court dans {path} : les comptes du site seront refusés");
+            eprintln!("site secret too short in {path}: the site's accounts will be refused");
             None
         }
         Err(e) => {
-            eprintln!("secret du site illisible ({path} : {e}) : les comptes du site seront refusés");
+            eprintln!("unreadable site secret ({path}: {e}): the site's accounts will be refused");
             None
         }
     });
@@ -60,12 +60,12 @@ fn main() {
     let mut server = match Server::new(cfg.clone()) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("impossible de démarrer : {e}");
+            eprintln!("cannot start: {e}");
             std::process::exit(1);
         }
     };
     println!(
-        "monde « {} » sur ws://{}:{}/ws ({} colonies IA, {}) — sauvegarde : {}",
+        "world {} on ws://{}:{}/ws ({} AI colonies, {}) — save: {}",
         cfg.name,
         cfg.bind,
         server.port(),

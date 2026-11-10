@@ -1,165 +1,168 @@
 # Dronoids
 
-Un secteur spatial partagé et persistant, vue du dessus, géométrique et néon.
-On y arrive **sans rien**, sinon de quoi bâtir une usine. L'usine fabrique des
-**dronoids**, qui suivent à la lettre un **programme** écrit dans un petit assembleur
-ludique, **DASM**. Les programmes fournis sont volontairement naïfs : le jeu, c'est
-d'en écrire de meilleurs. Votre colonie continue de travailler quand vous partez.
+A shared, persistent space sector, seen from above, geometric and neon.
+You arrive **with nothing** but what it takes to build a factory. The factory builds
+**dronoids**, which follow to the letter a **program** written in a small, playful
+assembly language, **DASM**. The programs provided are naive on purpose: the game is
+writing better ones. Your colony keeps working when you leave.
 
-**Jouer : <https://primo-ideas.xyz/dronoids/>**
+**Play: <https://primo-ideas.xyz/dronoids/>**
 
-Inspiré de *Human Resource Machine* pour le langage et le débogueur pas à pas.
+Inspired by *Human Resource Machine* for the language and the step-by-step debugger.
 
-## Lancer en local
+## Running it locally
 
 ```bash
-cargo run --release                          # le jeu (bureau)
-cargo run --release --bin dronoids-server    # un secteur local, ws://127.0.0.1:8082/ws
-./deploy/build-web.sh --serve                # la version navigateur, http://127.0.0.1:8090
+cargo run --release                          # the game (desktop)
+cargo run --release --bin dronoids-server    # a local sector, ws://127.0.0.1:8082/ws
+./deploy/build-web.sh --serve                # the browser version, http://127.0.0.1:8090
 ```
 
-Rust stable récent (édition 2024). Dépendances : `macroquad` (rendu), `serde`,
-`bincode`, `serde_json`, et `tungstenite` côté bureau/serveur.
+A recent stable Rust (edition 2024). Dependencies: `macroquad` (rendering), `serde`,
+`bincode`, `serde_json`, and `tungstenite` on the desktop and the server.
 
-## Le secteur
+## The sector
 
-- Un espace **immense** (un million d'unités de large, onze jours de voyage en ligne
-  droite pour un dronoid), généré à mesure qu'on le découvre : ceintures d'astéroïdes,
-  régions désertes ou encombrées, champs de cristaux qui **repoussent** quelques
-  heures après avoir été épuisés, et des colonies IA qui vivent leur vie.
-- **Arrivée** : 170 cristaux, rien d'autre. On choisit où poser sa première usine
-  (loin des autres colonies). Un **bouclier** protège les nouveaux venus 10 minutes
-  à partir du moment où ils se posent : ils ne peuvent ni être attaqués, ni attaquer.
-  Une usine neuve sort ses deux premiers dronoids vite.
-- **Premiers pas** : cinq objectifs, l'un après l'autre (se poser, extraire 100
-  cristaux, appliquer un programme de son cru, cartographier les environs, fonder une
-  deuxième usine), chacun avec sa petite récompense en cristaux. Ils font partie du
-  monde : la progression suit le joueur d'une session et d'un appareil à l'autre.
-- **Brouillard de guerre** : on ne voit qu'autour de ses usines (18 unités) et de
-  ses dronoids (12). L'espace déjà exploré reste en mémoire, voilé (astéroïdes et
-  cristaux, mais aucune unité étrangère) ; l'inconnu reste noir. La carte explorée
-  est propre à chaque joueur et persiste : vos dronoids cartographient aussi pendant
-  votre absence. (Chaque client rejoue tout le monde : le brouillard est un choix
-  d'affichage, pas une protection.)
-- **Rythme lent** : 4 ticks par seconde ; un pas prend 1 s, extraire un cristal 2 s,
-  une usine produit ensuite un dronoid toutes les 30 s.
-- Les IA ne lancent de raids qu'autour de chez elles : s'installer loin d'elles,
-  c'est grandir en paix.
-- Votre pseudo est protégé par un jeton secret gardé par votre navigateur (ou
-  `./save/` sur le bureau).
-- **Entraînement hors ligne** : un secteur privé avec des IA, pause et vitesse x8.
+- A **huge** space (a million units across, eleven days of travel in a straight line
+  for a dronoid), generated as it is discovered: asteroid belts, empty or crowded
+  regions, crystal fields that **grow back** a few hours after they run out, and AI
+  colonies living their own lives.
+- **Arrival**: 170 crystals, nothing else. You choose where to place your first factory
+  (away from the other colonies). A **shield** protects newcomers for 10 minutes from
+  the moment they land: they can neither be attacked nor attack.
+  A new factory turns out its first two dronoids quickly.
+- **First steps**: five objectives, one after the other (land, mine 100 crystals,
+  apply a program of your own, map the surroundings, found a second factory), each
+  with a small reward in crystals. They are part of the world: progress follows the
+  player from one session and one device to the next.
+- **Fog of war**: you only see around your factories (18 units) and your dronoids
+  (12). Space explored already stays in memory, veiled (asteroids and crystals, but no
+  foreign unit); the unknown stays black. The explored map belongs to each player and
+  persists: your dronoids keep mapping while you are away. (Every client replays the
+  whole world: the fog is a choice of display, not a protection.)
+- **A slow pace**: 4 ticks a second; a step takes 1 s, mining a crystal 2 s, and a
+  factory then turns out a dronoid every 30 s.
+- The AIs only raid around their own home: settling far from them means growing in
+  peace.
+- Your nickname is protected by a secret token kept by your browser (or `./save/` on
+  the desktop).
+- **Offline training**: a private sector with AIs, pause and speed up to x8.
 
-## Contrôles
+## Controls
 
-| Touche | Effet |
+| Key | Effect |
 | --- | --- |
-| Clic gauche | sélectionner ; double-clic sur une usine pour son programme |
-| Clic droit glissé, molette | déplacer la caméra, zoomer |
-| ZQSD / WASD / flèches | déplacer la caméra |
-| `B` | nouvelle usine (Maj+clic pour en poser plusieurs) |
-| `E` / `P` | programme de l'usine, débogueur du dronoid / tous les programmes |
-| `T` | poser la cible de l'usine (lue par `chasseur`) |
-| `M`, `L`, `H`, `Tab` | carte, colonies, retour à la base, usine suivante |
-| `F1` | aide du langage |
-| Hors ligne | `Espace` pause, `1`-`4` vitesse, `N` tick suivant |
+| Left click | select; double-click a factory for its program |
+| Right drag, wheel | move the camera, zoom |
+| ZQSD / WASD / arrows | move the camera |
+| `B` | new factory (Shift+click to place several) |
+| `E` / `P` | the factory's program, the dronoid's debugger / all programs |
+| `T` | set the factory's target (read by `hunter`) |
+| `M`, `L`, `H`, `Tab` | map, colonies, back to base, next factory |
+| `F1` | language help |
+| Offline | `Space` pause, `1`-`4` speed, `N` next tick |
 
-Sur téléphone ou tablette :
+On a phone or a tablet:
 
-| Geste | Effet |
+| Gesture | Effect |
 | --- | --- |
-| Toucher | sélectionner, poser une usine ou une cible ; deux fois sur une usine pour son programme |
-| Un doigt glissé | déplacer la caméra (dans l'éditeur et l'aide : faire défiler) |
-| Deux doigts | zoomer, et déplacer la caméra |
-| Toucher un champ de texte ou le code | ouvrir le clavier du téléphone |
+| Tap | select, place a factory or a target; twice on a factory for its program |
+| One finger sliding | move the camera (in the editor and the help: scroll) |
+| Two fingers | zoom, and move the camera |
+| Tap a text field or the code | bring up the phone's keyboard |
 
-L'écran reste volontairement épuré : vos cristaux en haut à gauche (et la
-protection du nouveau venu tant qu'elle dure), vitesse, aide et menu en haut à
-droite, un dock en bas, et une ligne courte : l'outil en cours, sinon le prochain
-premier pas et son avancement. Le panneau d'une unité ne montre sa santé qu'une
-fois touchée ; carte et colonies s'ouvrent à la demande. Hors ligne, le bouton de
-vitesse passe de x1 à x2, x4, x8 puis pause. Sur un écran étroit (moins de 700 px de
-large, un téléphone tenu droit), le panneau de sélection passe en bas au-dessus du
-dock, et l'éditeur comme l'aide occupent tout l'écran.
+The screen stays clean on purpose: your crystals at the top left (and the newcomer's
+shield while it lasts), speed, help and menu at the top right, a dock at the bottom,
+and one short line: the current tool, or else the next first step and how far along it
+is. A unit's panel only shows its health once it has been hit; map and colonies open
+on demand. Offline, the speed button goes from x1 to x2, x4, x8 then pause. On a
+narrow screen (under 700 px wide, a phone held upright), the selection panel moves to
+the bottom above the dock, and the editor and the help take the whole screen.
 
-## DASM en bref
+## DASM in short
 
 ```asm
-; MINEUR -- le programme de départ
-debut:
+; MINER -- the starting program
+start:
     CARGO a
-    JGE a, FULL, rentrer
-    DIST a, ORE          ; distance au cristal le plus proche
-    JEQ a, NONE, errer   ; rien en vue ?
-    JLE a, 1, creuser    ; à portée : on creuse
-    SCAN b, ORE          ; b = angle vers le cristal
+    JGE a, FULL, home
+    DIST a, ORE          ; distance to the nearest crystal
+    JEQ a, NONE, wander  ; nothing in sight?
+    JLE a, 1, dig        ; within reach: dig
+    SCAN b, ORE          ; b = angle to the crystal
     MOVE b
-    JZ ok, esquive       ; bloqué par un astéroïde
-    JMP debut
+    JZ ok, dodge         ; blocked by an asteroid
+    JMP start
 ...
 ```
 
-- Registres `a b c d`, plus `ok` (1 si la dernière action a réussi).
-- Angles en degrés, sens horaire : `N=0 E=90 S=180 W=270`, `NONE=-1`.
-  Choses : `EMPTY WALL ORE ALLY ENEMY BASE EBASE`, `FULL` = capacité de la soute.
-- **Données** `SET ADD SUB MUL DIV MOD RAND INC DEC ANGLE` · **Sauts** `JMP JZ JNZ
-  JEQ JNE JLT JGT JLE JGE CALL RET` · **Capteurs** `SCAN DIST DX DY COUNT LOOK CARGO
+- Registers `a b c d`, plus `ok` (1 if the last action succeeded).
+- Angles in degrees, clockwise: `N=0 E=90 S=180 W=270`, `NONE=-1`.
+  Things: `EMPTY WALL ORE ALLY ENEMY BASE EBASE`, `FULL` = the hold's capacity.
+- **Data** `SET ADD SUB MUL DIV MOD RAND INC DEC ANGLE` · **Jumps** `JMP JZ JNZ
+  JEQ JNE JLT JGT JLE JGE CALL RET` · **Sensors** `SCAN DIST DX DY COUNT LOOK CARGO
   HP POSX POSY PEEK POKE` · **Actions** `MOVE angle`, `MINE`, `DROP`, `ATTACK`, `WAIT`.
-- `MINE`/`DROP` quand `DIST ≤ 1`, `ATTACK` quand `DIST ≤ 2`. Capteurs à 12 unités,
-  usines ennemies à 40, les vôtres partout. 16 cases de mémoire de ruche par usine.
+- `MINE`/`DROP` when `DIST ≤ 1`, `ATTACK` when `DIST ≤ 2`. Sensors reach 12 units,
+  enemy factories 40, your own anywhere. 16 cells of hive memory per factory.
 
-[examples/mineur_plus.dasm](examples/mineur_plus.dasm) regarde devant lui (`LOOK`)
-et part explorer en ligne droite : un test vérifie qu'il extrait nettement plus
-que le mineur de base sur la durée (+20 % au bout d'une demi-heure).
+[examples/miner_plus.dasm](examples/miner_plus.dasm) looks ahead (`LOOK`) and sets off
+exploring in a straight line: a test checks that over time it mines clearly more than
+the basic miner (+20 % after half an hour).
 
-## Comment marche le multijoueur
+The built-in programs were French until November 2026 (`mineur`, `eclaireur`,
+`chasseur`, `gardien`): copies kept by players and by a saved sector take their
+English names (`miner`, `scout`, `hunter`, `guard`) when they are loaded, and untouched
+copies their English wording, whose instructions are the same line for line.
 
-Le serveur (`dronoids-server`) possède le monde de référence et fait tourner les IA.
-À chaque tick, il diffuse la liste ordonnée des commandes des joueurs ; chaque
-client rejoue ces commandes sur sa propre copie. La simulation est entièrement
-déterministe (entiers en virgule fixe, table de sinus, `atan2` et racines
-entières, RNG maison), donc seules les commandes transitent, jamais les milliers de
-dronoids. Astéroïdes et cristaux ne sont jamais envoyés : chaque machine les calcule
-à partir de la graine et de l'endroit regardé, et seuls les gisements entamés sont
-gardés. Un arrivant reçoit un instantané du monde, puis le flux de commandes. Les clients envoient un hash
-régulier ; un client qui diverge, ou qui a pris trop de retard (onglet en
-arrière-plan), reçoit un nouvel instantané.
+## How multiplayer works
 
-Tout passe par WebSocket (messages bincode) : `tungstenite` côté serveur et bureau,
-et dans le navigateur la WebSocket de la page, via un petit plugin miniquad
-([web/god_net.js](web/god_net.js)) qui fournit aussi le stockage local.
+The server (`dronoids-server`) owns the reference world and runs the AIs. Every tick,
+it broadcasts the ordered list of the players' commands; each client replays those
+commands on its own copy. The simulation is fully deterministic (fixed-point integers,
+a sine table, integer `atan2` and square roots, a home-made RNG), so only commands
+travel, never the thousands of dronoids. Asteroids and crystals are never sent: every
+machine computes them from the seed and the place looked at, and only deposits that
+have been mined are kept. A newcomer gets a snapshot of the world, then the stream of
+commands. Clients send a regular hash; a client that diverges, or has fallen too far
+behind (a tab in the background), gets a new snapshot.
 
-## Le site
+Everything goes through WebSocket (bincode messages): `tungstenite` on the server and
+the desktop, and in the browser the page's WebSocket, through a small miniquad plugin
+([web/god_net.js](web/god_net.js)) that also provides local storage.
 
-Le jeu vit dans un petit site (`site/`) : présentation, et comptes créés avec
-Google, Discord, GitHub ou Twitch, qui gardent le pseudo et la colonie sur tous les
-appareils. On peut toujours jouer sans compte. Voir `docs/deploy.md`.
+## The site
 
-## Mise en ligne
+The game lives in a small site (`site/`): an introduction, and accounts made with
+Google, Discord, GitHub or Twitch, which keep the nickname and the colony on every
+device. Playing needs no account. See `docs/deploy.md`.
 
-Voir [docs/deploy.md](docs/deploy.md). En bref : `./deploy/deploy.sh` compile le
-serveur pour Linux (musl statique, lié par `rust-lld`) et le client WASM, envoie le
-tout et l'installe sur la machine.
+## Going online
+
+See [docs/deploy.md](docs/deploy.md). In short: `./deploy/deploy.sh` builds the server
+for Linux (static musl, linked with `rust-lld`) and the WASM client, uploads it all and
+installs it on the machine.
 
 ## Architecture
 
-La bibliothèque (sans graphismes, testable) :
+The library (no graphics, testable):
 
-- `src/vm.rs` : DASM, assembleur, interpréteur, coloration syntaxique.
-- `src/geo.rs` : géométrie entière déterministe.
-- `src/sim/` : le monde (atterrissage, bouclier, repousse des cristaux, carte
-  explorée de chaque joueur), la carte, l'index spatial, les premiers pas
-  (`quests.rs`) et la lecture des sauvegardes d'anciennes versions (`compat.rs`).
-- `src/ai.rs` : les colonies IA, qui jouent via les mêmes commandes qu'un humain.
-- `src/server.rs`, `src/net.rs` : serveur de monde, protocole WebSocket.
-- `src/bin/server.rs` : `dronoids-server`.
+- `src/vm.rs`: DASM, assembler, interpreter, syntax highlighting.
+- `src/geo.rs`: deterministic integer geometry.
+- `src/sim/`: the world (landing, shield, crystals growing back, each player's
+  explored map), the map, the spatial index, the first steps (`quests.rs`) and
+  reading the saves of earlier versions (`compat.rs`).
+- `src/ai.rs`: the AI colonies, which play through the same commands as a human.
+- `src/server.rs`, `src/net.rs`: the world server, the WebSocket protocol.
+- `src/bin/server.rs`: `dronoids-server`.
 
-Le jeu : rendu néon avec bloom (`gfx.rs`), monde et particules (`view.rs`,
-`fx.rs`), interface (`ui.rs`, `game.rs`, `menu.rs`), éditeur (`editor.rs`),
-différences bureau/navigateur (`platform.rs`, `library.rs`).
+The game: neon rendering with bloom (`gfx.rs`), world and particles (`view.rs`,
+`fx.rs`), interface (`ui.rs`, `game.rs`, `menu.rs`), editor (`editor.rs`),
+desktop/browser differences (`platform.rs`, `library.rs`).
 
 ```bash
 cargo test
-cargo test --release --lib bench_world -- --ignored --nocapture   # perfs et rythme des IA
+python3 site/test_site.py                                           # the account service
+cargo test --release --lib bench_world -- --ignored --nocapture   # performance and AI pace
 ```
 
-Police : Fira Mono (SIL Open Font License, voir `assets/fonts`).
+Font: Fira Mono (SIL Open Font License, see `assets/fonts`).

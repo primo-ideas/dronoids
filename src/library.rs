@@ -25,7 +25,7 @@ pub fn sanitize(name: &str) -> String {
         .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
         .take(24)
         .collect();
-    if s.is_empty() { "programme".into() } else { s }
+    if s.is_empty() { "program".into() } else { s }
 }
 
 pub fn name_char_ok(c: char) -> bool {
@@ -61,7 +61,7 @@ mod disk {
 
     pub fn write(name: &str, source: &str, _all: &BTreeMap<String, String>) -> Result<(), String> {
         let _ = fs::create_dir_all("programs");
-        fs::write(path(name), source).map_err(|e| format!("sauvegarde impossible : {e}"))
+        fs::write(path(name), source).map_err(|e| format!("cannot save: {e}"))
     }
 
     pub fn rename(from: &str, to: &str) {
@@ -93,12 +93,19 @@ mod disk {
 impl Library {
     pub fn load() -> Library {
         let mut all = disk::read_all();
+        // Kept from before the game spoke English: the built-ins under their
+        // new names, untouched copies of them in their new wording.
         for (name, source) in all.clone() {
-            let clean = programs::reworded(&source);
-            if clean != source {
-                all.insert(name.clone(), clean.clone());
-                let _ = disk::write(&name, &clean, &all);
-            }
+            let Some((new_name, new_source)) = programs::modernized(&name, &source) else { continue };
+            let name = if new_name != name && !all.contains_key(&new_name) {
+                all.remove(&name);
+                disk::rename(&name, &new_name);
+                new_name
+            } else {
+                name
+            };
+            all.insert(name.clone(), new_source.clone());
+            let _ = disk::write(&name, &new_source, &all);
         }
         for b in BUILTINS {
             match all.get(b.name) {

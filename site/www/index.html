@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Dronoids</title>
-    <meta name="description" content="Un secteur immense et partagé, où vos dronoids suivent à la lettre les programmes que vous écrivez.">
+    <meta name="description" content="A huge shared sector, where your dronoids follow to the letter the programs you write.">
     <link rel="stylesheet" href="site.css">
 </head>
 <body>
@@ -13,10 +13,10 @@
     <header class="top">
         <a class="brand" href="./">DRONOIDS</a>
         <nav>
-            <a href="#jeu">Le jeu</a>
-            <a href="#langage">Le langage</a>
-            <a href="#compte" id="nav-account">Compte</a>
-            <a class="play small" href="jouer/">Jouer</a>
+            <a href="#game">The game</a>
+            <a href="#language">The language</a>
+            <a href="#account" id="nav-account">Account</a>
+            <a class="play small" href="play/">Play</a>
         </nav>
     </header>
 
@@ -24,107 +24,107 @@
         <section class="hero">
             <div class="hexes" aria-hidden="true"><span></span><span></span><span></span></div>
             <h1>DRONOIDS</h1>
-            <p class="tagline">un secteur immense et partagé · des dronoids que vous programmez</p>
-            <p class="lead">Posez une usine, écrivez quelques lignes d'assembleur, et regardez vos dronoids
-                partir à la découverte d'un espace qui n'a pas de bord. Votre colonie travaille même quand vous partez.</p>
+            <p class="tagline">a huge shared sector · dronoids you program</p>
+            <p class="lead">Place a factory, write a few lines of assembly, and watch your dronoids
+                set off to explore a space that has no edge. Your colony keeps working when you leave.</p>
             <div class="actions">
-                <a class="play" href="jouer/">Jouer maintenant</a>
-                <a class="ghost" href="#compte" id="hero-account">Créer un compte</a>
+                <a class="play" href="play/">Play now</a>
+                <a class="ghost" href="#account" id="hero-account">Create an account</a>
             </div>
-            <p class="note" id="hero-note">Sans compte, on joue aussi : votre pseudo reste alors lié à ce navigateur.</p>
+            <p class="note" id="hero-note">You can play without an account too: your nickname then stays tied to this browser.</p>
         </section>
 
-        <section id="jeu" class="band">
-            <h2>Le jeu</h2>
+        <section id="game" class="band">
+            <h2>The game</h2>
             <div class="cards">
                 <article>
-                    <h3>Un espace sans bord</h3>
-                    <p>Un million d'unités de large, généré à mesure qu'on le découvre : ceintures d'astéroïdes,
-                        étendues désertes, champs de cristaux plus riches loin de tout.</p>
+                    <h3>A space without edges</h3>
+                    <p>A million units across, generated as it is discovered: asteroid belts,
+                        empty stretches, crystal fields richer the further they are from anything.</p>
                 </article>
                 <article>
-                    <h3>Vous ne pilotez rien</h3>
-                    <p>Vos dronoids suivent un programme. Mieux il est écrit, mieux ils minent, explorent
-                        et défendent la colonie. Les programmes fournis sont volontairement naïfs.</p>
+                    <h3>You steer nothing</h3>
+                    <p>Your dronoids follow a program. The better it is written, the better they mine, explore
+                        and defend the colony. The programs provided are naive on purpose.</p>
                 </article>
                 <article>
-                    <h3>Un monde qui continue</h3>
-                    <p>Le secteur est partagé et persistant : il tourne jour et nuit, d'autres colonies s'y
-                        installent, et les vôtres travaillent en votre absence.</p>
+                    <h3>A world that goes on</h3>
+                    <p>The sector is shared and persistent: it runs day and night, other colonies settle
+                        in it, and yours keep working while you are away.</p>
                 </article>
             </div>
         </section>
 
-        <section id="langage" class="band split">
+        <section id="language" class="band split">
             <div>
-                <h2>Le langage</h2>
-                <p>DASM tient en une page : quatre registres, des capteurs, des sauts, et des actions qui
-                    prennent du temps. Un dronoid exécute ses instructions jusqu'à une action, puis recommence.</p>
-                <p>Le programme de départ, <code>mineur</code>, va au cristal le plus proche, le creuse,
-                    puis rentre à l'usine. À vous de faire mieux.</p>
+                <h2>The language</h2>
+                <p>DASM fits on one page: four registers, sensors, jumps, and actions that
+                    take time. A dronoid runs its instructions up to an action, then starts over.</p>
+                <p>The starting program, <code>miner</code>, goes to the nearest crystal, digs it,
+                    then goes home to the factory. Up to you to do better.</p>
             </div>
-            <pre class="code"><span class="c">; MINEUR -- le programme de départ</span>
-<span class="l">debut:</span>
+            <pre class="code"><span class="c">; MINER -- the starting program</span>
+<span class="l">start:</span>
     <span class="d">CARGO</span> <span class="r">a</span>
-    <span class="f">JGE</span> <span class="r">a</span>, <span class="k">FULL</span>, rentrer
+    <span class="f">JGE</span> <span class="r">a</span>, <span class="k">FULL</span>, home
     <span class="s">DIST</span> <span class="r">a</span>, <span class="k">ORE</span>
-    <span class="f">JEQ</span> <span class="r">a</span>, <span class="k">NONE</span>, errer
-    <span class="f">JLE</span> <span class="r">a</span>, <span class="n">1</span>, creuser
+    <span class="f">JEQ</span> <span class="r">a</span>, <span class="k">NONE</span>, wander
+    <span class="f">JLE</span> <span class="r">a</span>, <span class="n">1</span>, dig
     <span class="s">SCAN</span> <span class="r">b</span>, <span class="k">ORE</span>
     <span class="a">MOVE</span> <span class="r">b</span>
-    <span class="f">JMP</span> debut
-<span class="l">creuser:</span>
+    <span class="f">JMP</span> start
+<span class="l">dig:</span>
     <span class="a">MINE</span>
-    <span class="f">JMP</span> debut</pre>
+    <span class="f">JMP</span> start</pre>
         </section>
 
-        <section id="compte" class="band account">
-            <h2>Votre compte</h2>
+        <section id="account" class="band account">
+            <h2>Your account</h2>
             <p class="error" id="error" hidden></p>
 
             <div id="signed-out" hidden>
-                <p>Un compte garde votre pseudo et votre colonie, sur tous vos appareils.
-                    On ne conserve que votre pseudo et l'identifiant que le service choisi nous transmet :
-                    ni adresse e-mail, ni nom.</p>
+                <p>An account keeps your nickname and your colony, on all your devices.
+                    All that is kept is your nickname and the identifier the chosen service gives us:
+                    no email address, no name.</p>
                 <div class="providers" id="providers"></div>
-                <p class="note" id="no-provider" hidden>La connexion par Google, Discord, GitHub ou Twitch
-                    ouvre très bientôt. En attendant, le jeu reste ouvert à tous, sans compte.</p>
+                <p class="note" id="no-provider" hidden>Signing in with Google, Discord, GitHub or Twitch
+                    opens very soon. Until then, the game stays open to everyone, without an account.</p>
             </div>
 
             <form id="choose" hidden>
-                <p>Dernière étape : le pseudo sous lequel les autres colonies vous verront.
-                    Il ne se change pas ensuite.</p>
-                <label for="pseudo">Pseudo</label>
+                <p>One last step: the nickname the other colonies will see you under.
+                    It cannot be changed afterwards.</p>
+                <label for="nickname">Nickname</label>
                 <div class="row">
-                    <input id="pseudo" name="pseudo" maxlength="20" minlength="3" autocomplete="nickname" required>
-                    <button type="submit" class="play">Valider</button>
+                    <input id="nickname" name="nickname" maxlength="20" minlength="3" autocomplete="nickname" required>
+                    <button type="submit" class="play">Confirm</button>
                 </div>
                 <p class="note" id="guest-note" hidden></p>
             </form>
 
             <div id="signed-in" hidden>
-                <p class="welcome">Connecté en tant que <strong id="who"></strong>.</p>
+                <p class="welcome">Signed in as <strong id="who"></strong>.</p>
                 <div class="actions">
-                    <a class="play" href="jouer/">Jouer</a>
-                    <button type="button" class="ghost" id="logout">Se déconnecter</button>
+                    <a class="play" href="play/">Play</a>
+                    <button type="button" class="ghost" id="logout">Sign out</button>
                 </div>
                 <div class="linked">
-                    <p>Services reliés : <span id="linked"></span></p>
+                    <p>Linked services: <span id="linked"></span></p>
                     <div class="providers small" id="more-providers"></div>
                 </div>
                 <details class="danger">
-                    <summary>Supprimer le compte</summary>
-                    <p>Le compte, le pseudo et les services reliés sont effacés. La colonie reste dans le secteur,
-                        sous ce nom, mais plus personne ne pourra la reprendre.</p>
-                    <button type="button" id="delete">Supprimer définitivement</button>
+                    <summary>Delete the account</summary>
+                    <p>The account, the nickname and the linked services are erased. The colony stays in the sector,
+                        under that name, but nobody will ever be able to take it back.</p>
+                    <button type="button" id="delete">Delete for good</button>
                 </details>
             </div>
         </section>
     </main>
 
     <footer>
-        <p>Dronoids · un jeu de <a href="https://primo-ideas.xyz/">Primo</a> ·
-            <a href="https://github.com/primo-ideas/dronoids">code source</a></p>
+        <p>Dronoids · a game by <a href="https://primo-ideas.xyz/">Primo</a> ·
+            <a href="https://github.com/primo-ideas/dronoids">source code</a></p>
     </footer>
 
     <script src="site.js"></script>

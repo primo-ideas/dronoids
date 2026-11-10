@@ -8,7 +8,7 @@
 #   /etc/systemd/system/dronoids.service       its own user, loopback port 8082
 #   /etc/systemd/system/dronoids-site.service  the account service, port 8083
 #   /etc/apache2/conf-available/dronoids.conf   enabled with a2enconf:
-#       /dronoids/      -> /var/www/html/dronoids (the site, the game in jouer/)
+#       /dronoids/      -> /var/www/html/dronoids (the site, the game in play/)
 #       /dronoids/ws    -> ws://127.0.0.1:8082/ws (the world server)
 #       /dronoids/api/  -> http://127.0.0.1:8083 (the account service)
 #       /drones/...     -> permanent redirect to /dronoids/ (the former name)
@@ -36,35 +36,35 @@ stamp=$(date +%Y%m%d-%H%M%S)
 backup() {
     if [ -e "$1" ]; then
         cp -a "$1" "$1.bak-$stamp"
-        echo "  sauvegarde : $1.bak-$stamp"
+        echo "  backup: $1.bak-$stamp"
     fi
 }
 
-echo "==> utilisateur $NAME"
+echo "==> user $NAME"
 if ! id "$NAME" >/dev/null 2>&1; then
     useradd --system --home-dir "$HOME_DIR" --create-home --shell /usr/sbin/nologin "$NAME"
 fi
 mkdir -p "$HOME_DIR/worlds" "$HOME_DIR/site" "$WEB"
 
-echo "==> ancienne installation « drones »"
+echo "==> former \"drones\" install"
 if [ -e /etc/systemd/system/drones.service ]; then
     systemctl disable --now drones >/dev/null 2>&1 || true
     backup /etc/systemd/system/drones.service
     rm -f /etc/systemd/system/drones.service
     systemctl daemon-reload
-    echo "  service drones arrêté et retiré"
+    echo "  drones service stopped and removed"
 fi
 if [ -d /home/drones/worlds ] && [ ! -e "$HOME_DIR/worlds/primo.world" ]; then
     cp -a /home/drones/worlds/. "$HOME_DIR/worlds/"
-    echo "  secteur copié depuis /home/drones/worlds"
+    echo "  sector copied from /home/drones/worlds"
 fi
-echo "==> comptes du site"
+echo "==> site accounts"
 # The secret both services share: the site signs tickets, the world checks them.
 if [ ! -e "$HOME_DIR/site/secret" ]; then
     umask 077
     python3 -c 'import secrets; print(secrets.token_hex(32))' > "$HOME_DIR/site/secret"
     umask 022
-    echo "  secret créé"
+    echo "  secret created"
 fi
 chmod 600 "$HOME_DIR/site/secret"
 # Written once: afterwards it holds the sign-in keys, which this never touches.
@@ -84,12 +84,12 @@ if [ ! -e "$HOME_DIR/site/config.json" ]; then
     }
 }
 EOF
-    echo "  $HOME_DIR/site/config.json écrit : clés de connexion à y ajouter (docs/deploy.md)"
+    echo "  $HOME_DIR/site/config.json written: the sign-in keys go in it (docs/deploy.md)"
 fi
 chmod 600 "$HOME_DIR/site/config.json"
 chown -R "$NAME:$NAME" "$HOME_DIR"
 
-echo "==> service systemd"
+echo "==> systemd service"
 new_unit=$(mktemp)
 cat > "$new_unit" <<EOF
 # Dronoids world server (see deploy/setup-dronoids.sh in the game's repository).
@@ -156,7 +156,7 @@ fi
 rm -f "$new_unit"
 systemctl enable "$NAME-site" >/dev/null 2>&1 || true
 
-echo "==> configuration Apache"
+echo "==> Apache configuration"
 new_conf=$(mktemp)
 cat > "$new_conf" <<EOF
 # Dronoids (see deploy/setup-dronoids.sh in the game's repository).
@@ -164,7 +164,7 @@ cat > "$new_conf" <<EOF
 <Location "/$NAME/ws">
 	ProxyPass "http://127.0.0.1:$PORT/ws" upgrade=websocket
 </Location>
-# The account service (sign-in, pseudo, tickets for the game).
+# The account service (sign-in, nickname, tickets for the game).
 <Location "/$NAME/api/">
 	ProxyPass "http://127.0.0.1:$SITE_PORT/$NAME/api/"
 </Location>
@@ -190,7 +190,7 @@ was_enabled=no
 [ "$old_enabled" = yes ] && a2disconf drones >/dev/null
 a2enconf "$NAME" >/dev/null
 if ! apache2ctl configtest; then
-    echo "!! configuration Apache invalide : retour en arrière" >&2
+    echo "!! invalid Apache configuration: rolling back" >&2
     [ "$was_enabled" = no ] && a2disconf "$NAME" >/dev/null
     [ "$old_enabled" = yes ] && a2enconf drones >/dev/null
     latest=$(ls -t "$CONF".bak-* 2>/dev/null | head -n1 || true)
@@ -204,6 +204,6 @@ fi
 systemctl reload apache2
 if [ -d /var/www/html/drones ]; then
     rm -rf /var/www/html/drones
-    echo "  ancien client web /var/www/html/drones retiré (remplacé par la redirection)"
+    echo "  former web client /var/www/html/drones removed (replaced by the redirect)"
 fi
-echo "==> prêt (la mise en ligne se fait avec deploy/deploy.sh)"
+echo "==> ready (deploy/deploy.sh puts builds online)"

@@ -16,7 +16,7 @@ WEB=/var/www/html/dronoids
 
 for need in /etc/systemd/system/dronoids.service /etc/systemd/system/dronoids-site.service /etc/apache2/conf-enabled/dronoids.conf "$HOME_DIR/site"; do
     if [ ! -e "$need" ]; then
-        echo "!! $need manque : lancez d'abord deploy/setup-dronoids.sh" >&2
+        echo "!! $need is missing: run deploy/setup-dronoids.sh first" >&2
         exit 1
     fi
 done
@@ -39,10 +39,10 @@ sleep 2
 for unit in dronoids-site dronoids; do
     if ! systemctl is-active --quiet "$unit"; then
         journalctl -u "$unit" -n 30 --no-pager >&2
-        echo "!! $unit ne démarre pas" >&2
+        echo "!! $unit does not start" >&2
         exit 1
     fi
 done
 journalctl -u dronoids-site -n 2 --no-pager
 journalctl -u dronoids -n 5 --no-pager
-echo "==> installé"
+echo "==> installed"

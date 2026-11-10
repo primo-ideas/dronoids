@@ -205,40 +205,40 @@ pub const MNEMONICS: &[Mnemonic] = &[
     mn!("ADD", [R, V], Data, "ADD r, v", "r = r + v"),
     mn!("SUB", [R, V], Data, "SUB r, v", "r = r - v"),
     mn!("MUL", [R, V], Data, "MUL r, v", "r = r * v"),
-    mn!("DIV", [R, V], Data, "DIV r, v", "r = r / v (0 si v = 0)"),
-    mn!("MOD", [R, V], Data, "MOD r, v", "r = r modulo v (toujours >= 0)"),
-    mn!("RAND", [R, V], Data, "RAND r, v", "r = hasard entre 0 et v-1"),
+    mn!("DIV", [R, V], Data, "DIV r, v", "r = r / v (0 if v = 0)"),
+    mn!("MOD", [R, V], Data, "MOD r, v", "r = r modulo v (always >= 0)"),
+    mn!("RAND", [R, V], Data, "RAND r, v", "r = random between 0 and v-1"),
     mn!("INC", [R], Data, "INC r", "r = r + 1"),
     mn!("DEC", [R], Data, "DEC r", "r = r - 1"),
-    mn!("JMP", [L], Flow, "JMP lbl", "saute à l'étiquette"),
-    mn!("JZ", [V, L], Flow, "JZ v, lbl", "saute si v = 0"),
-    mn!("JNZ", [V, L], Flow, "JNZ v, lbl", "saute si v != 0"),
-    mn!("JEQ", [V, V, L], Flow, "JEQ x, y, lbl", "saute si x = y"),
-    mn!("JNE", [V, V, L], Flow, "JNE x, y, lbl", "saute si x != y"),
-    mn!("JLT", [V, V, L], Flow, "JLT x, y, lbl", "saute si x < y"),
-    mn!("JGT", [V, V, L], Flow, "JGT x, y, lbl", "saute si x > y"),
-    mn!("JLE", [V, V, L], Flow, "JLE x, y, lbl", "saute si x <= y"),
-    mn!("JGE", [V, V, L], Flow, "JGE x, y, lbl", "saute si x >= y"),
-    mn!("CALL", [L], Flow, "CALL lbl", "appelle un sous-programme"),
-    mn!("RET", [], Flow, "RET", "revient après le CALL"),
-    mn!("ANGLE", [R, V, V], Data, "ANGLE r, dx, dy", "r = angle (degrés) du vecteur dx, dy"),
-    mn!("SCAN", [R, V], Sense, "SCAN r, chose", "r = angle vers la chose la plus proche (NONE si rien)"),
-    mn!("DIST", [R, V], Sense, "DIST r, chose", "r = distance jusqu'à la chose la plus proche (NONE si rien)"),
-    mn!("DX", [R, V], Sense, "DX r, chose", "r = écart est-ouest vers la chose (+ = est)"),
-    mn!("DY", [R, V], Sense, "DY r, chose", "r = écart nord-sud vers la chose (+ = sud)"),
-    mn!("COUNT", [R, V], Sense, "COUNT r, chose", "r = nombre de choses à portée"),
-    mn!("LOOK", [R, V], Sense, "LOOK r, angle", "r = ce qu'il y a juste devant, dans cette direction"),
-    mn!("CARGO", [R], Sense, "CARGO r", "r = minerai transporté"),
-    mn!("HP", [R], Sense, "HP r", "r = points de vie"),
-    mn!("POSX", [R], Sense, "POSX r", "r = position est-ouest du dronoid"),
-    mn!("POSY", [R], Sense, "POSY r", "r = position nord-sud du dronoid"),
-    mn!("PEEK", [R, V], Sense, "PEEK r, i", "r = mémoire de ruche[i]"),
-    mn!("POKE", [V, V], Sense, "POKE i, v", "mémoire de ruche[i] = v"),
-    mn!("MOVE", [V], Action, "MOVE angle", "avance d'un pas dans cette direction"),
-    mn!("MINE", [], Action, "MINE", "extrait 1 cristal du gisement à portée"),
-    mn!("DROP", [], Action, "DROP", "décharge la soute dans une usine alliée à portée"),
-    mn!("ATTACK", [], Action, "ATTACK", "tire sur l'ennemi le plus proche à portée"),
-    mn!("WAIT", [], Action, "WAIT", "patiente un instant"),
+    mn!("JMP", [L], Flow, "JMP lbl", "jumps to the label"),
+    mn!("JZ", [V, L], Flow, "JZ v, lbl", "jumps if v = 0"),
+    mn!("JNZ", [V, L], Flow, "JNZ v, lbl", "jumps if v != 0"),
+    mn!("JEQ", [V, V, L], Flow, "JEQ x, y, lbl", "jumps if x = y"),
+    mn!("JNE", [V, V, L], Flow, "JNE x, y, lbl", "jumps if x != y"),
+    mn!("JLT", [V, V, L], Flow, "JLT x, y, lbl", "jumps if x < y"),
+    mn!("JGT", [V, V, L], Flow, "JGT x, y, lbl", "jumps if x > y"),
+    mn!("JLE", [V, V, L], Flow, "JLE x, y, lbl", "jumps if x <= y"),
+    mn!("JGE", [V, V, L], Flow, "JGE x, y, lbl", "jumps if x >= y"),
+    mn!("CALL", [L], Flow, "CALL lbl", "calls a subroutine"),
+    mn!("RET", [], Flow, "RET", "returns after the CALL"),
+    mn!("ANGLE", [R, V, V], Data, "ANGLE r, dx, dy", "r = angle (degrees) of the vector dx, dy"),
+    mn!("SCAN", [R, V], Sense, "SCAN r, thing", "r = angle to the nearest thing (NONE if none)"),
+    mn!("DIST", [R, V], Sense, "DIST r, thing", "r = distance to the nearest thing (NONE if none)"),
+    mn!("DX", [R, V], Sense, "DX r, thing", "r = east-west gap to the thing (+ = east)"),
+    mn!("DY", [R, V], Sense, "DY r, thing", "r = north-south gap to the thing (+ = south)"),
+    mn!("COUNT", [R, V], Sense, "COUNT r, thing", "r = number of things within range"),
+    mn!("LOOK", [R, V], Sense, "LOOK r, angle", "r = what lies just ahead, in that direction"),
+    mn!("CARGO", [R], Sense, "CARGO r", "r = ore carried"),
+    mn!("HP", [R], Sense, "HP r", "r = hit points"),
+    mn!("POSX", [R], Sense, "POSX r", "r = east-west position of the dronoid"),
+    mn!("POSY", [R], Sense, "POSY r", "r = north-south position of the dronoid"),
+    mn!("PEEK", [R, V], Sense, "PEEK r, i", "r = hive memory[i]"),
+    mn!("POKE", [V, V], Sense, "POKE i, v", "hive memory[i] = v"),
+    mn!("MOVE", [V], Action, "MOVE angle", "moves one step in that direction"),
+    mn!("MINE", [], Action, "MINE", "mines 1 crystal from the deposit within reach"),
+    mn!("DROP", [], Action, "DROP", "unloads the hold into an allied factory within reach"),
+    mn!("ATTACK", [], Action, "ATTACK", "fires at the nearest enemy within range"),
+    mn!("WAIT", [], Action, "WAIT", "waits a moment"),
 ];
 
 pub fn mnemonic(name: &str) -> Option<&'static Mnemonic> {
@@ -278,7 +278,7 @@ fn parse_val(tok: &str) -> Result<Val, String> {
     if let Some(k) = constant(tok) {
         return Ok(Val::K(k));
     }
-    Err(format!("valeur inconnue « {tok} »"))
+    Err(format!("unknown value '{tok}'"))
 }
 
 fn is_ident(s: &str) -> bool {
@@ -365,7 +365,7 @@ pub fn assemble(name: &str, source: &str) -> Result<Program, Vec<AsmError>> {
         while let Some(i) = rest.find(':') {
             let label = rest[..i].trim();
             if !is_ident(label) {
-                errors.push(AsmError { line: ln, msg: format!("étiquette invalide « {label} »") });
+                errors.push(AsmError { line: ln, msg: format!("invalid label '{label}'") });
                 rest = "";
                 break;
             }
@@ -373,7 +373,7 @@ pub fn assemble(name: &str, source: &str) -> Result<Program, Vec<AsmError>> {
             if let Some((_, _, prev)) = labels.iter().find(|(n, _, _)| *n == key) {
                 errors.push(AsmError {
                     line: ln,
-                    msg: format!("étiquette « {label} » déjà définie ligne {}", prev + 1),
+                    msg: format!("label '{label}' already defined on line {}", prev + 1),
                 });
             } else {
                 labels.push((key, pending.len() as u16, ln));
@@ -387,13 +387,13 @@ pub fn assemble(name: &str, source: &str) -> Result<Program, Vec<AsmError>> {
         let op = toks.next().unwrap_or_default();
         let args: Vec<&str> = toks.collect();
         match mnemonic(op) {
-            None => errors.push(AsmError { line: ln, msg: format!("instruction inconnue « {op} »") }),
+            None => errors.push(AsmError { line: ln, msg: format!("unknown instruction '{op}'") }),
             Some(mn) => {
                 if args.len() != mn.args.len() {
                     errors.push(AsmError {
                         line: ln,
                         msg: format!(
-                            "{} attend {} opérande(s), {} donnée(s) — syntaxe : {}",
+                            "{} takes {} operand(s), {} given — syntax: {}",
                             mn.name,
                             mn.args.len(),
                             args.len(),
@@ -408,7 +408,7 @@ pub fn assemble(name: &str, source: &str) -> Result<Program, Vec<AsmError>> {
     }
 
     if pending.len() > u16::MAX as usize {
-        errors.push(AsmError { line: 0, msg: "programme trop long".into() });
+        errors.push(AsmError { line: 0, msg: "program too long".into() });
     }
 
     let mut code = Vec::with_capacity(pending.len());
@@ -434,9 +434,9 @@ pub fn assemble(name: &str, source: &str) -> Result<Program, Vec<AsmError>> {
 fn build(mn: &Mnemonic, args: &[&str], labels: &[(String, u16, usize)]) -> Result<Instr, String> {
     let reg = |i: usize| -> Result<Reg, String> {
         match parse_reg(args[i]) {
-            Some(Reg::Ok) => Err("le registre ok est en lecture seule".into()),
+            Some(Reg::Ok) => Err("the ok register is read-only".into()),
             Some(r) => Ok(r),
-            None => Err(format!("« {} » n'est pas un registre (a, b, c ou d)", args[i])),
+            None => Err(format!("'{}' is not a register (a, b, c or d)", args[i])),
         }
     };
     let val = |i: usize| parse_val(args[i]);
@@ -446,7 +446,7 @@ fn build(mn: &Mnemonic, args: &[&str], labels: &[(String, u16, usize)]) -> Resul
             .iter()
             .find(|(n, _, _)| *n == key)
             .map(|(_, at, _)| *at)
-            .ok_or_else(|| format!("étiquette inconnue « {} »", args[i]))
+            .ok_or_else(|| format!("unknown label '{}'", args[i]))
     };
     type Res = Result<Instr, String>;
     let arith = |op: Arith| -> Res { Ok(Instr::Arith(op, reg(0)?, val(1)?)) };
@@ -492,7 +492,7 @@ fn build(mn: &Mnemonic, args: &[&str], labels: &[(String, u16, usize)]) -> Resul
         "DROP" => Ok(Instr::Act(Action::Drop, Val::K(0))),
         "ATTACK" => Ok(Instr::Act(Action::Attack, Val::K(0))),
         "WAIT" => Ok(Instr::Act(Action::Wait, Val::K(0))),
-        other => Err(format!("instruction non gérée {other}")),
+        other => Err(format!("unhandled instruction {other}")),
     }
 }
 
