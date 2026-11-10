@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Builds the browser client into dist/dronoids/: the page, macroquad's JS
-# loader, our plugin (web/god_net.js) and the wasm module.
+# loader, our plugin (web/god_net.js) and the wasm module; then the whole
+# site into dist/site/: its pages (site/www/), with the game in jouer/.
 #
 #   ./deploy/build-web.sh            release build
-#   ./deploy/build-web.sh --serve    ...then serve it on http://127.0.0.1:8090
+#   ./deploy/build-web.sh --serve    ...then serve the game on http://127.0.0.1:8090
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -23,6 +24,11 @@ if command -v wasm-opt >/dev/null; then
     wasm-opt -Os "$out/dronoids.wasm" -o "$out/dronoids.wasm"
 fi
 ls -la "$out"
+
+rm -rf dist/site
+mkdir -p dist/site
+cp site/www/* dist/site/
+cp -r "$out" dist/site/jouer
 
 if [ "${1:-}" = "--serve" ]; then
     python -m http.server 8090 --bind 127.0.0.1 --directory "$out"

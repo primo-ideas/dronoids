@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Builds Dronoids and puts it online at https://primo-ideas.xyz/dronoids/:
-# the world server for Linux (static musl binary, linked with rust-lld) and
-# the browser client, then upload and install. The machine must have been
-# prepared once with setup-dronoids.sh:
+# the world server for Linux (static musl binary, linked with rust-lld), the
+# site with the browser client in it, and the account service, then upload
+# and install. The machine must have been prepared with setup-dronoids.sh
+# (again whenever it changes):
 #
 #   scp deploy/setup-dronoids.sh root@primo-ideas.xyz:/tmp/ && ssh root@primo-ideas.xyz sh /tmp/setup-dronoids.sh
 #
@@ -27,7 +28,8 @@ rm -rf "$stage"
 mkdir -p "$stage"
 tr -d '\r' < deploy/install.sh > "$stage/install.sh"
 cp target/x86_64-unknown-linux-musl/release/dronoids-server "$stage/"
-cp -r dist/dronoids "$stage/web"
+cp -r dist/site "$stage/web"
+tr -d '\r' < site/dronoids_site.py > "$stage/dronoids_site.py"
 tar -czf "$archive" -C "$stage" .
 
 echo "==> envoi vers $SERVER"
@@ -46,5 +48,7 @@ EOF
 
 echo "==> vérification de $URL"
 curl -fsS -o /dev/null -w "    page %{http_code}\n" "$URL"
-curl -fsS -o /dev/null -w "    module %{http_code}, %{content_type}\n" "${URL}dronoids.wasm"
+curl -fsS -o /dev/null -w "    jeu %{http_code}\n" "${URL}jouer/"
+curl -fsS -o /dev/null -w "    module %{http_code}, %{content_type}\n" "${URL}jouer/dronoids.wasm"
+curl -fsS -o /dev/null -w "    comptes %{http_code}\n" "${URL}api/me"
 echo "Dronoids est en ligne : $URL"

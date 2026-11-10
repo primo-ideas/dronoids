@@ -91,6 +91,13 @@ mod imp {
     /// Desktop keyboards are always there.
     pub fn keyboard(_open: bool) {}
 
+    /// The desktop client has no site account.
+    pub fn account() -> Option<(String, String)> {
+        None
+    }
+
+    pub fn open_site() {}
+
     pub fn typed() -> String {
         String::new()
     }
@@ -106,6 +113,8 @@ mod imp {
         fn god_default_server(ptr: *mut u8, cap: usize) -> i32;
         fn god_random() -> u32;
         fn god_keyboard(open: u32);
+        fn god_account(ptr: *mut u8, cap: usize) -> i32;
+        fn god_open_site();
         fn god_typed_len() -> i32;
         fn god_typed_take(ptr: *mut u8, len: usize);
     }
@@ -150,6 +159,21 @@ mod imp {
         unsafe { god_keyboard(open as u32) };
     }
 
+    /// The pseudo and ticket of the account signed in on the site, if any.
+    pub fn account() -> Option<(String, String)> {
+        let mut buf = vec![0u8; 512];
+        let n = unsafe { god_account(buf.as_mut_ptr(), buf.len()) };
+        buf.truncate(n.max(0) as usize);
+        let text = String::from_utf8(buf).ok()?;
+        let (pseudo, ticket) = text.split_once('\n')?;
+        (!pseudo.is_empty() && !ticket.is_empty()).then(|| (pseudo.to_string(), ticket.to_string()))
+    }
+
+    /// The site's account page (leaves the game).
+    pub fn open_site() {
+        unsafe { god_open_site() };
+    }
+
     /// What was typed on the on-screen keyboard since last call; U+0008 is
     /// a backspace, `\n` is Enter.
     pub fn typed() -> String {
@@ -163,4 +187,4 @@ mod imp {
     }
 }
 
-pub use imp::{default_name, default_server, is_web, keyboard, load, random_u32, store, typed};
+pub use imp::{account, default_name, default_server, is_web, keyboard, load, open_site, random_u32, store, typed};

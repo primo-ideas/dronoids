@@ -45,6 +45,8 @@ pub struct Menu {
     view: WorldView,
     acc: f32,
     pub settings: Settings,
+    /// Signed in on the site: (pseudo, ticket). The game then plays under it.
+    account: Option<(String, String)>,
     name: TextField,
     server: TextField,
     fold: Fold,
@@ -71,7 +73,9 @@ fn demo_world() -> (World, Vec<Bot>) {
 impl Menu {
     pub fn new(settings: Settings) -> Menu {
         let (demo, bots) = demo_world();
-        let name = TextField::new(&settings.name, 20, |c| !c.is_control());
+        let account = platform::account();
+        let shown = account.as_ref().map_or(settings.name.as_str(), |a| a.0.as_str());
+        let name = TextField::new(shown, 20, |c| !c.is_control());
         let server = TextField::new(&settings.server, 80, |c| !c.is_control() && c != ' ');
         Menu {
             demo,
@@ -79,6 +83,7 @@ impl Menu {
             view: WorldView::default(),
             acc: 0.0,
             settings,
+            account,
             name,
             server,
             fold: Fold::None,
@@ -90,7 +95,8 @@ impl Menu {
 
     fn remember(&mut self) {
         let n = self.name.text.trim();
-        if !n.is_empty() {
+        // The account's pseudo is not the guest's name.
+        if !n.is_empty() && self.account.is_none() {
             self.settings.name = n.chars().take(20).collect();
         }
         self.settings.server = self.server.text.trim().to_string();
@@ -167,8 +173,17 @@ impl Menu {
         let mut y = (sh * 0.40).max(250.0);
         draw_rectangle(x - 24.0, y - 34.0, w + 48.0, 172.0, with_alpha(pal::PANEL, 0.7));
 
-        gfx::text("pseudo", x, y - 18.0, 12.0, pal::DIM);
-        let enter = self.name.ui(ui, Rect::new(x, y, w, 36.0), "votre nom");
+        let enter = match &self.account {
+            Some((pseudo, _)) => {
+                gfx::text("compte", x, y - 18.0, 12.0, pal::DIM);
+                gfx::text(pseudo, x + 2.0, y + 7.0, 20.0, pal::ACCENT);
+                false
+            }
+            None => {
+                gfx::text("pseudo", x, y - 18.0, 12.0, pal::DIM);
+                self.name.ui(ui, Rect::new(x, y, w, 36.0), "votre nom")
+            }
+        };
         y += 48.0;
         if ui.button_ex(Rect::new(x, y, w, 42.0), "Entrer dans le secteur", false, true, pal::ACCENT) || enter {
             self.connect(None);
@@ -180,7 +195,9 @@ impl Menu {
         y += 50.0;
 
         let mut labels: Vec<(&str, Fold)> = vec![("Entraînement hors ligne", Fold::Offline), ("Serveur", Fold::Server)];
-        if !platform::is_web() {
+        if platform::is_web() {
+            labels.push(("Compte", Fold::None));
+        } else {
             labels.push(("Quitter", Fold::None));
         }
         let widths: Vec<f32> = labels.iter().map(|(l, _)| gfx::text_width(l, 13.0) + 22.0).collect();
@@ -192,6 +209,10 @@ impl Menu {
                 if label == "Quitter" {
                     self.remember();
                     return MenuOut::Quit;
+                }
+                if label == "Compte" {
+                    self.remember();
+                    platform::open_site();
                 }
                 self.fold = if self.fold == fold { Fold::None } else { fold };
             }
@@ -240,8 +261,7 @@ impl Menu {
         let rw = (sw - 24.0).min(460.0);
         let r = Rect::new(sw / 2.0 - rw / 2.0, (sh * 0.42).max(240.0), rw, 150.0);
         ui.panel(r);
-        let name = self.settings.name.clone();
-        let token = self.settings.token.clone();
+        let (name, token) = self.account.clone().unwrap_or_else(|| (self.settings.name.clone(), self.settings.token.clone()));
         let Screen::Connecting { connecting, conn, status, error } = &mut self.screen else { return MenuOut::Stay };
         if let Some(c) = connecting
             && let Some(res) = c.poll()

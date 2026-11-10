@@ -6,6 +6,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "8090", "--bind", "127.0.0.1", "--directory", "dist/dronoids"],
       "port": 8090
+    },
+    {
+      "name": "site",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["site/dronoids_site.py", "--config", "site/dev-config.json"],
+      "port": 8083
     }
   ]
 }

@@ -1935,7 +1935,16 @@ mod tests {
             said(b.summary, b.name);
         }
         said(programs::TEMPLATE, "modèle");
-        said(include_str!("../web/index.html"), "page");
+        for (page, text) in [
+            ("page du jeu", include_str!("../web/index.html").to_string()),
+            // (Its former storage key is old data, not something shown.)
+            ("god_net.js", include_str!("../web/god_net.js").replace(concat!("game-of-dron", "es."), "")),
+            ("site", include_str!("../site/www/index.html").to_string()),
+            ("site.js", include_str!("../site/www/site.js").to_string()),
+            ("service", include_str!("../site/dronoids_site.py").to_string()),
+        ] {
+            said(&text, page);
+        }
         // Every string literal of the code that draws the screens.
         let screens = [
             ("game.rs", include_str!("game.rs")),

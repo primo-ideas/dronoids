@@ -6,7 +6,9 @@
 //! (or falls behind, like a hidden browser tab) gets a fresh snapshot.
 //!
 //! Names are protected by a secret token the client keeps: the first
-//! connection with a name claims it.
+//! connection with a name claims it. A player signed in on the site comes
+//! with a ticket instead (`ticket`), and their name then belongs to their
+//! account: no guest token opens it any more.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
@@ -22,6 +24,7 @@ use crate::ai::{Bot, Level};
 use crate::net::{ClientMsg, Conn, NetEvent, ServerMsg, PROTOCOL_VERSION};
 use crate::rules::TICKS_PER_SEC;
 use crate::sim::{Command, World};
+use crate::ticket;
 
 pub const HASH_EVERY: u64 = 50;
 const SAVE_EVERY: Duration = Duration::from_secs(30);
@@ -42,6 +45,8 @@ pub struct ServerConfig {
     pub level: Level,
     /// Where the world is saved (and loaded from, if it exists).
     pub save: Option<PathBuf>,
+    /// Shared with the site's account service, to check its tickets.
+    pub site_secret: Option<Vec<u8>>,
 }
 
 struct Client {
@@ -61,7 +66,8 @@ pub struct Server {
     clients: Vec<Client>,
     pending: Vec<(u8, Command)>,
     hashes: BTreeMap<u64, u64>,
-    /// name -> secret token.
+    /// name -> secret token, or `ticket::OWNED` for a name held by an
+    /// account of the site.
     accounts: HashMap<String, String>,
     online: BTreeSet<u8>,
     last_save: Instant,
@@ -75,6 +81,12 @@ pub fn bot_name(i: usize) -> String {
 
 fn accounts_path(save: &Option<PathBuf>) -> Option<PathBuf> {
     save.as_ref().map(|p| p.with_extension("accounts.json"))
+}
+
+/// Replace a file in one go (never left half written).
+fn write_whole(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, path))
 }
 
 /// Load the persistent sector. The save is about to be overwritten every
@@ -169,6 +181,8 @@ impl Server {
         while let Ok(conn) = self.incoming.try_recv() {
             self.clients.push(Client { conn, name: None, player: None, joining: false, gone: false });
         }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let mut claimed = false;
         for ci in 0..self.clients.len() {
             while let Some(ev) = self.clients[ci].conn.poll_one() {
                 match ev {
@@ -176,10 +190,16 @@ impl Server {
                         let name: String = name.trim().chars().filter(|c| !c.is_control()).take(20).collect();
                         let connected = self.clients.iter().any(|c| c.name.as_deref() == Some(name.as_str()) && !c.gone);
                         let is_bot = self.world.player_by_name(&name).is_some_and(|p| p.bot);
-                        let owned_by_other = self.accounts.get(&name).is_some_and(|t| *t != token);
+                        // Signed in on the site: the ticket vouches for the name,
+                        // whoever held it as a guest (the site checked that).
+                        let signed_in = token.starts_with(ticket::PREFIX);
+                        let ticket_ok = signed_in && self.cfg.site_secret.as_ref().is_some_and(|s| ticket::verify(s, &name, &token, now));
+                        let owned_by_other = !ticket_ok && self.accounts.get(&name).is_some_and(|t| *t != token);
                         let c = &mut self.clients[ci];
                         let refuse = if version != PROTOCOL_VERSION {
                             Some("version du jeu différente : rechargez la page".to_string())
+                        } else if signed_in && !ticket_ok {
+                            Some("session expirée : reconnectez-vous sur le site".into())
                         } else if name.is_empty() || token.len() < 8 {
                             Some("nom invalide".into())
                         } else if is_bot || owned_by_other {
@@ -195,7 +215,11 @@ impl Server {
                                 c.gone = true;
                             }
                             None => {
-                                self.accounts.entry(name.clone()).or_insert(token);
+                                let held = if ticket_ok { ticket::OWNED.to_string() } else { token };
+                                if self.accounts.get(&name) != Some(&held) && (ticket_ok || !self.accounts.contains_key(&name)) {
+                                    self.accounts.insert(name.clone(), held);
+                                    claimed = true;
+                                }
                                 c.name = Some(name.clone());
                                 c.joining = true;
                                 self.pending.push((0, Command::Join { name, bot: false }));
@@ -234,6 +258,10 @@ impl Server {
                     }
                 }
             }
+        }
+        if claimed {
+            // At once: the site reads this file to know which names are taken.
+            self.save_accounts();
         }
         for c in self.clients.iter().filter(|c| c.gone && c.player.is_some()) {
             self.log.push(format!("{} se déconnecte", c.name.clone().unwrap_or_default()));
@@ -297,17 +325,20 @@ impl Server {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let write = |path: &PathBuf, bytes: &[u8]| {
-            let tmp = path.with_extension("tmp");
-            std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, path))
-        };
-        if let Err(e) = write(path, &self.world.to_save()) {
+        if let Err(e) = write_whole(path, &self.world.to_save()) {
             self.log.push(format!("sauvegarde impossible : {e}"));
         }
+        self.save_accounts();
+    }
+
+    fn save_accounts(&self) {
         if let Some(ap) = accounts_path(&self.cfg.save)
             && let Ok(json) = serde_json::to_vec(&self.accounts)
         {
-            let _ = write(&ap, &json);
+            if let Some(dir) = ap.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = write_whole(&ap, &json);
         }
     }
 
@@ -365,7 +396,71 @@ mod tests {
     use crate::net::Connecting;
 
     fn cfg(bots: usize) -> ServerConfig {
-        ServerConfig { name: "test".into(), bind: "127.0.0.1".into(), port: 0, seed: 3, bots, level: Level::Hard, save: None }
+        ServerConfig { name: "test".into(), bind: "127.0.0.1".into(), port: 0, seed: 3, bots, level: Level::Hard, save: None, site_secret: None }
+    }
+
+    /// What the server answers to a Hello: welcomed, or why not.
+    fn hello(server: &mut Server, name: &str, token: &str) -> Result<Conn<ServerMsg>, String> {
+        let mut c = connect(server.port(), name, token);
+        for _ in 0..400 {
+            server.tick();
+            thread::sleep(Duration::from_millis(2));
+            for ev in c.poll() {
+                match ev {
+                    NetEvent::Msg(ServerMsg::Welcome { .. }) => return Ok(c),
+                    NetEvent::Msg(ServerMsg::Refused(why)) => return Err(why),
+                    _ => {}
+                }
+            }
+        }
+        panic!("no answer");
+    }
+
+    fn idle(server: &mut Server) {
+        for _ in 0..50 {
+            server.tick();
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn a_site_account_takes_over_its_name() {
+        let dir = std::env::temp_dir().join(format!("dronoids-ticket-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let secret = b"secret-partage".to_vec();
+        let mut server =
+            Server::new(ServerConfig { save: Some(dir.join("t.world")), site_secret: Some(secret.clone()), ..cfg(0) }).unwrap();
+        let later = u64::MAX / 2;
+        let held = |name: &str| {
+            let bytes = std::fs::read(dir.join("t.accounts.json")).unwrap();
+            serde_json::from_slice::<HashMap<String, String>>(&bytes).unwrap().get(name).cloned()
+        };
+
+        // A guest claims a name; the file says so at once.
+        let guest = hello(&mut server, "ana", "jeton-invite-ana").unwrap();
+        assert_eq!(held("ana").as_deref(), Some("jeton-invite-ana"));
+        drop(guest);
+        idle(&mut server);
+
+        // Bad tickets: forged, for another name, or expired.
+        assert!(hello(&mut server, "ana", "site.9999999999.00ff").err().unwrap().contains("session expirée"));
+        assert!(hello(&mut server, "ana", &ticket::sign(&secret, "bob", later)).is_err());
+        assert!(hello(&mut server, "ana", &ticket::sign(&secret, "ana", 1)).is_err());
+        assert_eq!(held("ana").as_deref(), Some("jeton-invite-ana"));
+
+        // The account's ticket opens the name, which is then closed to guests.
+        let account = hello(&mut server, "ana", &ticket::sign(&secret, "ana", later)).unwrap();
+        assert_eq!(held("ana").as_deref(), Some(ticket::OWNED));
+        drop(account);
+        idle(&mut server);
+        assert!(hello(&mut server, "ana", "jeton-invite-ana").err().unwrap().contains("appartient"));
+        assert!(hello(&mut server, "ana", ticket::OWNED).is_err());
+        assert!(hello(&mut server, "ana", &ticket::sign(&secret, "ana", later + 5)).is_ok());
+
+        // Without a shared secret, no ticket is accepted.
+        let mut alone = Server::new(cfg(0)).unwrap();
+        assert!(hello(&mut alone, "ana", &ticket::sign(&secret, "ana", later)).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn connect(port: u16, name: &str, token: &str) -> Conn<ServerMsg> {

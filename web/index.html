@@ -66,7 +66,8 @@
     <script>
         // Right-drag moves the camera: no context menu on the game.
         document.getElementById("glcanvas").addEventListener("contextmenu", function (e) { e.preventDefault(); });
-        load("dronoids.wasm");
+        // Signed in on the site? The game then plays under that account.
+        dronoidsAccount().then(function () { load("dronoids.wasm"); });
     </script>
 </body>
 </html>

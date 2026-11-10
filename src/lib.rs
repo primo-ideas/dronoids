@@ -13,4 +13,6 @@ pub mod rules;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;
 pub mod sim;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ticket;
 pub mod vm;

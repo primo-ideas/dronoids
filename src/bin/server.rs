@@ -3,7 +3,10 @@
 //! ```text
 //! dronoids-server [--name primo] [--bind 0.0.0.0] [--port 8082] [--bots 6]
 //!            [--level easy|normal|hard] [--seed N] [--save worlds/primo.world]
+//!            [--site-secret FILE]
 //! ```
+//! `--site-secret` names the file holding the secret shared with the site's
+//! account service: players signed in there are then recognized.
 //! Clients connect over WebSocket (`ws://host:port/ws`). The world is saved
 //! every minute and on exit, and loaded again on the next start.
 
@@ -21,7 +24,7 @@ fn main() {
     let get = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "dronoids-server [--name NOM] [--bind 0.0.0.0] [--port {DEFAULT_PORT}] [--bots 6] [--level easy|normal|hard] [--seed N] [--save FICHIER]"
+            "dronoids-server [--name NOM] [--bind 0.0.0.0] [--port {DEFAULT_PORT}] [--bots 6] [--level easy|normal|hard] [--seed N] [--save FICHIER] [--site-secret FICHIER]"
         );
         return;
     }
@@ -31,6 +34,17 @@ fn main() {
         Some("hard") => Level::Hard,
         _ => Level::Normal,
     };
+    let site_secret = get("--site-secret").and_then(|path| match std::fs::read_to_string(&path) {
+        Ok(s) if s.trim().len() >= 16 => Some(s.trim().as_bytes().to_vec()),
+        Ok(_) => {
+            eprintln!("secret du site trop court dans {path} : les comptes du site seront refusés");
+            None
+        }
+        Err(e) => {
+            eprintln!("secret du site illisible ({path} : {e}) : les comptes du site seront refusés");
+            None
+        }
+    });
     let cfg = ServerConfig {
         bind: get("--bind").unwrap_or_else(|| "0.0.0.0".into()),
         port: get("--port").and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT),
@@ -41,6 +55,7 @@ fn main() {
         level,
         save: Some(get("--save").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("worlds").join(format!("{name}.world")))),
         name,
+        site_secret,
     };
     let mut server = match Server::new(cfg.clone()) {
         Ok(s) => s,

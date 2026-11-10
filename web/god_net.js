@@ -1,7 +1,7 @@
 // Dronoids: the bits of the browser the game needs, as a miniquad
 // plugin. WebSockets (the game's only network), local storage (settings and
-// programs), the default server address, a good source of randomness and
-// the phone's on-screen keyboard.
+// programs), the default server address, a good source of randomness, the
+// phone's on-screen keyboard and the account signed in on the site.
 "use strict";
 
 (function () {
@@ -19,7 +19,12 @@
         return n;
     }
 
-    // Same host and directory as the page: https://site/dronoids/ -> wss://site/dronoids/ws.
+    // The site's root: the game lives in its "jouer/" directory.
+    function siteRoot() {
+        return window.location.pathname.replace(/[^/]*$/, "").replace(/jouer\/$/, "");
+    }
+
+    // The game sits in the site: https://site/dronoids/jouer/ -> wss://site/dronoids/ws.
     // A page served locally talks to a local server; ?server= overrides both.
     function defaultServer() {
         const params = new URLSearchParams(window.location.search);
@@ -31,8 +36,7 @@
             return "ws://127.0.0.1:8082/ws";
         }
         const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const dir = window.location.pathname.replace(/[^/]*$/, "");
-        return scheme + "//" + window.location.host + dir + "ws";
+        return scheme + "//" + window.location.host + siteRoot() + "ws";
     }
 
     // The game had another name before: what it stored then
@@ -153,6 +157,26 @@
         }, { passive: true });
     }
 
+    // Who is signed in on the site (pseudo and ticket), asked once before the
+    // game starts. Without the site, or signed out, the game plays as a guest.
+    let account = null;
+    window.dronoidsAccount = function () {
+        if (window.location.protocol === "file:") {
+            return Promise.resolve();
+        }
+        const asked = fetch(siteRoot() + "api/me", { credentials: "same-origin" })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (me) {
+                const a = me && me.account;
+                if (a && typeof a.pseudo === "string" && typeof a.ticket === "string") {
+                    account = a.pseudo + "\n" + a.ticket;
+                }
+            })
+            .catch(function () { /* no site here */ });
+        // Never hold the game up for long.
+        return Promise.race([asked, new Promise(function (done) { setTimeout(done, 2500); })]);
+    };
+
     miniquad_add_plugin({
         name: "god",
         version: 1,
@@ -231,6 +255,12 @@
 
             env.god_default_server = function (ptr, cap) {
                 return writeBytes(encoder.encode(defaultServer()), ptr, cap);
+            };
+            env.god_account = function (ptr, cap) {
+                return account ? writeBytes(encoder.encode(account), ptr, cap) : 0;
+            };
+            env.god_open_site = function () {
+                window.location.href = siteRoot() + "#compte";
             };
             env.god_random = function () {
                 return window.crypto.getRandomValues(new Uint32Array(1))[0];

@@ -128,6 +128,12 @@ Tout passe par WebSocket (messages bincode) : `tungstenite` côté serveur et bu
 et dans le navigateur la WebSocket de la page, via un petit plugin miniquad
 ([web/god_net.js](web/god_net.js)) qui fournit aussi le stockage local.
 
+## Le site
+
+Le jeu vit dans un petit site (`site/`) : présentation, et comptes créés avec
+Google, Discord, GitHub ou Twitch, qui gardent le pseudo et la colonie sur tous les
+appareils. On peut toujours jouer sans compte. Voir `docs/deploy.md`.
+
 ## Mise en ligne
 
 Voir [docs/deploy.md](docs/deploy.md). En bref : `./deploy/deploy.sh` compile le

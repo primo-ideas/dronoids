@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dronoids</title>
+    <meta name="description" content="Un secteur immense et partagé, où vos dronoids suivent à la lettre les programmes que vous écrivez.">
+    <link rel="stylesheet" href="site.css">
+</head>
+<body>
+    <canvas id="sky" aria-hidden="true"></canvas>
+
+    <header class="top">
+        <a class="brand" href="./">DRONOIDS</a>
+        <nav>
+            <a href="#jeu">Le jeu</a>
+            <a href="#langage">Le langage</a>
+            <a href="#compte" id="nav-account">Compte</a>
+            <a class="play small" href="jouer/">Jouer</a>
+        </nav>
+    </header>
+
+    <main>
+        <section class="hero">
+            <div class="hexes" aria-hidden="true"><span></span><span></span><span></span></div>
+            <h1>DRONOIDS</h1>
+            <p class="tagline">un secteur immense et partagé · des dronoids que vous programmez</p>
+            <p class="lead">Posez une usine, écrivez quelques lignes d'assembleur, et regardez vos dronoids
+                partir à la découverte d'un espace qui n'a pas de bord. Votre colonie travaille même quand vous partez.</p>
+            <div class="actions">
+                <a class="play" href="jouer/">Jouer maintenant</a>
+                <a class="ghost" href="#compte" id="hero-account">Créer un compte</a>
+            </div>
+            <p class="note" id="hero-note">Sans compte, on joue aussi : votre pseudo reste alors lié à ce navigateur.</p>
+        </section>
+
+        <section id="jeu" class="band">
+            <h2>Le jeu</h2>
+            <div class="cards">
+                <article>
+                    <h3>Un espace sans bord</h3>
+                    <p>Un million d'unités de large, généré à mesure qu'on le découvre : ceintures d'astéroïdes,
+                        étendues désertes, champs de cristaux plus riches loin de tout.</p>
+                </article>
+                <article>
+                    <h3>Vous ne pilotez rien</h3>
+                    <p>Vos dronoids suivent un programme. Mieux il est écrit, mieux ils minent, explorent
+                        et défendent la colonie. Les programmes fournis sont volontairement naïfs.</p>
+                </article>
+                <article>
+                    <h3>Un monde qui continue</h3>
+                    <p>Le secteur est partagé et persistant : il tourne jour et nuit, d'autres colonies s'y
+                        installent, et les vôtres travaillent en votre absence.</p>
+                </article>
+            </div>
+        </section>
+
+        <section id="langage" class="band split">
+            <div>
+                <h2>Le langage</h2>
+                <p>DASM tient en une page : quatre registres, des capteurs, des sauts, et des actions qui
+                    prennent du temps. Un dronoid exécute ses instructions jusqu'à une action, puis recommence.</p>
+                <p>Le programme de départ, <code>mineur</code>, va au cristal le plus proche, le creuse,
+                    puis rentre à l'usine. À vous de faire mieux.</p>
+            </div>
+            <pre class="code"><span class="c">; MINEUR -- le programme de départ</span>
+<span class="l">debut:</span>
+    <span class="d">CARGO</span> <span class="r">a</span>
+    <span class="f">JGE</span> <span class="r">a</span>, <span class="k">FULL</span>, rentrer
+    <span class="s">DIST</span> <span class="r">a</span>, <span class="k">ORE</span>
+    <span class="f">JEQ</span> <span class="r">a</span>, <span class="k">NONE</span>, errer
+    <span class="f">JLE</span> <span class="r">a</span>, <span class="n">1</span>, creuser
+    <span class="s">SCAN</span> <span class="r">b</span>, <span class="k">ORE</span>
+    <span class="a">MOVE</span> <span class="r">b</span>
+    <span class="f">JMP</span> debut
+<span class="l">creuser:</span>
+    <span class="a">MINE</span>
+    <span class="f">JMP</span> debut</pre>
+        </section>
+
+        <section id="compte" class="band account">
+            <h2>Votre compte</h2>
+            <p class="error" id="error" hidden></p>
+
+            <div id="signed-out" hidden>
+                <p>Un compte garde votre pseudo et votre colonie, sur tous vos appareils.
+                    On ne conserve que votre pseudo et l'identifiant que le service choisi nous transmet :
+                    ni adresse e-mail, ni nom.</p>
+                <div class="providers" id="providers"></div>
+                <p class="note" id="no-provider" hidden>La connexion par Google, Discord, GitHub ou Twitch
+                    ouvre très bientôt. En attendant, le jeu reste ouvert à tous, sans compte.</p>
+            </div>
+
+            <form id="choose" hidden>
+                <p>Dernière étape : le pseudo sous lequel les autres colonies vous verront.
+                    Il ne se change pas ensuite.</p>
+                <label for="pseudo">Pseudo</label>
+                <div class="row">
+                    <input id="pseudo" name="pseudo" maxlength="20" minlength="3" autocomplete="nickname" required>
+                    <button type="submit" class="play">Valider</button>
+                </div>
+                <p class="note" id="guest-note" hidden></p>
+            </form>
+
+            <div id="signed-in" hidden>
+                <p class="welcome">Connecté en tant que <strong id="who"></strong>.</p>
+                <div class="actions">
+                    <a class="play" href="jouer/">Jouer</a>
+                    <button type="button" class="ghost" id="logout">Se déconnecter</button>
+                </div>
+                <div class="linked">
+                    <p>Services reliés : <span id="linked"></span></p>
+                    <div class="providers small" id="more-providers"></div>
+                </div>
+                <details class="danger">
+                    <summary>Supprimer le compte</summary>
+                    <p>Le compte, le pseudo et les services reliés sont effacés. La colonie reste dans le secteur,
+                        sous ce nom, mais plus personne ne pourra la reprendre.</p>
+                    <button type="button" id="delete">Supprimer définitivement</button>
+                </details>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>Dronoids · un jeu de <a href="https://primo-ideas.xyz/">Primo</a> ·
+            <a href="https://github.com/primo-ideas/dronoids">code source</a></p>
+    </footer>
+
+    <script src="site.js"></script>
+</body>
+</html>
