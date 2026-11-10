@@ -142,6 +142,8 @@ class Site:
         self.dev = bool(config.get("dev_login")) and base.hostname in ("localhost", "127.0.0.1")
         self.lock = threading.Lock()
         self.db = sqlite3.connect(config["database"], check_same_thread=False)
+        if os.path.isfile(config["database"]):
+            os.chmod(config["database"], 0o600)
         self.db.executescript(
             """
             PRAGMA foreign_keys = ON;
