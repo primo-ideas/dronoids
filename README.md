@@ -1,5 +1,7 @@
 # Dronoids
 
+[![CI](https://github.com/primo-ideas/dronoids/actions/workflows/ci.yml/badge.svg)](https://github.com/primo-ideas/dronoids/actions/workflows/ci.yml)
+
 A shared, persistent space sector, seen from above, geometric and neon.
 You arrive **with nothing** but what it takes to build a factory. The factory builds
 **dronoids**, which follow to the letter a **program** written in a small, playful
@@ -170,5 +172,10 @@ python3 site/test_site.py                                           # the accoun
 cargo test --release --lib bench_world -- --ignored --nocapture   # performance and AI pace
 cargo test --release --lib balance_report -- --ignored --nocapture   # economy, scouts, raids, wars
 ```
+
+Every push to `main` and every pull request goes through the same on GitHub
+(`.github/workflows/ci.yml`): clippy with warnings refused and the tests, on Linux and
+Windows, the account service's tests, and the two builds that get deployed (the browser
+client and the static Linux server), kept as artifacts of the run.
 
 Font: Fira Mono (SIL Open Font License, see `assets/fonts`).

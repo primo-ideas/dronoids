@@ -1,0 +1,126 @@
+# Everything a change must get through before it is put online: the lints
+# and the tests on Linux and Windows, the account service's tests, and the
+# two builds that deploy/deploy.sh uploads (the browser client and the
+# static Linux world server), kept as artifacts of the run.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Lints and tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust (stable, with clippy)
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+      - name: What macroquad links against on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libx11-dev libxi-dev libgl1-mesa-dev libxkbcommon-dev
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: test-${{ runner.os }}-
+      - name: Clippy, warnings refused
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --locked
+
+  site:
+    name: Account service
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tests
+        run: python3 site/test_site.py
+
+  web:
+    name: Browser client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust (stable, wasm32)
+        run: |
+          rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+          rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: web-${{ hashFiles('Cargo.lock') }}
+          restore-keys: web-
+      - name: Build the site with the game in it
+        run: bash deploy/build-web.sh
+      - name: The build is whole
+        run: |
+          for f in index.html site.css site.js play/index.html play/god_net.js play/mq_js_bundle.js play/dronoids.wasm jouer/index.html; do
+            test -s "dist/site/$f" || { echo "::error::dist/site/$f is missing"; exit 1; }
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dronoids-site
+          path: dist/site
+          if-no-files-found: error
+
+  server:
+    name: World server (static Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust (stable, musl)
+        run: |
+          rustup toolchain install stable --profile minimal --target x86_64-unknown-linux-musl
+          rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: server-${{ hashFiles('Cargo.lock') }}
+          restore-keys: server-
+      - name: Build
+        run: cargo build --locked --release --target x86_64-unknown-linux-musl --bin dronoids-server
+      - name: It is static
+        run: |
+          bin=target/x86_64-unknown-linux-musl/release/dronoids-server
+          file "$bin"
+          file "$bin" | grep -Eq 'static(ally|-pie) linked'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dronoids-server
+          path: target/x86_64-unknown-linux-musl/release/dronoids-server
+          if-no-files-found: error
