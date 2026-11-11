@@ -82,7 +82,11 @@ is, how to go about it and what it earns. Beside the crystals, the size of the c
 a factory's panel says when its next dronoid comes, or why none does; a warning tells
 of a raid on a factory, which may be off screen. A unit's panel only shows its health
 once it has been hit; map and colonies open
-on demand. Offline, the speed button goes from x1 to x2, x4, x8 then pause. On a
+on demand. The editor, the language help and the dialogs are opaque, and the last two
+dim the game behind them (a click beside the help puts it away); with the editor
+open, the camera keeps the factory or the dronoid being followed in the part of the
+map left free beside it. The one button a screen is there for (enter the sector,
+apply a program) is outlined and brighter than the others. Offline, the speed button goes from x1 to x2, x4, x8 then pause. On a
 narrow screen (under 700 px wide, a phone held upright), the selection panel moves to
 the bottom above the dock, and the editor and the help take the whole screen.
 

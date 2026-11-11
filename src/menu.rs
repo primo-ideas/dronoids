@@ -171,7 +171,11 @@ impl Menu {
         let w = (sw - 56.0).min(340.0);
         let x = sw / 2.0 - w / 2.0;
         let mut y = (sh * 0.40).max(250.0);
-        draw_rectangle(x - 24.0, y - 34.0, w + 48.0, 172.0, with_alpha(pal::PANEL, 0.7));
+        // Behind the form and the two lines under it, whichever is wider.
+        let tips = ["You arrive with nothing but enough to build a factory.", "Your colony keeps working when you leave."];
+        let tip_size = gfx::fit_size(tips[0], 12.0, sw - 32.0);
+        let bw = (w + 48.0).max(gfx::text_width(tips[0], tip_size) + 32.0).min(sw - 8.0);
+        draw_rectangle(sw / 2.0 - bw / 2.0, y - 34.0, bw, 172.0, with_alpha(pal::PANEL, 0.8));
 
         let enter = match &self.account {
             Some((nickname, _)) => {
@@ -185,13 +189,13 @@ impl Menu {
             }
         };
         y += 48.0;
-        if ui.button_ex(Rect::new(x, y, w, 42.0), "Enter the sector", false, true, pal::ACCENT) || enter {
+        if ui.button_primary(Rect::new(x, y, w, 42.0), "Enter the sector", pal::ACCENT) || enter {
             self.connect(None);
             return MenuOut::Stay;
         }
         y += 52.0;
-        gfx::text_centered("You arrive with nothing but enough to build a factory.", sw / 2.0, y, 12.0, pal::DIM);
-        gfx::text_centered("Your colony keeps working when you leave.", sw / 2.0, y + 17.0, 12.0, pal::DIM);
+        gfx::text_centered(tips[0], sw / 2.0, y, tip_size, pal::DIM);
+        gfx::text_centered(tips[1], sw / 2.0, y + 17.0, tip_size, pal::DIM);
         y += 50.0;
 
         let mut labels: Vec<(&str, Fold)> = vec![("Offline training", Fold::Offline), ("Server", Fold::Server)];
@@ -239,7 +243,7 @@ impl Menu {
                         self.level = l;
                     }
                 }
-                if ui.button_ex(Rect::new(x, y + 82.0, w, 28.0), "Start training", false, true, pal::GOOD) {
+                if ui.button_primary(Rect::new(x, y + 82.0, w, 28.0), "Start training", pal::GOOD) {
                     self.remember();
                     return MenuOut::Offline { ais: self.ais, level: self.level, settings: self.settings.clone() };
                 }
@@ -260,7 +264,7 @@ impl Menu {
         let (sw, sh) = (screen_width(), screen_height());
         let rw = (sw - 24.0).min(460.0);
         let r = Rect::new(sw / 2.0 - rw / 2.0, (sh * 0.42).max(240.0), rw, 150.0);
-        ui.panel(r);
+        ui.solid_panel(r);
         let (name, token) = self.account.clone().unwrap_or_else(|| (self.settings.name.clone(), self.settings.token.clone()));
         let Screen::Connecting { connecting, conn, status, error } = &mut self.screen else { return MenuOut::Stay };
         if let Some(c) = connecting

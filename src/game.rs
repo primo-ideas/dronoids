@@ -402,7 +402,7 @@ impl Game {
             && let Sel::Dronoid(id) = self.sel
             && let Some(p) = WorldView::dronoid_pos(&self.world, id, self.alpha())
         {
-            self.cam.center = self.cam.center.lerp(p, (dt * 5.0).min(1.0));
+            self.cam.center = self.cam.center.lerp(p + self.focus_shift(), (dt * 5.0).min(1.0));
         }
         self.cam.shake = self.view.shake_offset();
 
@@ -422,6 +422,13 @@ impl Game {
         // screen: nothing under them to see or to touch by mistake.
         let help_alone = compact && self.help_open;
         let editor_alone = compact && self.editor_open;
+        // Under a dialog or the reference, nothing answers the pointer.
+        let modal = self.help_open || self.dialog_open();
+        let pointer = (ui.pressed, ui.mouse);
+        if modal {
+            ui.pressed = false;
+            ui.mouse = ui::NOWHERE;
+        }
         if !help_alone {
             if !editor_alone {
                 self.status(ui, &mut acts);
@@ -455,7 +462,13 @@ impl Game {
                 }
             }
             self.draw_toasts(if compact { bottom } else { screen_height() - 58.0 });
+            if modal {
+                (ui.pressed, ui.mouse) = pointer;
+            }
             self.overlays(ui, &mut acts);
+        }
+        if modal {
+            (ui.pressed, ui.mouse) = pointer;
         }
         if self.help_open {
             help_overlay(ui, &mut acts, &mut self.help_scroll);
@@ -624,7 +637,7 @@ impl Game {
                 self.open_program(lib, &name, self.edit_factory);
             }
             Act::CenterOn(p) => {
-                self.cam.center = p;
+                self.cam.center = p + self.focus_shift();
                 self.follow = false;
             }
             Act::Follow(f) => self.follow = f,
@@ -657,6 +670,13 @@ impl Game {
         self.editor_open = true;
         self.editor.focused = true;
         self.tool = Tool::None;
+        // The factory whose program this is stays in view beside the editor.
+        if let Some(p) = factory.and_then(|f| self.world.factory(f)).map(|f| fpv(f.x, f.y))
+            && !ui::compact()
+            && self.cam.w2s(p).x > Game::editor_left() - 40.0
+        {
+            self.cam.center = p + self.focus_shift();
+        }
     }
 
     fn open_debug(&mut self, id: u32) {
@@ -712,16 +732,72 @@ impl Game {
         self.world.factories.iter().filter(|f| f.owner == self.me && self.world.program_name(f.prog) == name).count()
     }
 
-    fn editor_layout(&self, top: f32) -> EditorLayout {
+    /// Where the editor's window starts, on a screen wide enough to keep
+    /// some of the map beside it.
+    fn editor_left() -> f32 {
+        let sw = screen_width();
+        (sw * 0.38).max(sw - 1000.0).min(sw - 560.0).max(10.0)
+    }
+
+    /// How far (in world units) the camera aims to the side of what it
+    /// looks at, so that it shows in the part of the map the editor leaves
+    /// free rather than behind it.
+    fn focus_shift(&self) -> Vec2 {
+        if !self.editor_open || ui::compact() {
+            return Vec2::ZERO;
+        }
+        let free = Game::editor_left();
+        // Too thin a strip to show anything in.
+        if free < 160.0 {
+            return Vec2::ZERO;
+        }
+        vec2((screen_width() - free) / 2.0 / self.cam.zoom, 0.0)
+    }
+
+    /// Under the code, only what calls for something: the errors, or what
+    /// Apply will do once there are changes to apply.
+    fn editor_notes(&self) -> Vec<(String, Color)> {
+        if matches!(self.edit_target, EditTarget::Debug(_)) {
+            return vec![];
+        }
+        if !self.editor.errors.is_empty() {
+            let bad = mix(pal::BAD, WHITE, 0.35);
+            let mut notes: Vec<(String, Color)> =
+                self.editor.errors.iter().take(2).map(|e| (format!("line {}: {}", e.line + 1, e.msg), bad)).collect();
+            let more = self.editor.errors.len().saturating_sub(2);
+            if more > 0
+                && let Some(last) = notes.last_mut()
+            {
+                last.0 += &format!("  (+{more} more)");
+            }
+            return notes;
+        }
+        if !self.editor.dirty {
+            return vec![];
+        }
+        let users = self.users_of(&self.edit_name.text);
+        if users > 0 {
+            vec![(format!("Apply updates {users} factor{}", if users == 1 { "y" } else { "ies" }), pal::DIM)]
+        } else if self.edit_factory.is_some() {
+            vec![("Apply gives this program to the factory".into(), pal::DIM)]
+        } else {
+            vec![]
+        }
+    }
+
+    fn editor_layout(&self, top: f32, notes: usize) -> EditorLayout {
         let (sw, sh) = (screen_width(), screen_height());
         let debug = matches!(self.edit_target, EditTarget::Debug(_));
+        // The code takes the room the notes do not need.
+        let notes = notes as f32;
         if ui::compact() {
             // The whole screen: two rows of buttons, the code, the dronoid's
             // state under it when debugging; the program list folds over the code.
             let win = Rect::new(4.0, 4.0, sw - 8.0, sh - 8.0);
             let header = Rect::new(win.x + 6.0, win.y + 6.0, win.w - 12.0, 32.0);
             let header2 = Rect::new(header.x, header.y + header.h + 6.0, header.w, 32.0);
-            let footer = Rect::new(header.x, win.y + win.h - 44.0, header.w, 40.0);
+            let fh = if notes > 0.0 { notes * 18.0 + 8.0 } else { 2.0 };
+            let footer = Rect::new(header.x, win.y + win.h - fh - 4.0, header.w, fh);
             let body_y = header2.y + header2.h + 6.0;
             let body_h = footer.y - 4.0 - body_y;
             let side_h = if debug { (body_h * 0.42).clamp(150.0, 230.0) } else { 0.0 };
@@ -730,12 +806,13 @@ impl Game {
             let list = Rect::new(code.x, code.y, (code.w * 0.6).min(240.0), code.h);
             return EditorLayout { win, header, header2: Some(header2), list, code, side, footer };
         }
-        let x0 = (sw * 0.38).max(sw - 1000.0).min(sw - 560.0).max(10.0);
+        let x0 = Game::editor_left();
         let win = Rect::new(x0, top, sw - x0 - 12.0, sh - top - 60.0);
         let header = Rect::new(win.x + 8.0, win.y + 8.0, win.w - 16.0, 30.0);
-        let footer = Rect::new(win.x + 8.0, win.y + win.h - 62.0, win.w - 16.0, 54.0);
+        let fh = if notes > 0.0 { notes * 19.0 + 10.0 } else { 0.0 };
+        let footer = Rect::new(win.x + 8.0, win.y + win.h - fh - 8.0, win.w - 16.0, fh);
         let body_y = header.y + header.h + 8.0;
-        let body_h = footer.y - 8.0 - body_y;
+        let body_h = footer.y - if notes > 0.0 { 8.0 } else { 0.0 } - body_y;
         let list_w = if debug { 0.0 } else { 140.0 };
         let side_w = if debug { 210.0 } else { 0.0 };
         let list = Rect::new(win.x + 8.0, body_y, list_w, body_h);
@@ -778,10 +855,11 @@ impl Game {
     }
 
     fn editor_window(&mut self, ui: &mut Ui, lib: &Library, top: f32, acts: &mut Vec<Act>) {
-        let l = self.editor_layout(top);
+        let lines = self.editor_notes();
+        let l = self.editor_layout(top, lines.len());
         // A little smaller on a phone, for longer lines.
         self.editor.font_size = if l.header2.is_some() { 14.0 } else { 16.0 };
-        ui.panel(l.win);
+        ui.solid_panel(l.win);
         let debug_id = if let EditTarget::Debug(id) = self.edit_target { Some(id) } else { None };
 
         if let Some(id) = debug_id {
@@ -892,7 +970,7 @@ impl Game {
                 }
             }
             x += 18.0;
-            if ui.button_ex(Rect::new(x, h.y, 128.0, bh), "Apply", false, true, pal::GOOD) {
+            if ui.button_primary(Rect::new(x, h.y, 128.0, bh), "Apply", pal::GOOD) {
                 acts.push(Act::Apply);
             }
             x += 134.0;
@@ -918,7 +996,7 @@ impl Game {
                 acts.push(Act::ToggleHelp);
             }
 
-            self.program_list(ui, lib, l.list, 24.0, acts);
+            self.program_list(ui, lib, Rect::new(l.list.x, l.list.y, l.list.w - 6.0, l.list.h), 24.0, acts);
         }
 
         // The folded list lies over the code: a touch there is the list's.
@@ -951,8 +1029,7 @@ impl Game {
         self.editor.draw(ui, l.code);
         if let Some(r) = list_over {
             ui.pressed = list_pressed;
-            draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.008, 0.012, 0.03, 1.0));
-            ui.panel(r);
+            ui.solid_panel(r);
             if self.program_list(ui, lib, Rect::new(r.x + 4.0, r.y + 1.0, r.w - 8.0, r.h - 2.0), 32.0, acts) {
                 self.list_open = false;
             }
@@ -963,29 +1040,10 @@ impl Game {
             self.debug_side(ui, l.side, id, acts);
         }
 
-        // Under the code, only what calls for something: the errors, or
-        // what Apply will do once there are changes to apply.
         let f = l.footer;
-        let lines: Vec<(String, Color)> = if debug_id.is_some() {
-            vec![]
-        } else if !self.editor.errors.is_empty() {
-            let bad = mix(pal::BAD, WHITE, 0.35);
-            self.editor.errors.iter().take(2).map(|e| (format!("line {}: {}", e.line + 1, e.msg), bad)).collect()
-        } else if self.editor.dirty {
-            let users = self.users_of(&self.edit_name.text);
-            if users > 0 {
-                vec![(format!("Apply updates {users} factor{}", if users == 1 { "y" } else { "ies" }), pal::DIM)]
-            } else if self.edit_factory.is_some() {
-                vec![("Apply gives this program to the factory".into(), pal::DIM)]
-            } else {
-                vec![]
-            }
-        } else {
-            vec![]
-        };
         let size = if l.header2.is_some() { 12.0 } else { 13.0 };
         for (i, (s, c)) in lines.iter().enumerate() {
-            gfx::text(s, f.x + 4.0, f.y + 6.0 + i as f32 * (size + 6.0), gfx::fit_size(s, size, f.w - 8.0), *c);
+            gfx::text(s, f.x + 4.0, f.y + 4.0 + i as f32 * (size + 6.0), gfx::fit_size(s, size, f.w - 8.0), *c);
         }
     }
 
@@ -1225,7 +1283,11 @@ impl Game {
             Driver::Online { world_name, .. } => format!("Sector {world_name}"),
             Driver::Offline { .. } => "Training".into(),
         };
-        gfx::text(&title, r.x + 10.0, r.y + 7.0, 12.0, pal::DIM);
+        // What the two numbers on each row count.
+        let cols = "factories · dronoids";
+        let cw = gfx::text_width(cols, 11.0);
+        gfx::text(cols, r.x + r.w - 10.0 - cw, r.y + 8.0, 11.0, pal::DIM);
+        gfx::text(&title, r.x + 10.0, r.y + 7.0, gfx::fit_size(&title, 12.0, r.w - 30.0 - cw), pal::DIM);
         let online: &[u8] = match &self.driver {
             Driver::Online { online, .. } => online,
             _ => &[],
@@ -1234,6 +1296,9 @@ impl Game {
             let y = r.y + 26.0 + i as f32 * 19.0;
             let p = &self.world.players[*id as usize];
             let c = if *alive { player_color(*id) } else { pal::FAINT };
+            if *id == self.me {
+                draw_rectangle(r.x + 4.0, y - 2.0, r.w - 8.0, 18.0, with_alpha(c, 0.08));
+            }
             draw_poly(r.x + 15.0, y + 7.0, 6, 4.0, 30.0, c);
             let tc = if *id == self.me { pal::TEXT } else if *alive { mix(c, pal::TEXT, 0.6) } else { pal::FAINT };
             gfx::text(&p.name, r.x + 26.0, y, 13.0, tc);
@@ -1440,8 +1505,19 @@ impl Game {
         }
     }
 
+    /// Is one of the dialogs of `overlays` up?
+    fn dialog_open(&self) -> bool {
+        let lost = matches!(&self.driver, Driver::Online { lost: Some(_), .. });
+        let alive = self.world.players.get(self.me as usize).is_some_and(|p| p.alive);
+        let won = !self.is_online() && !self.over_dismissed && self.world.winner() == Some(self.me);
+        lost || !alive || won
+    }
+
     fn overlays(&self, ui: &mut Ui, acts: &mut Vec<Act>) {
         let (sw, sh) = (screen_width(), screen_height());
+        if self.dialog_open() {
+            ui.scrim();
+        }
         // Dialogs never wider than the screen.
         let dialog = |w: f32, h: f32| -> Rect {
             let w = w.min(sw - 24.0);
@@ -1449,7 +1525,7 @@ impl Game {
         };
         if let Driver::Online { lost: Some(msg), .. } = &self.driver {
             let r = dialog(460.0, 140.0);
-            ui.panel(r);
+            ui.solid_panel(r);
             gfx::text_centered("Connection interrupted", sw / 2.0, r.y + 20.0, 18.0, pal::WARN);
             let size = gfx::fit_size(msg, 13.0, r.w - 20.0);
             gfx::text_centered(msg, sw / 2.0, r.y + 54.0, size, pal::DIM);
@@ -1461,11 +1537,11 @@ impl Game {
         let me_alive = self.world.players.get(self.me as usize).is_some_and(|p| p.alive);
         if !me_alive {
             let r = dialog(440.0, 160.0);
-            ui.panel(r);
+            ui.solid_panel(r);
             gfx::text_centered("Your colony is gone", sw / 2.0, r.y + 22.0, 20.0, pal::BAD);
             let line = "The sector goes on without you… for now.";
             gfx::text_centered(line, sw / 2.0, r.y + 60.0, gfx::fit_size(line, 13.0, r.w - 20.0), pal::DIM);
-            if ui.button_ex(Rect::new(sw / 2.0 - 150.0, r.y + 104.0, 144.0, 32.0), "Start again", false, true, pal::GOOD) {
+            if ui.button_primary(Rect::new(sw / 2.0 - 150.0, r.y + 104.0, 144.0, 32.0), "Start again", pal::GOOD) {
                 acts.push(Act::Respawn);
             }
             if ui.button(Rect::new(sw / 2.0 + 6.0, r.y + 104.0, 144.0, 32.0), "Menu") {
@@ -1475,7 +1551,7 @@ impl Game {
         // Offline practice against colonies can be won.
         if !self.is_online() && me_alive && !self.over_dismissed && self.world.winner() == Some(self.me) {
             let r = dialog(400.0, 140.0);
-            ui.panel(r);
+            ui.solid_panel(r);
             gfx::text_centered("Sector conquered", sw / 2.0, r.y + 22.0, 22.0, pal::GOOD);
             if ui.button(Rect::new(sw / 2.0 - 150.0, r.y + 90.0, 144.0, 30.0), "Continue") {
                 acts.push(Act::DismissOver);
@@ -1826,41 +1902,62 @@ fn help_overlay(ui: &mut Ui, acts: &mut Vec<Act>, scroll: &mut f32) {
         return;
     }
     let (sw, sh) = (screen_width(), screen_height());
-    let w = (sw - 80.0).min(1240.0);
-    let h = (sh - 80.0).min(820.0);
+    let w = (sw - 40.0).min(1240.0);
+    let h = (sh - 40.0).min(820.0);
     let r = Rect::new((sw - w) / 2.0, (sh - h) / 2.0, w, h);
-    ui.panel(r);
+    // A click beside the reference puts it away.
+    if ui.scrim() && !r.contains(ui.mouse) {
+        ui.pressed = false;
+        acts.push(Act::ToggleHelp);
+    }
+    ui.solid_panel(r);
     if ui.button(Rect::new(r.x + r.w - 40.0, r.y + 10.0, 30.0, 28.0), "×") {
         acts.push(Act::ToggleHelp);
     }
     gfx::text("DASM, the dronoids' language", r.x + 20.0, r.y + 16.0, 18.0, pal::ACCENT);
-    gfx::text(HELP_INTRO, r.x + 20.0, r.y + 42.0, 13.0, pal::DIM);
+    gfx::text(HELP_INTRO, r.x + 20.0, r.y + 42.0, gfx::fit_size(HELP_INTRO, 13.0, w - 80.0), pal::DIM);
 
-    let col_w = (w - 60.0) / 2.0;
-    let mut y = r.y + 72.0;
-    let x = r.x + 20.0;
-    let needed = 4.0 * 24.0 + vm::MNEMONICS.len() as f32 * 18.5;
-    let k = ((h - 90.0) / needed).clamp(0.6, 1.0);
+    // Two columns of about the same height, so that the text can be as
+    // large as the window allows: what a dronoid does, senses and where
+    // it jumps on the left; data and the rest of the reference on the right.
+    let sections = help_sections(ui.touch);
+    let rows = |cat: Cat| vm::MNEMONICS.iter().filter(|m| m.cat == cat).count() as f32;
+    let (title_h, row_h) = (24.0, 18.5);
+    let left = [Cat::Action, Cat::Sense, Cat::Flow];
+    let need_left: f32 = left.iter().map(|c| title_h + rows(*c) * row_h).sum();
+    let need_right: f32 =
+        title_h + rows(Cat::Data) * row_h + sections.iter().map(|(_, l)| title_h + l.len() as f32 * row_h).sum::<f32>();
+    let k = ((h - 90.0) / need_left.max(need_right)).clamp(0.6, 1.0);
     let fs = 13.5 * k;
-    let lh = 18.5 * k;
-    for (cat, title) in HELP_CATS {
-        gfx::text(title, x, y, 12.0 * k, with_alpha(token_color(vm::TokKind::Op(cat)), 0.8));
-        y += 18.0 * k;
+    let lh = row_h * k;
+    let col_w = (w - 60.0) / 2.0;
+    let mnemonics = |cat: Cat, x: f32, y: &mut f32| {
+        let title = HELP_CATS.iter().find(|c| c.0 == cat).map_or("", |c| c.1);
+        gfx::text(title, x, *y, 12.0 * k, with_alpha(token_color(vm::TokKind::Op(cat)), 0.8));
+        *y += 18.0 * k;
         for m in vm::MNEMONICS.iter().filter(|m| m.cat == cat) {
-            gfx::text(m.syntax, x + 8.0, y, fs, token_color(vm::TokKind::Op(cat)));
-            gfx::text(m.help, x + 160.0 * k, y, fs, pal::TEXT);
-            y += lh;
+            gfx::text(m.syntax, x + 8.0, *y, fs, token_color(vm::TokKind::Op(cat)));
+            let hx = x + 160.0 * k;
+            gfx::text(m.help, hx, *y, gfx::fit_size(m.help, fs, x + col_w - hx), pal::TEXT);
+            *y += lh;
         }
-        y += 6.0 * k;
+        *y += 6.0 * k;
+    };
+
+    let x = r.x + 20.0;
+    let mut y = r.y + 72.0;
+    for cat in left {
+        mnemonics(cat, x, &mut y);
     }
 
     let x2 = r.x + 40.0 + col_w;
     let mut y = r.y + 72.0;
-    for (title, lines) in help_sections(ui.touch) {
+    mnemonics(Cat::Data, x2, &mut y);
+    for (title, lines) in sections {
         gfx::text(title, x2, y, 12.0 * k, with_alpha(pal::VIOLET, 0.85));
         y += 18.0 * k;
         for l in lines {
-            gfx::text(&l, x2 + 8.0, y, fs, pal::TEXT);
+            gfx::text(&l, x2 + 8.0, y, gfx::fit_size(&l, fs, col_w - 8.0), pal::TEXT);
             y += lh;
         }
         y += 6.0 * k;
@@ -1928,7 +2025,7 @@ fn help_sections(touch: bool) -> Vec<(&'static str, Vec<String>)> {
 fn help_scrolling(ui: &mut Ui, acts: &mut Vec<Act>, scroll: &mut f32) {
     let (sw, sh) = (screen_width(), screen_height());
     let r = Rect::new(4.0, 4.0, sw - 8.0, sh - 8.0);
-    ui.panel(r);
+    ui.solid_panel(r);
     if ui.button(Rect::new(r.x + r.w - 42.0, r.y + 8.0, 34.0, 32.0), "×") {
         acts.push(Act::ToggleHelp);
     }

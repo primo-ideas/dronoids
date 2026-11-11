@@ -27,7 +27,7 @@ const REPEATABLE: &[KeyCode] = &[
 /// A finger that moved less than this from where it landed is still a tap.
 const TAP_SLOP: f32 = 12.0;
 /// Where the pointer goes when no finger is on the screen (no hover).
-const NOWHERE: Vec2 = vec2(-10_000.0, -10_000.0);
+pub const NOWHERE: Vec2 = vec2(-10_000.0, -10_000.0);
 
 /// Two fingers on the screen this frame.
 #[derive(Clone, Copy, Debug)]
@@ -339,11 +339,37 @@ impl Ui {
         panel(r, pal::PANEL_EDGE);
     }
 
+    /// A pane nothing shows through: for what is read at length (the
+    /// editor, the reference) or lies over other panels.
+    pub fn solid_panel(&mut self, r: Rect) {
+        draw_rectangle(r.x, r.y, r.w, r.h, SOLID);
+        self.panel(r);
+    }
+
+    /// Dim everything drawn so far and keep the pointer off it: what comes
+    /// next is a dialog. Returns whether the dimmed part was clicked.
+    pub fn scrim(&mut self) -> bool {
+        let all = Rect::new(0.0, 0.0, screen_width(), screen_height());
+        draw_rectangle(all.x, all.y, all.w, all.h, Color::new(0.0, 0.004, 0.015, 0.6));
+        self.block(all);
+        self.pressed
+    }
+
     pub fn button(&mut self, r: Rect, label: &str) -> bool {
         self.button_ex(r, label, false, true, pal::ACCENT)
     }
 
     pub fn button_ex(&mut self, r: Rect, label: &str, active: bool, enabled: bool, color: Color) -> bool {
+        self.button_styled(r, label, active, enabled, color, false)
+    }
+
+    /// The one button a screen or a panel is there for: outlined and
+    /// brighter than the quiet ones around it.
+    pub fn button_primary(&mut self, r: Rect, label: &str, color: Color) -> bool {
+        self.button_styled(r, label, false, true, color, true)
+    }
+
+    fn button_styled(&mut self, r: Rect, label: &str, active: bool, enabled: bool, color: Color, primary: bool) -> bool {
         self.block(r);
         let hover = enabled && self.hover(r);
         // Quiet "ghost" buttons: a faint wash, an outline only on hover,
@@ -352,13 +378,20 @@ impl Ui {
         let fill = if active {
             with_alpha(base, 0.20)
         } else if hover {
-            with_alpha(base, 0.12)
+            with_alpha(base, if primary { 0.26 } else { 0.12 })
         } else {
-            with_alpha(base, 0.045)
+            with_alpha(base, if primary { 0.15 } else { 0.045 })
         };
         draw_rectangle(r.x, r.y, r.w, r.h, fill);
-        if hover || active {
-            draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, with_alpha(base, if active { 0.55 } else { 0.4 }));
+        if hover || active || primary {
+            let a = if hover && primary {
+                0.9
+            } else if active || primary {
+                0.55
+            } else {
+                0.4
+            };
+            draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, with_alpha(base, a));
         }
         if active {
             draw_rectangle(r.x + 6.0, r.y + r.h - 2.0, r.w - 12.0, 2.0, with_alpha(base, 0.8));
@@ -370,7 +403,7 @@ impl Ui {
         }
         let tc = if !enabled {
             pal::FAINT
-        } else if active || hover {
+        } else if active || hover || primary {
             mix(base, WHITE, 0.6)
         } else {
             with_alpha(mix(base, WHITE, 0.45), 0.8)
@@ -403,6 +436,9 @@ impl Ui {
         }
     }
 }
+
+/// What lies under a pane that must hide what is behind it.
+const SOLID: Color = Color::new(0.008, 0.012, 0.03, 0.97);
 
 /// A calm translucent pane with a hairline edge and a thin accent on top.
 pub fn panel(r: Rect, edge: Color) {
