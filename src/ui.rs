@@ -183,6 +183,15 @@ impl Ui {
         }
     }
 
+    /// A left click at `at`, as if the mouse had made it this frame (the
+    /// `--click` switch, for checking the interface without a hand on it).
+    pub fn inject_click(&mut self, at: Vec2) {
+        self.touch = false;
+        self.mouse = at;
+        self.pressed = true;
+        self.down = true;
+    }
+
     /// Fingers drive the pointer: the first finger down is the mouse, a
     /// tap is a click, sliding drags, a second finger makes a pinch.
     /// Returns whether any finger was involved this frame.

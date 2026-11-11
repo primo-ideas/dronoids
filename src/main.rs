@@ -34,10 +34,17 @@ enum App {
 }
 
 fn window_conf() -> Conf {
+    // `--size W,H`: another window size (a phone's, to check that layout).
+    let args: Vec<String> = std::env::args().collect();
+    let size = args.iter().position(|a| a == "--size").and_then(|i| args.get(i + 1)).and_then(|s| {
+        let (w, h) = s.split_once(',')?;
+        Some((w.parse().ok()?, h.parse().ok()?))
+    });
+    let (window_width, window_height) = size.unwrap_or((1600, 900));
     Conf {
         window_title: "Dronoids".to_owned(),
-        window_width: 1600,
-        window_height: 900,
+        window_width,
+        window_height,
         window_resizable: true,
         high_dpi: false,
         sample_count: 4,
@@ -50,7 +57,9 @@ fn window_conf() -> Conf {
 /// (fast-forward), `--land` (place the first factory), `--zoom Z`,
 /// `--editor`, `--debug-dronoid`, `--help-screen`, `--build`, `--map`,
 /// `--players`, `--join URL`, `--name NICKNAME`,
-/// `--screenshot out.png [--after SECS | --frames N]`.
+/// `--screenshot out.png [--after SECS | --frames N]`,
+/// `--size W,H` (the window's size), `--click X,Y@FRAME` (a left click at that pixel on that frame; may be
+/// given several times).
 #[derive(Default)]
 struct Args {
     offline: Option<Level>,
@@ -70,6 +79,15 @@ struct Args {
     zoom: Option<f32>,
     join: Option<String>,
     name: Option<String>,
+    /// Scripted clicks: frame, then where.
+    clicks: Vec<(u32, f32, f32)>,
+}
+
+/// `X,Y@FRAME`.
+fn parse_click(s: &str) -> Option<(u32, f32, f32)> {
+    let (at, frame) = s.split_once('@')?;
+    let (x, y) = at.split_once(',')?;
+    Some((frame.parse().ok()?, x.parse().ok()?, y.parse().ok()?))
 }
 
 fn parse_args() -> Args {
@@ -99,6 +117,9 @@ fn parse_args() -> Args {
             "--zoom" => a.zoom = next.parse().ok(),
             "--join" => a.join = Some(next),
             "--name" => a.name = Some(next),
+            "--click" => a.clicks.extend(parse_click(&next)),
+            // Read by `window_conf`.
+            "--size" => {}
             flag => {
                 take = false;
                 match flag {
@@ -162,6 +183,9 @@ async fn main() {
     let mut frame = 0u32;
     loop {
         ui.begin_frame();
+        if let Some(&(_, x, y)) = args.clicks.iter().find(|c| c.0 == frame) {
+            ui.inject_click(vec2(x, y));
+        }
         let mut next = None;
         match &mut app {
             App::Menu(m) => match m.frame(&mut ui, &mut bloom) {
