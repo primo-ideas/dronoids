@@ -648,7 +648,7 @@ impl World {
             return Err("too far from your units");
         }
         if p.minerals < FACTORY_COST {
-            return Err("not enough ore");
+            return Err("not enough crystals");
         }
         if self.occupied((x, y), FACTORY_RADIUS + FP / 2) {
             return Err("the spot is taken");
@@ -1054,8 +1054,12 @@ impl World {
                 per_factory[fi] += 1;
             }
         }
+        let repair = self.tick.is_multiple_of(FACTORY_REPAIR_TICKS);
         for fi in 0..self.factories.len() {
             let f = &mut self.factories[fi];
+            if repair && f.hp > 0 && f.hp < FACTORY_HP {
+                f.hp += 1;
+            }
             if f.timer > 0 {
                 f.timer -= 1;
             }
@@ -1078,6 +1082,9 @@ impl World {
 
             let id = self.new_id();
             let f = &mut self.factories[fi];
+            if repair && f.hp > 0 && f.hp < FACTORY_HP {
+                f.hp += 1;
+            }
             // A new factory gets its first dronoids out quickly.
             f.timer = if f.spawned < 2 { SPAWN_TICKS / 4 } else { SPAWN_TICKS };
             f.spawned += 1;
@@ -1604,6 +1611,21 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_damaged_factory_mends_itself() {
+        let mut w = world_with(&["a"]);
+        let id = w.factories[0].id;
+        w.factories[0].hp = FACTORY_HP - 3;
+        for _ in 0..FACTORY_REPAIR_TICKS {
+            w.step(&[]);
+        }
+        assert_eq!(w.factory(id).unwrap().hp, FACTORY_HP - 2, "one point per period");
+        for _ in 0..4 * FACTORY_REPAIR_TICKS {
+            w.step(&[]);
+        }
+        assert_eq!(w.factory(id).unwrap().hp, FACTORY_HP, "and never more than whole");
+    }
+
+    #[test]
     fn rejoin_after_elimination() {
         let mut w = world_with(&["a", "b"]);
         w.factories.retain(|f| f.owner != 1);
@@ -1622,7 +1644,7 @@ pub(crate) mod tests {
         let mut w = world_with(&["a", "b"]);
         let f0 = w.factories.iter().find(|f| f.owner == 0).unwrap().clone();
         w.players[0].minerals = 0;
-        assert_eq!(w.can_place_factory(0, f0.x + 7 * FP, f0.y), Err("not enough ore"));
+        assert_eq!(w.can_place_factory(0, f0.x + 7 * FP, f0.y), Err("not enough crystals"));
         w.players[0].minerals = 1000;
         assert_eq!(w.can_place_factory(0, f0.x, f0.y), Err("the spot is taken"));
         let f1 = w.factories.iter().find(|f| f.owner == 1).unwrap().clone();
@@ -1668,6 +1690,116 @@ mod better_programs {
                 b += mined_with(better, seed, ticks);
             }
             println!("{ticks} ticks: miner {a}  miner+ {b}");
+        }
+    }
+
+    /// What a newcomer who touches nothing lives through, minute by minute.
+    /// `cargo test --release --lib balance_report -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn balance_report() {
+        let base = programs::builtin("miner").unwrap().source;
+        for seed in 1..=6u64 {
+            let mut w = World::new(seed);
+            w.join("solo", false);
+            tests::land(&mut w, 0, base);
+            let minute = (60.0 * TICKS_PER_SEC) as u64;
+            let mut line = format!("seed {seed}:");
+            let mut goal = None;
+            let mut second = None;
+            for t in 1..=30 * minute {
+                w.step(&[]);
+                if goal.is_none() && w.players[0].mined >= quests::MINED_GOAL {
+                    goal = Some(t as f32 / minute as f32);
+                }
+                if second.is_none() && w.players[0].minerals >= FACTORY_COST {
+                    second = Some(t as f32 / minute as f32);
+                }
+                if t % (5 * minute) == 0 || t == 2 * minute {
+                    let p = &w.players[0];
+                    line += &format!("  {}min {}c/{}m/{}d/{}seen", t / minute, p.minerals, p.mined, w.dronoid_count(0), p.seen.count());
+                }
+            }
+            println!("{line}  | quest {goal:?} min, factory affordable {second:?} min");
+        }
+    }
+
+    /// How long a scout factory takes to map the surroundings, and how long
+    /// a factory lasts under a raid, guarded or not.
+    #[test]
+    #[ignore]
+    fn balance_report_scouts_and_raids() {
+        let minute = (60.0 * TICKS_PER_SEC) as u64;
+        let scout = programs::builtin("scout").unwrap();
+        for seed in 1..=4u64 {
+            let mut w = World::new(seed);
+            w.join("solo", false);
+            tests::land(&mut w, 0, scout.source);
+            let mut at = None;
+            for t in 1..=30 * minute {
+                w.step(&[]);
+                if at.is_none() && w.players[0].seen.count() >= quests::MAPPED_GOAL {
+                    at = Some(t as f32 / minute as f32);
+                }
+            }
+            println!("seed {seed}: scouts map {} cells in {at:?} min; {} after 30 min", quests::MAPPED_GOAL, w.players[0].seen.count());
+        }
+        let hunter = programs::builtin("hunter").unwrap();
+        let guard = programs::builtin("guard").unwrap();
+        for (raiders, guards) in [(8usize, 0usize), (8, 8), (16, 8), (4, 0)] {
+            let mut w = World::new(7);
+            w.join("a", false);
+            w.join("d", false);
+            tests::land(&mut w, 0, hunter.source);
+            tests::land(&mut w, 1, guard.source);
+            for p in &mut w.players {
+                p.shield_until = 0;
+                p.minerals = 0;
+            }
+            let target = w.factories.iter().find(|f| f.owner == 1).unwrap().clone();
+            let home = w.factories.iter().find(|f| f.owner == 0).unwrap().id;
+            let (gfac, gprog) = (target.id, target.prog);
+            let hprog = w.factory(home).unwrap().prog;
+            w.dronoids.clear();
+            let put = |w: &mut World, owner: u8, factory: u32, prog: u32, n: usize, r: i32| {
+                for k in 0..n {
+                    let (dx, dy) = dir_vec(k as i32 * 360 / n.max(1) as i32, r);
+                    let id = w.new_id();
+                    w.dronoids.push(Dronoid {
+                        id,
+                        owner,
+                        x: target.x + dx,
+                        y: target.y + dy,
+                        prev_x: target.x + dx,
+                        prev_y: target.y + dy,
+                        heading: 0,
+                        hp: DRONOID_HP,
+                        cargo: 0,
+                        factory,
+                        prog,
+                        vm: Vm::new(id as u64),
+                        doing: Doing::Idle,
+                        busy: 0,
+                        born: 0,
+                    });
+                }
+            };
+            put(&mut w, 1, gfac, gprog, guards, 3 * FP);
+            put(&mut w, 0, home, hprog, raiders, 10 * FP);
+            let mut fell = None;
+            for t in 1..=10 * minute {
+                w.step(&[]);
+                if w.factory(gfac).is_none() {
+                    fell = Some(t as f32 / TICKS_PER_SEC);
+                    break;
+                }
+            }
+            println!(
+                "{raiders} hunters vs {guards} guards: factory fell after {fell:?} s; left {} hunters, {} guards, {:?} hp",
+                w.dronoid_count(0),
+                w.dronoid_count(1),
+                w.factory(gfac).map(|f| f.hp)
+            );
         }
     }
 

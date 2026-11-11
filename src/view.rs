@@ -351,14 +351,19 @@ impl WorldView {
         self.draw_stars(cam);
 
         if let Some(owner) = hl.build_range_for {
-            let col = with_alpha(pal::GOOD, 0.10);
+            // Where a factory may go: outlines over the faintest wash, so
+            // that a crowd of dronoids does not add up to a glare.
             for f in world.factories.iter().filter(|f| f.owner == owner) {
                 let c = cam.w2s(fpv(f.x, f.y));
-                draw_circle(c.x, c.y, fp(BUILD_RANGE + 2 * FACTORY_RADIUS) * z, col);
+                let r = fp(BUILD_RANGE + 2 * FACTORY_RADIUS) * z;
+                draw_circle(c.x, c.y, r, with_alpha(pal::GOOD, 0.022));
+                draw_circle_lines(c.x, c.y, r, 1.0, with_alpha(pal::GOOD, 0.3));
             }
             for d in world.dronoids.iter().filter(|d| d.owner == owner) {
                 let c = cam.w2s(fpv(d.x, d.y));
-                draw_circle(c.x, c.y, fp(BUILD_RANGE) * z, with_alpha(pal::GOOD, 0.04));
+                let r = fp(BUILD_RANGE) * z;
+                draw_circle(c.x, c.y, r, with_alpha(pal::GOOD, 0.006));
+                draw_circle_lines(c.x, c.y, r, 1.0, with_alpha(pal::GOOD, 0.09));
             }
         }
 
@@ -576,8 +581,11 @@ pub fn draw_minimap(world: &World, cam: &Cam, r: Rect, sight: &Sight, mouse: Vec
     for i in 0..8 {
         draw_circle(middle.x, middle.y, radius * (1.36 - i as f32 * 0.1), with_alpha(pal::BG, 0.16));
     }
+    // A hairline rim, so that it reads as a map even with little explored.
+    draw_circle(middle.x, middle.y, radius, with_alpha(pal::BG, 0.5));
+    draw_circle_lines(middle.x, middle.y, radius, 1.0, with_alpha(pal::PANEL_EDGE, 0.22));
     let at = |p: Vec2| middle + (p - cam.center) * k;
-    let fade = |p: Vec2| ((1.0 - p.distance(middle) / radius) * 4.0).clamp(0.0, 1.0);
+    let fade =|p: Vec2| ((1.0 - p.distance(middle) / radius) * 4.0).clamp(0.0, 1.0);
     // Explored space shows as a faint wash; the rest stays black. (Opaque:
     // overlaps draw no grid.)
     if sight.fogged() {

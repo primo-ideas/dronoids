@@ -44,7 +44,10 @@ pub const EBASE_RANGE: i32 = 40 * FP;
 
 pub const CARGO_CAP: i32 = 5;
 pub const DRONOID_HP: i32 = 10;
-pub const FACTORY_HP: i32 = 200;
+pub const FACTORY_HP: i32 = 300;
+/// A damaged factory mends itself, one point every so many ticks (5 s):
+/// nothing against a raid, but it is whole again half an hour later.
+pub const FACTORY_REPAIR_TICKS: u64 = 20;
 pub const ATTACK_DAMAGE: i32 = 2;
 
 pub const DRONOID_COST: i32 = 10;

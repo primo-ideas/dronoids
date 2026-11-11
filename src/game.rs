@@ -129,6 +129,10 @@ pub struct Game {
     players_open: bool,
     program_menu: Option<u32>,
     toasts: Vec<Toast>,
+    /// My factories and their health added up, to notice a raid, and when
+    /// the last warning was given.
+    holdings: (usize, i32),
+    warned_at: f64,
     follow: bool,
     over_dismissed: bool,
     step_once: bool,
@@ -171,6 +175,8 @@ impl Game {
             players_open: false,
             program_menu: None,
             toasts: vec![],
+            holdings: (0, 0),
+            warned_at: -60.0,
             follow: false,
             over_dismissed: false,
             step_once: false,
@@ -383,6 +389,7 @@ impl Game {
         }
         self.toasts.retain(|t| t.t < 4.0);
         self.validate_selection();
+        self.watch_factories();
         if was_landing && !self.landing() {
             // First factory down: select it.
             if let Some(f) = self.world.factories.iter().find(|f| f.owner == self.me) {
@@ -409,6 +416,8 @@ impl Game {
 
         let compact = ui::compact();
         let mut acts = vec![];
+        // Where the space under the status and objective lines begins.
+        let mut top = 48.0f32;
         // On a small screen the reference and the editor take the whole
         // screen: nothing under them to see or to touch by mistake.
         let help_alone = compact && self.help_open;
@@ -416,7 +425,7 @@ impl Game {
         if !help_alone {
             if !editor_alone {
                 self.status(ui, &mut acts);
-                let top = self.objective(ui);
+                top = self.objective(ui);
                 self.dock(ui, &mut acts);
                 if self.players_open {
                     self.players_panel(ui, top);
@@ -425,9 +434,9 @@ impl Game {
             // Panels and toasts on a small screen pile up from the dock.
             let mut bottom = screen_height() - if compact { 52.0 } else { 16.0 };
             if self.editor_open {
-                self.editor_window(ui, lib, &mut acts);
+                self.editor_window(ui, lib, top, &mut acts);
             } else {
-                if let Some(y) = self.selection_panel(ui, lib, &mut acts) {
+                if let Some(y) = self.selection_panel(ui, lib, top, &mut acts) {
                     bottom = y;
                 }
                 if self.map_open {
@@ -463,6 +472,18 @@ impl Game {
             }
         }
         out
+    }
+
+    /// Say so when one of our factories is being hit (now and then, not
+    /// with every shot): the fight may well be off screen.
+    fn watch_factories(&mut self) {
+        let mine = self.world.factories.iter().filter(|f| f.owner == self.me);
+        let now = mine.fold((0usize, 0i32), |(n, hp), f| (n + 1, hp + f.hp));
+        let before = std::mem::replace(&mut self.holdings, now);
+        if now.0 == before.0 && now.1 < before.1 && get_time() - self.warned_at > 20.0 {
+            self.warned_at = get_time();
+            self.toast("One of your factories is under attack", pal::BAD);
+        }
     }
 
     fn validate_selection(&mut self) {
@@ -691,7 +712,7 @@ impl Game {
         self.world.factories.iter().filter(|f| f.owner == self.me && self.world.program_name(f.prog) == name).count()
     }
 
-    fn editor_layout(&self) -> EditorLayout {
+    fn editor_layout(&self, top: f32) -> EditorLayout {
         let (sw, sh) = (screen_width(), screen_height());
         let debug = matches!(self.edit_target, EditTarget::Debug(_));
         if ui::compact() {
@@ -710,7 +731,7 @@ impl Game {
             return EditorLayout { win, header, header2: Some(header2), list, code, side, footer };
         }
         let x0 = (sw * 0.38).max(sw - 1000.0).min(sw - 560.0).max(10.0);
-        let win = Rect::new(x0, 48.0, sw - x0 - 12.0, sh - 48.0 - 60.0);
+        let win = Rect::new(x0, top, sw - x0 - 12.0, sh - top - 60.0);
         let header = Rect::new(win.x + 8.0, win.y + 8.0, win.w - 16.0, 30.0);
         let footer = Rect::new(win.x + 8.0, win.y + win.h - 62.0, win.w - 16.0, 54.0);
         let body_y = header.y + header.h + 8.0;
@@ -756,8 +777,8 @@ impl Game {
         picked
     }
 
-    fn editor_window(&mut self, ui: &mut Ui, lib: &Library, acts: &mut Vec<Act>) {
-        let l = self.editor_layout();
+    fn editor_window(&mut self, ui: &mut Ui, lib: &Library, top: f32, acts: &mut Vec<Act>) {
+        let l = self.editor_layout(top);
         // A little smaller on a phone, for longer lines.
         self.editor.font_size = if l.header2.is_some() { 14.0 } else { 16.0 };
         ui.panel(l.win);
@@ -1038,8 +1059,17 @@ impl Game {
             gfx::text(s, lx, y + 3.0, 12.0, c);
             lx += gfx::text_width(s, 12.0) + 12.0;
         };
+        // The size of the colony, once there is one (not on a small screen).
+        let (factories, dronoids) = (self.world.factory_count(self.me), self.world.dronoid_count(self.me));
+        if !ui::compact() && factories + dronoids > 0 {
+            let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+            note(&plural(factories, "factory", "factories"), pal::DIM);
+            let full = dronoids >= MAX_DRONOIDS_PER_PLAYER;
+            let crowd = if full { format!("{dronoids} dronoids (the most a colony can run)") } else { plural(dronoids, "dronoid", "dronoids") };
+            note(&crowd, if full { pal::WARN } else { pal::DIM });
+        }
         if self.world.shielded(self.me) {
-            let left = (me.shield_until - self.world.tick) as f32 / TICKS_PER_SEC;
+            let left =(me.shield_until - self.world.tick) as f32 / TICKS_PER_SEC;
             note(&format!("shielded {}:{:02}", left as u32 / 60, left as u32 % 60), with_alpha(pal::ACCENT, 0.6));
         }
         if let Driver::Online { frames, lost, .. } = &self.driver {
@@ -1087,20 +1117,29 @@ impl Game {
             Tool::Target(_) => say("Click the target", "Tap the target"),
             Tool::None if self.landing() => say("Click a free spot for your factory", "Tap a free spot for your factory"),
             Tool::None => {
-                let Some(i) = quests::current(&self.world, self.me) else { return y };
+                let Some(i) = quests::current(&self.world, self.me) else { return 48.0 };
                 let (done, goal) = quests::progress(&self.world, self.me, i);
-                let mut parts = vec![(QUESTS[i].title.to_string(), with_alpha(pal::TEXT, 0.8))];
+                let q = &QUESTS[i];
+                let mut parts = vec![
+                    (format!("{}/{}  ", i + 1, QUESTS.len()), pal::DIM),
+                    (q.title.to_string(), with_alpha(pal::TEXT, 0.85)),
+                ];
                 if goal > 100 {
                     parts.push((format!("  {} %", done * 100 / goal), pal::ACCENT));
                 } else if goal > 1 {
                     parts.push((format!("  {done}/{goal}"), pal::ACCENT));
+                }
+                // How to go about it, and what it earns.
+                parts.push((format!(" · {}", if ui.touch { q.hint_touch } else { q.hint }), pal::DIM));
+                if q.reward > 0 {
+                    parts.push((format!(" · +{}", q.reward), with_alpha(pal::ORE, 0.8)));
                 }
                 parts
             }
         };
         let sw = screen_width();
         let lines = gfx::rich_wrapped(&parts, 13.0, sw / 2.0, y + 5.0, sw - 48.0, with_alpha(pal::PANEL, 0.45));
-        y + lines as f32 * 25.0 + 8.0
+        (y + lines as f32 * 25.0 + 8.0).max(48.0)
     }
 
     /// Bottom-centre: a handful of quiet buttons (shorter and taller on a
@@ -1139,8 +1178,25 @@ impl Game {
         let total = widths.iter().sum::<f32>() + gaps;
         let mut x = screen_width() / 2.0 - total / 2.0;
         let y = screen_height() - h - if compact { 8.0 } else { 12.0 };
-        for ((label, active, enabled, color, act), w) in items.into_iter().zip(widths) {
-            if ui.button_ex(Rect::new(x, y, w, h), &label, active, enabled, color) {
+        let tips = [
+            if self.landing() {
+                "Land your first factory before building more".to_string()
+            } else if can {
+                "Place a new factory near your units (B); Shift+click places several".to_string()
+            } else {
+                format!("A factory costs {FACTORY_COST} crystals: {} to go", (FACTORY_COST - me.minerals).max(0))
+            },
+            "Read, write and apply programs (P)".into(),
+            "The space you have explored (M); click it to look there".into(),
+            "Who lives in the sector: factories · dronoids (L)".into(),
+            "Back to your first factory (H); Tab goes from factory to factory".into(),
+        ];
+        for (((label, active, enabled, color, act), w), tip) in items.into_iter().zip(widths).zip(tips) {
+            let r = Rect::new(x, y, w, h);
+            if !ui.touch && ui.hover(r) {
+                ui.tooltip(&tip);
+            }
+            if ui.button_ex(r, &label, active, enabled, color) {
                 acts.push(match act {
                     Act::OpenProgram(..) if self.editor_open => Act::CloseEditor,
                     a => a,
@@ -1162,7 +1218,7 @@ impl Game {
         let r = if ui::compact() {
             Rect::new(8.0, top, (screen_width() - 16.0).min(260.0), 30.0 + shown as f32 * 19.0)
         } else {
-            Rect::new(16.0, 70.0, 260.0, 30.0 + shown as f32 * 19.0)
+            Rect::new(16.0, top, 260.0, 30.0 + shown as f32 * 19.0)
         };
         ui.panel(r);
         let title = match &self.driver {
@@ -1211,7 +1267,7 @@ impl Game {
 
     /// Top right; on a small screen, along the bottom above the dock, and
     /// then returns where its top is.
-    fn selection_panel(&self, ui: &mut Ui, lib: &Library, acts: &mut Vec<Act>) -> Option<f32> {
+    fn selection_panel(&self, ui: &mut Ui, lib: &Library, top: f32, acts: &mut Vec<Act>) -> Option<f32> {
         let h = match self.sel {
             Sel::None => return None,
             Sel::Factory(id) => match self.world.factory(id) {
@@ -1229,7 +1285,7 @@ impl Game {
         let (sw, sh) = (screen_width(), screen_height());
         let w = if compact { (sw - 16.0).min(420.0) } else { 290.0 };
         let x = if compact { (sw - w) / 2.0 } else { sw - w - 12.0 };
-        let y = if compact { sh - 54.0 - h } else { 48.0 };
+        let y = if compact { sh - 54.0 - h } else { top };
         self.selection_body(ui, lib, acts, Rect::new(x, y, w, h));
         compact.then_some(y)
     }
@@ -1262,9 +1318,31 @@ impl Game {
                     theirs(f.owner, "factory");
                     return;
                 }
-                gfx::text(pname, x + 12.0, y + 10.0, 15.0, pal::ACCENT);
-                if !f.enabled && ui.button_ex(Rect::new(x + w - 102.0, y + 6.0, 90.0, 24.0), "Resume", false, true, pal::WARN) {
-                    acts.push(Act::Issue(Command::ToggleFactory { factory: id }));
+                gfx::text("factory", x + 12.0, y + 12.0, 12.0, pal::DIM);
+                let nx = x + 12.0 + gfx::text_width("factory ", 12.0);
+                gfx::text(pname, nx, y + 10.0, gfx::fit_size(pname, 15.0, w * 0.42), pal::ACCENT);
+                let n = self.world.dronoids_of_factory(id);
+                if !f.enabled {
+                    if ui.button_ex(Rect::new(x + w - 102.0, y + 6.0, 90.0, 24.0), "Resume", false, true, pal::WARN) {
+                        acts.push(Act::Issue(Command::ToggleFactory { factory: id }));
+                    }
+                } else {
+                    // What the factory is up to: the next dronoid, or why none comes.
+                    let me = &self.world.players[self.me as usize];
+                    let (what, col) = if n >= f.quota as usize {
+                        ("full".to_string(), pal::DIM)
+                    } else if self.world.dronoid_count(self.me) >= MAX_DRONOIDS_PER_PLAYER {
+                        ("colony at its limit".to_string(), pal::WARN)
+                    } else if me.minerals < DRONOID_COST {
+                        (format!("needs {DRONOID_COST} crystals"), pal::WARN)
+                    } else {
+                        let secs = (f.timer as f32 / TICKS_PER_SEC).ceil() as i32;
+                        (format!("next dronoid {secs} s"), pal::DIM)
+                    };
+                    gfx::text(&what, x + w - 12.0 - gfx::text_width(&what, 12.0), y + 12.0, 12.0, col);
+                }
+                if f.hp < FACTORY_HP && ui.hover(Rect::new(x, y + 26.0, w, 12.0)) {
+                    ui.tooltip(&format!("{} / {FACTORY_HP}: a damaged factory slowly mends itself", f.hp));
                 }
                 let mut cy = y + 40.0;
                 if ui.button_ex(Rect::new(x + 12.0, cy, 128.0, 28.0), "Program", false, true, pal::GOOD) {
@@ -1274,7 +1352,6 @@ impl Game {
                     acts.push(Act::ToggleProgramMenu(id));
                 }
                 cy += 36.0;
-                let n = self.world.dronoids_of_factory(id);
                 let count = format!("dronoids {n}/{}", f.quota);
                 gfx::text(&count, x + 12.0, cy + 7.0, gfx::fit_size(&count, 13.0, 96.0), pal::DIM);
                 if ui.button(Rect::new(x + 112.0, cy, 28.0, 26.0), "−") && f.quota > 0 {
@@ -1925,6 +2002,7 @@ mod tests {
         for q in QUESTS.iter() {
             said(q.title, "objective");
             said(q.hint, "objective");
+            said(q.hint_touch, "objective");
         }
         for m in vm::MNEMONICS.iter() {
             said(m.syntax, "help");

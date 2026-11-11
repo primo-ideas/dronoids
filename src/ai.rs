@@ -60,7 +60,8 @@ const BUILD_ORDER: &[&str] = &["miner", "scout", "miner", "hunter", "guard", "mi
 
 /// How far around a building site crystals count.
 const SITE_ORE_REACH: i32 = 12 * FP;
-/// Colonies only send raids this far from home: the world is big enough
+/// Colonies only send raids this far from home (the hardest ones also let
+/// idle hunters roam): the world is big enough
 /// for newcomers to grow in peace if they settle away from them.
 const RAID_RANGE: i32 = 170 * FP;
 
@@ -123,8 +124,13 @@ impl Bot {
                     let b = builtin("hunter").expect("builtin");
                     cmds.push(Command::SetProgram { factory: f.id, name: b.name.into(), source: b.source.into() });
                 }
-            // Point every hunter factory at the closest rival's home.
-            if let Some(target) = self.closest_rival(w) {
+            // Point every hunter factory at the closest rival within reach.
+            // With none, all but the hardest colonies call their hunters
+            // home, where they stand guard: left to patrol, they would
+            // end up at the door of a newcomer settled far away.
+            let rival = self.closest_rival(w);
+            let rally = (self.level != Level::Hard).then_some((me.home.0.div_euclid(FP), me.home.1.div_euclid(FP)));
+            if let Some(target) = rival.or(rally) {
                 for f in &hunters {
                     if f.mem[2] != 1 || f.mem[0] != target.0 || f.mem[1] != target.1 {
                         for (i, v) in [(0u8, target.0), (1, target.1), (2, 1)] {
@@ -132,7 +138,7 @@ impl Bot {
                         }
                     }
                 }
-                if self.level == Level::Hard && me.minerals > 400 {
+                if rival.is_some() && self.level == Level::Hard && me.minerals > 400 {
                     for f in hunters.iter().filter(|f| f.quota < 14) {
                         cmds.push(Command::SetQuota { factory: f.id, quota: 14 });
                     }
@@ -237,11 +243,68 @@ mod tests {
         }
     }
 
+    /// With no rival within reach, a colony keeps its hunters at home,
+    /// except the hardest ones, whose hunters roam.
+    #[test]
+    fn idle_hunters_are_called_home() {
+        for level in [Level::Normal, Level::Hard] {
+            let (mut w, mut bots) = bot_world(level, 1, false);
+            let gate = level.hunter_gate();
+            // Long enough for a second factory, the gate, and a first conversion.
+            run(&mut w, &mut bots, gate + 4000);
+            let home = w.players[0].home;
+            let hunters: Vec<_> = w.factories.iter().filter(|f| w.program_name(f.prog) == "hunter").collect();
+            assert!(!hunters.is_empty(), "{level:?}: a colony ends up with hunters");
+            for f in hunters {
+                if level == Level::Hard {
+                    assert_eq!(f.mem[2], 0, "the hardest colonies let them roam");
+                } else {
+                    assert_eq!((f.mem[0], f.mem[1], f.mem[2]), (home.0.div_euclid(FP), home.1.div_euclid(FP), 1));
+                }
+            }
+        }
+    }
+
     #[test]
     fn bot_expands() {
         let (mut w, mut bots) = bot_world(Level::Normal, 1, false);
         run(&mut w, &mut bots, 6000);
         assert!(w.factory_count(0) >= 2, "bot has {} factories", w.factory_count(0));
+    }
+
+    /// Does anything ever happen between colonies left to themselves?
+    /// `cargo test --release --lib balance_report -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn balance_report_wars() {
+        for level in [Level::Easy, Level::Normal, Level::Hard] {
+            let (mut w, mut bots) = bot_world(level, 4, true);
+            let miner = builtin("miner").unwrap();
+            crate::sim::tests::land(&mut w, 0, miner.source);
+            let minute = 60 * TICKS_PER_SEC as u64;
+            let mut out = None;
+            let mut first_hit = None;
+            for m in 1..=90 {
+                run(&mut w, &mut bots, minute);
+                if out.is_none() && !w.players[0].alive {
+                    out = Some(m);
+                }
+                if first_hit.is_none() && w.factories.iter().any(|f| f.owner == 0 && f.hp < FACTORY_HP) {
+                    first_hit = Some(m);
+                }
+            }
+            let home = w.players[0].home;
+            let gaps: Vec<i32> = w.players.iter().skip(1).map(|p| crate::geo::dist(p.home.0 - home.0, p.home.1 - home.1) / FP).collect();
+            let summary: Vec<String> = w
+                .players
+                .iter()
+                .map(|p| {
+                    let gone = if p.alive { "" } else { "x" };
+                    format!("{}:{}f/{}d/{}k/{}c{gone}", p.id, w.factory_count(p.id), w.dronoid_count(p.id), p.kills, p.minerals)
+                })
+                .collect();
+            println!("{level:?}: human first hit {first_hit:?} min, out {out:?} min, AIs at {gaps:?}; {}", summary.join(" "));
+        }
     }
 
     /// `cargo test --release --lib bench_world -- --ignored --nocapture`

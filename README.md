@@ -42,8 +42,10 @@ A recent stable Rust (edition 2024). Dependencies: `macroquad` (rendering), `ser
   whole world: the fog is a choice of display, not a protection.)
 - **A slow pace**: 4 ticks a second; a step takes 1 s, mining a crystal 2 s, and a
   factory then turns out a dronoid every 30 s.
-- The AIs only raid around their own home: settling far from them means growing in
+- The AIs only raid around their own home, and keep idle hunters there (the hardest
+  ones let them roam): settling far from them means growing in
   peace.
+- A factory takes 300 points of damage, and slowly mends itself (a point every 5 s).
 - Your nickname is protected by a secret token kept by your browser (or `./save/` on
   the desktop).
 - **Offline training**: a private sector with AIs, pause and speed up to x8.
@@ -73,8 +75,11 @@ On a phone or a tablet:
 
 The screen stays clean on purpose: your crystals at the top left (and the newcomer's
 shield while it lasts), speed, help and menu at the top right, a dock at the bottom,
-and one short line: the current tool, or else the next first step and how far along it
-is. A unit's panel only shows its health once it has been hit; map and colonies open
+and one short line: the current tool, or else the next first step, how far along it
+is, how to go about it and what it earns. Beside the crystals, the size of the colony;
+a factory's panel says when its next dronoid comes, or why none does; a warning tells
+of a raid on a factory, which may be off screen. A unit's panel only shows its health
+once it has been hit; map and colonies open
 on demand. Offline, the speed button goes from x1 to x2, x4, x8 then pause. On a
 narrow screen (under 700 px wide, a phone held upright), the selection panel moves to
 the bottom above the dock, and the editor and the help take the whole screen.
@@ -163,6 +168,7 @@ desktop/browser differences (`platform.rs`, `library.rs`).
 cargo test
 python3 site/test_site.py                                           # the account service
 cargo test --release --lib bench_world -- --ignored --nocapture   # performance and AI pace
+cargo test --release --lib balance_report -- --ignored --nocapture   # economy, scouts, raids, wars
 ```
 
 Font: Fira Mono (SIL Open Font License, see `assets/fonts`).

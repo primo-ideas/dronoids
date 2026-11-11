@@ -7,17 +7,20 @@ use super::{Event, World};
 
 pub struct Quest {
     pub title: &'static str,
+    /// How to go about it, with a mouse and keyboard...
     pub hint: &'static str,
+    /// ...and with fingers.
+    pub hint_touch: &'static str,
     /// Crystals granted on completion.
     pub reward: i32,
 }
 
 pub const QUESTS: &[Quest] = &[
-    Quest { title: "Place your first factory", hint: "left click on a free spot", reward: 0 },
-    Quest { title: "Mine 100 crystals", hint: "your dronoids mine on their own", reward: 40 },
-    Quest { title: "Apply a program of your own", hint: "Program (E), edit, Ctrl+S", reward: 60 },
-    Quest { title: "Map the surroundings", hint: "a scout goes far", reward: 50 },
-    Quest { title: "Found a second factory", hint: "B, near your units", reward: 80 },
+    Quest { title: "Place your first factory", hint: "click a free spot", hint_touch: "tap a free spot", reward: 0 },
+    Quest { title: "Mine 100 crystals", hint: "your dronoids mine on their own", hint_touch: "your dronoids mine on their own", reward: 40 },
+    Quest { title: "Apply a program of your own", hint: "Program (E), change a line, Apply", hint_touch: "Program, change a line, Apply", reward: 60 },
+    Quest { title: "Map the surroundings", hint: "Change… to scout: scouts go far", hint_touch: "Change… to scout: scouts go far", reward: 50 },
+    Quest { title: "Found a second factory", hint: "Factory (B), near your units", hint_touch: "Factory, near your units", reward: 80 },
 ];
 
 pub const MINED_GOAL: i64 = 100;
