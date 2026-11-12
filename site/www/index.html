@@ -63,24 +63,23 @@
         <section id="language" class="band split">
             <div>
                 <h2>The language</h2>
-                <p>DASM fits on one page: four registers, sensors, jumps, and actions that
-                    take time. A dronoid runs its instructions up to an action, then starts over.</p>
+                <p>A program is a column of tiles you drag into place: go to the nearest crystal,
+                    mine, jump back if the hold is full... A dronoid runs them up to an action,
+                    which takes time, then goes on. Registers, sensors and the rest of DASM
+                    are there for when you want more.</p>
                 <p>The starting program, <code>miner</code>, goes to the nearest crystal, digs it,
                     then goes home to the base. Up to you to do better.</p>
             </div>
             <pre class="code"><span class="c">; MINER -- the starting program</span>
 <span class="l">start:</span>
-    <span class="d">CARGO</span> <span class="r">a</span>
-    <span class="f">JGE</span> <span class="r">a</span>, <span class="k">FULL</span>, home
-    <span class="s">DIST</span> <span class="r">a</span>, <span class="k">ORE</span>
-    <span class="f">JEQ</span> <span class="r">a</span>, <span class="k">NONE</span>, wander
-    <span class="f">JLE</span> <span class="r">a</span>, <span class="n">1</span>, dig
-    <span class="s">SCAN</span> <span class="r">b</span>, <span class="k">ORE</span>
-    <span class="a">MOVE</span> <span class="r">b</span>
-    <span class="f">JMP</span> start
+    <span class="f">IFFULL</span> home
+    <span class="f">IFNEAR</span> <span class="k">ORE</span>, dig
+    <span class="a">GO</span> <span class="k">ORE</span>
+    <span class="f">IFFAIL</span> wander
+    <span class="f">JUMP</span> start
 <span class="l">dig:</span>
     <span class="a">MINE</span>
-    <span class="f">JMP</span> start</pre>
+    <span class="f">JUMP</span> start</pre>
         </section>
 
         <section id="account" class="band account">

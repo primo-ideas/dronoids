@@ -882,6 +882,7 @@ impl World {
                 h.add(r as i64);
             }
             h.add(d.vm.rng as i64);
+            h.add(d.vm.course as i64);
         }
         for o in &self.ores {
             h.add(o.id as i64 * 977 + o.amount as i64);

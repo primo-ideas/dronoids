@@ -16,7 +16,8 @@ use bincode::Options;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use super::{Base, Dronoid, Line, Ore, Player, ProgEntry, World};
+use super::{Base, Doing, Dronoid, Line, Ore, Player, ProgEntry, World};
+use crate::vm::Vm;
 use crate::rng::Rng;
 use crate::rules::*;
 
@@ -37,6 +38,98 @@ pub(super) struct Factory {
     pub mem: [i32; HIVE_MEM],
     pub spawned: u32,
     pub quota: u8,
+}
+
+/// A dronoid's virtual machine as bincode saves held it (before EXPLORE).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct VmOld {
+    pc: u16,
+    regs: [i32; 4],
+    ok: i32,
+    stack: [u16; crate::rules::STACK_DEPTH],
+    sp: u8,
+    rng: u64,
+    last_pc: u16,
+    last_ops: u8,
+    stalled: bool,
+}
+
+/// A dronoid as bincode saves held it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct DronoidOld {
+    id: u32,
+    owner: u8,
+    x: i32,
+    y: i32,
+    prev_x: i32,
+    prev_y: i32,
+    heading: i32,
+    hp: i32,
+    cargo: i32,
+    factory: u32,
+    prog: u32,
+    vm: VmOld,
+    doing: Doing,
+    busy: i32,
+    born: u64,
+}
+
+impl DronoidOld {
+    fn into_dronoid(self) -> Dronoid {
+        let v = self.vm;
+        let mut vm = Vm::new(v.rng);
+        (vm.pc, vm.regs, vm.ok, vm.stack, vm.sp, vm.last_pc, vm.last_ops, vm.stalled) =
+            (v.pc, v.regs, v.ok, v.stack, v.sp, v.last_pc, v.last_ops, v.stalled);
+        Dronoid {
+            id: self.id,
+            owner: self.owner,
+            x: self.x,
+            y: self.y,
+            prev_x: self.prev_x,
+            prev_y: self.prev_y,
+            heading: self.heading,
+            hp: self.hp,
+            cargo: self.cargo,
+            line: self.factory,
+            prog: self.prog,
+            vm,
+            doing: self.doing,
+            busy: self.busy,
+            born: self.born,
+        }
+    }
+
+    #[cfg(test)]
+    fn of(d: &Dronoid) -> DronoidOld {
+        let v = &d.vm;
+        DronoidOld {
+            id: d.id,
+            owner: d.owner,
+            x: d.x,
+            y: d.y,
+            prev_x: d.prev_x,
+            prev_y: d.prev_y,
+            heading: d.heading,
+            hp: d.hp,
+            cargo: d.cargo,
+            factory: d.line,
+            prog: d.prog,
+            vm: VmOld {
+                pc: v.pc,
+                regs: v.regs,
+                ok: v.ok,
+                stack: v.stack,
+                sp: v.sp,
+                rng: v.rng,
+                last_pc: v.last_pc,
+                last_ops: v.last_ops,
+                stalled: v.stalled,
+            },
+            doing: d.doing,
+            busy: d.busy,
+            born: d.born,
+        }
+    }
 }
 
 /// The four bonuses a relic gave a factory, in the order they were saved.
@@ -82,7 +175,7 @@ struct WorldOld<P> {
     ores: Vec<Ore>,
     players: Vec<P>,
     factories: Vec<Factory>,
-    dronoids: Vec<Dronoid>,
+    dronoids: Vec<DronoidOld>,
     programs: Vec<ProgEntry>,
     next_id: u32,
     rng: Rng,
@@ -211,7 +304,7 @@ fn upgrade<P>(old: WorldOld<P>, player: impl Fn(P) -> Player) -> (World, Vec<Fac
     w.tick = old.tick;
     w.ores = old.ores;
     w.players = old.players.into_iter().map(player).collect();
-    w.dronoids = old.dronoids;
+    w.dronoids = old.dronoids.into_iter().map(DronoidOld::into_dronoid).collect();
     w.programs = old.programs;
     w.next_id = old.next_id;
     w.rng = old.rng;
@@ -300,7 +393,7 @@ mod tests {
         ores: &'a [Ore],
         players: Vec<PlayerOut<'a>>,
         factories: &'a [Factory],
-        dronoids: &'a [Dronoid],
+        dronoids: Vec<DronoidOld>,
         programs: &'a [ProgEntry],
         next_id: u32,
         rng: &'a Rng,
@@ -375,7 +468,7 @@ mod tests {
             ores: &w.ores,
             players,
             factories: &factories,
-            dronoids: &w.dronoids,
+            dronoids: w.dronoids.iter().map(DronoidOld::of).collect(),
             programs: &w.programs,
             next_id: w.next_id,
             rng: &w.rng,

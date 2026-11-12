@@ -117,6 +117,11 @@ impl Library {
                     all.insert(b.name.to_string(), b.source.to_string());
                     let _ = disk::write(b.name, b.source, &all);
                 }
+                // An untouched copy of an earlier wording: the current one.
+                Some(old) if programs::superseded(b.name, old).is_some() => {
+                    all.insert(b.name.to_string(), b.source.to_string());
+                    let _ = disk::write(b.name, b.source, &all);
+                }
                 Some(_) => {}
                 None => {
                     all.insert(b.name.to_string(), b.source.to_string());

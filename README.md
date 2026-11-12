@@ -89,7 +89,7 @@ A recent stable Rust (edition 2024). Dependencies: `macroquad` (rendering), `ser
 | Key | Effect |
 | --- | --- |
 | Left click | land the base; select; double-click the base for its first line's program |
-| Right drag, wheel | move the camera, zoom |
+| Right drag, wheel | move the camera, zoom (out to a view of the whole explored area) |
 | ZQSD / WASD / arrows | move the camera |
 | `X` | expand the hangar (150 crystals) |
 | `E` / `P` | the first line's program, the dronoid's debugger / all programs |
@@ -127,27 +127,40 @@ the bottom above the dock, and the editor and the help take the whole screen.
 
 ## DASM in short
 
+A program is a column of **tiles**, in the spirit of Human Resource Machine: drag
+instructions in from the palette on the right, drag them around to reorder them, drag
+one out to the palette to delete it, touch a token (`ORE`, `> home`) to change it.
+Each jump is drawn as an arrow to its label. "Text" shows the same program as DASM
+source, to type it; both are the same program.
+
 ```asm
 ; MINER -- the starting program
 start:
-    CARGO a
-    JGE a, FULL, home
-    DIST a, ORE          ; distance to the nearest crystal
-    JEQ a, NONE, wander  ; nothing in sight?
-    JLE a, 1, dig        ; within reach: dig
-    SCAN b, ORE          ; b = angle to the crystal
-    MOVE b
-    JZ ok, dodge         ; blocked by an asteroid
-    JMP start
+    IFFULL home
+    IFNEAR ORE, dig
+    GO ORE
+    IFFAIL wander        ; nothing in sight, or blocked
+    JUMP start
+dig:
+    MINE
+    JUMP start
+home:
+    IFNEAR BASE, unload
+    GO BASE
 ...
 ```
 
-- Registers `a b c d`, plus `ok` (1 if the last action succeeded).
-- Angles in degrees, clockwise: `N=0 E=90 S=180 W=270`, `NONE=-1`.
-  Things: `EMPTY WALL ORE ALLY ENEMY BASE EBASE RELIC`, `FULL` = the hold's capacity.
-- **Data** `SET ADD SUB MUL DIV MOD RAND INC DEC ANGLE` · **Jumps** `JMP JZ JNZ
-  JEQ JNE JLT JGT JLE JGE CALL RET` · **Sensors** `SCAN DIST DX DY COUNT LOOK CARGO
-  HP POSX POSY PEEK POKE` · **Actions** `MOVE angle`, `MINE`, `DROP`, `ATTACK`, `WAIT`.
+- **The simple instructions** cover most programs: `GO thing` (a step towards the
+  nearest one), `EXPLORE` (a step straight on, a new course when blocked), `MINE`,
+  `DROP`, `ATTACK`, `WAIT`, `JUMP lbl`, and the jumps `IFFULL lbl`, `IFNEAR thing, lbl`
+  (within reach: to mine, unload or fire at), `IFSEE thing, lbl` and `IFFAIL lbl`
+  (the last action failed).
+  Things: `ORE BASE ENEMY EBASE RELIC ALLY WALL EMPTY`.
+- **More** (the palette's button) gives the rest: registers `a b c d`, plus `ok` (1 if
+  the last action succeeded); angles in degrees, clockwise (`N=0 E=90 S=180 W=270`,
+  `NONE=-1`); **Data** `SET ADD SUB MUL DIV MOD RAND INC DEC ANGLE` · **Jumps** `JMP JZ
+  JNZ JEQ JNE JLT JGT JLE JGE CALL RET` · **Sensors** `SCAN DIST DX DY COUNT LOOK CARGO
+  HP POSX POSY PEEK POKE` · **Actions** `MOVE angle`. `FULL` = the hold's capacity.
 - `MINE`/`DROP` when `DIST ≤ 1`, `ATTACK` when `DIST ≤ 2`. `MINE` takes a shard of a
   relic within reach when no crystal is nearer. Sensors reach 12 units,
   enemy bases 40, your own anywhere. 16 cells of hive memory, shared by all the
@@ -161,6 +174,9 @@ The built-in programs were French until November 2026 (`mineur`, `eclaireur`,
 `chasseur`, `gardien`): copies kept by players and by a saved sector take their
 English names (`miner`, `scout`, `hunter`, `guard`) when they are loaded, and untouched
 copies their English wording, whose instructions are the same line for line.
+In November 2026 the built-ins were rewritten with the simple instructions: an untouched
+copy of an earlier wording in a player's library takes the new one (the dronoids already
+running keep their program until it is applied again).
 
 ## How multiplayer works
 

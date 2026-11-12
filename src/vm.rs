@@ -1,9 +1,12 @@
 //! DASM — the Dronoid ASseMbly language.
 //!
 //! A deliberately small, playful assembly (in the spirit of Human Resource
-//! Machine). Each dronoid owns four registers `a b c d`, a read-only `ok` flag
-//! set by the last action, a tiny call stack and a private RNG. Each
-//! base owns 16 cells of "hive memory" shared by all its dronoids.
+//! Machine). A handful of simple instructions (`BASIC`: GO, EXPLORE, MINE,
+//! DROP, ATTACK, WAIT, JUMP and the IF... jumps) are enough for most programs,
+//! and are what the tile editor offers first; the rest gives each dronoid
+//! four registers `a b c d`, a read-only `ok` flag set by the last action, a
+//! tiny call stack and a private RNG. Each base owns 16 cells of "hive
+//! memory" shared by all its dronoids.
 //!
 //! Directions are compass angles in degrees: 0 = north, 90 = east...
 //!
@@ -152,6 +155,19 @@ pub enum Action {
     Wait,
 }
 
+/// What the simple IF... jumps test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Test {
+    /// The hold is full.
+    Full,
+    /// The thing is within reach: to mine or unload, or to fire at.
+    Near,
+    /// Such a thing is in sight.
+    See,
+    /// The last action failed.
+    Fail,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Instr {
     Arith(Arith, Reg, Val),
@@ -165,6 +181,11 @@ pub enum Instr {
     Peek(Reg, Val),
     Poke(Val, Val),
     Act(Action, Val),
+    /// One step towards the nearest thing.
+    Go(Val),
+    /// One step on the dronoid's course, a new one when blocked.
+    Explore,
+    Test(Test, Val, u16),
 }
 
 // ---------------------------------------------------------------------------
@@ -179,22 +200,40 @@ pub enum Cat {
     Action,
 }
 
+/// What an operand is, which tells the tile editor what to offer for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Arg {
+pub enum Arg {
+    /// A register to write (a, b, c, d).
     R,
+    /// Any value: a register, a number or a constant.
     V,
+    /// A label.
     L,
+    /// A kind of thing (ORE, BASE...), or any value.
+    T,
+    /// An angle (N, E, S, W), or any value.
+    A,
 }
 
 pub struct Mnemonic {
     pub name: &'static str,
-    args: &'static [Arg],
+    pub args: &'static [Arg],
     pub cat: Cat,
     pub syntax: &'static str,
     pub help: &'static str,
 }
 
-use Arg::{L, R, V};
+use Arg::{A, L, R, T, V};
+
+/// The few instructions most programs need, offered first by the tile
+/// editor.
+pub const BASIC: &[&str] = &["GO", "EXPLORE", "MINE", "DROP", "ATTACK", "WAIT", "JUMP", "IFFULL", "IFNEAR", "IFSEE", "IFFAIL"];
+
+impl Mnemonic {
+    pub fn basic(&self) -> bool {
+        BASIC.contains(&self.name)
+    }
+}
 
 macro_rules! mn {
     ($name:literal, [$($a:ident),*], $cat:ident, $syn:literal, $help:literal) => {
@@ -203,6 +242,17 @@ macro_rules! mn {
 }
 
 pub const MNEMONICS: &[Mnemonic] = &[
+    mn!("GO", [T], Action, "GO thing", "one step towards the nearest thing (fails if there is none in sight)"),
+    mn!("EXPLORE", [], Action, "EXPLORE", "one step straight on; a new course when the last one was blocked"),
+    mn!("MINE", [], Action, "MINE", "mines 1 crystal from the deposit within reach, or 1 shard of a relic"),
+    mn!("DROP", [], Action, "DROP", "unloads the hold into your base within reach"),
+    mn!("ATTACK", [], Action, "ATTACK", "fires at the nearest enemy within range"),
+    mn!("WAIT", [], Action, "WAIT", "waits a moment"),
+    mn!("JUMP", [L], Flow, "JUMP lbl", "goes on from the label"),
+    mn!("IFFULL", [L], Flow, "IFFULL lbl", "jumps if the hold is full"),
+    mn!("IFNEAR", [T, L], Flow, "IFNEAR thing, lbl", "jumps if the thing is within reach (to mine, unload or fire at)"),
+    mn!("IFSEE", [T, L], Flow, "IFSEE thing, lbl", "jumps if such a thing is in sight"),
+    mn!("IFFAIL", [L], Flow, "IFFAIL lbl", "jumps if the last action failed (blocked, nothing there...)"),
     mn!("SET", [R, V], Data, "SET r, v", "r = v"),
     mn!("ADD", [R, V], Data, "ADD r, v", "r = r + v"),
     mn!("SUB", [R, V], Data, "SUB r, v", "r = r - v"),
@@ -224,23 +274,19 @@ pub const MNEMONICS: &[Mnemonic] = &[
     mn!("CALL", [L], Flow, "CALL lbl", "calls a subroutine"),
     mn!("RET", [], Flow, "RET", "returns after the CALL"),
     mn!("ANGLE", [R, V, V], Data, "ANGLE r, dx, dy", "r = angle (degrees) of the vector dx, dy"),
-    mn!("SCAN", [R, V], Sense, "SCAN r, thing", "r = angle to the nearest thing (NONE if none)"),
-    mn!("DIST", [R, V], Sense, "DIST r, thing", "r = distance to the nearest thing (NONE if none)"),
-    mn!("DX", [R, V], Sense, "DX r, thing", "r = east-west gap to the thing (+ = east)"),
-    mn!("DY", [R, V], Sense, "DY r, thing", "r = north-south gap to the thing (+ = south)"),
-    mn!("COUNT", [R, V], Sense, "COUNT r, thing", "r = number of things within range"),
-    mn!("LOOK", [R, V], Sense, "LOOK r, angle", "r = what lies just ahead, in that direction"),
+    mn!("SCAN", [R, T], Sense, "SCAN r, thing", "r = angle to the nearest thing (NONE if none)"),
+    mn!("DIST", [R, T], Sense, "DIST r, thing", "r = distance to the nearest thing (NONE if none)"),
+    mn!("DX", [R, T], Sense, "DX r, thing", "r = east-west gap to the thing (+ = east)"),
+    mn!("DY", [R, T], Sense, "DY r, thing", "r = north-south gap to the thing (+ = south)"),
+    mn!("COUNT", [R, T], Sense, "COUNT r, thing", "r = number of things within range"),
+    mn!("LOOK", [R, A], Sense, "LOOK r, angle", "r = what lies just ahead, in that direction"),
     mn!("CARGO", [R], Sense, "CARGO r", "r = ore carried"),
     mn!("HP", [R], Sense, "HP r", "r = hit points"),
     mn!("POSX", [R], Sense, "POSX r", "r = east-west position of the dronoid"),
     mn!("POSY", [R], Sense, "POSY r", "r = north-south position of the dronoid"),
     mn!("PEEK", [R, V], Sense, "PEEK r, i", "r = hive memory[i]"),
     mn!("POKE", [V, V], Sense, "POKE i, v", "hive memory[i] = v"),
-    mn!("MOVE", [V], Action, "MOVE angle", "moves one step in that direction"),
-    mn!("MINE", [], Action, "MINE", "mines 1 crystal from the deposit within reach, or 1 shard of a relic"),
-    mn!("DROP", [], Action, "DROP", "unloads the hold into your base within reach"),
-    mn!("ATTACK", [], Action, "ATTACK", "fires at the nearest enemy within range"),
-    mn!("WAIT", [], Action, "WAIT", "waits a moment"),
+    mn!("MOVE", [A], Action, "MOVE angle", "moves one step in that direction"),
 ];
 
 pub fn mnemonic(name: &str) -> Option<&'static Mnemonic> {
@@ -494,6 +540,13 @@ fn build(mn: &Mnemonic, args: &[&str], labels: &[(String, u16, usize)]) -> Resul
         "DROP" => Ok(Instr::Act(Action::Drop, Val::K(0))),
         "ATTACK" => Ok(Instr::Act(Action::Attack, Val::K(0))),
         "WAIT" => Ok(Instr::Act(Action::Wait, Val::K(0))),
+        "GO" => Ok(Instr::Go(val(0)?)),
+        "EXPLORE" => Ok(Instr::Explore),
+        "JUMP" => Ok(Instr::Jump(Cond::Always, Val::K(0), Val::K(0), label(0)?)),
+        "IFFULL" => Ok(Instr::Test(Test::Full, Val::K(0), label(0)?)),
+        "IFNEAR" => Ok(Instr::Test(Test::Near, val(0)?, label(1)?)),
+        "IFSEE" => Ok(Instr::Test(Test::See, val(0)?, label(1)?)),
+        "IFFAIL" => Ok(Instr::Test(Test::Fail, Val::K(0), label(0)?)),
         other => Err(format!("unhandled instruction {other}")),
     }
 }
@@ -520,6 +573,12 @@ pub struct Vm {
     /// Instructions executed during the last tick.
     pub last_ops: u8,
     pub stalled: bool,
+    /// EXPLORE's course, plus one (0: none picked yet).
+    #[serde(default)]
+    pub course: i32,
+    /// The last action was an EXPLORE (a failed one picks a new course).
+    #[serde(default)]
+    pub exploring: bool,
 }
 
 impl Vm {
@@ -534,6 +593,8 @@ impl Vm {
             last_pc: 0,
             last_ops: 0,
             stalled: false,
+            course: 0,
+            exploring: false,
         }
     }
 
@@ -671,7 +732,41 @@ impl Vm {
                 Instr::Act(a, v) => {
                     self.last_pc = here;
                     self.last_ops = ops as u8;
+                    self.exploring = false;
                     return Some((a, self.get(v)));
+                }
+                Instr::Go(thing) => {
+                    self.last_pc = here;
+                    self.last_ops = ops as u8;
+                    self.exploring = false;
+                    // NONE (nothing in sight) makes the step fail.
+                    return Some((Action::Move, senses.sense(Sensor::Scan, self.get(thing))));
+                }
+                Instr::Explore => {
+                    if self.course <= 0 || (self.exploring && self.ok == 0) {
+                        self.course = 1 + (splitmix(&mut self.rng) % 360) as i32;
+                    }
+                    self.last_pc = here;
+                    self.last_ops = ops as u8;
+                    self.exploring = true;
+                    return Some((Action::Move, self.course - 1));
+                }
+                Instr::Test(test, v, to) => {
+                    let hit = match test {
+                        Test::Full => senses.sense(Sensor::Cargo, 0) >= CARGO_CAP,
+                        Test::Near => {
+                            let thing = self.get(v);
+                            let d = senses.sense(Sensor::Dist, thing);
+                            // Firing reaches a little further than mining.
+                            let reach = if thing == thing::ENEMY || thing == thing::EBASE { 2 } else { 1 };
+                            d != NONE && d <= reach
+                        }
+                        Test::See => senses.sense(Sensor::Dist, self.get(v)) != NONE,
+                        Test::Fail => self.ok == 0,
+                    };
+                    if hit {
+                        self.pc = to;
+                    }
                 }
             }
         }
@@ -828,6 +923,64 @@ MINE").unwrap();
         let mut mem = [0; HIVE_MEM];
         assert_eq!(vm.run(&p, &Fake, &mut mem), Some((Action::Mine, 0)));
         assert_eq!(vm.regs[..3], [135, 270, NONE]);
+    }
+
+    /// The simple instructions do what the tiles say.
+    #[test]
+    fn simple_instructions() {
+        struct World {
+            cargo: i32,
+            ore: i32,
+        }
+        impl Senses for World {
+            fn sense(&self, s: Sensor, arg: i32) -> i32 {
+                match (s, arg) {
+                    (Sensor::Cargo, _) => self.cargo,
+                    (Sensor::Dist, thing::ORE) => self.ore,
+                    (Sensor::Scan, thing::ORE) if self.ore != NONE => DIR_S,
+                    (Sensor::Dist | Sensor::Scan, _) => NONE,
+                    _ => 0,
+                }
+            }
+        }
+        let src = "start:\n IFFULL home\n IFNEAR ORE, dig\n IFSEE ORE, go\n EXPLORE\n JUMP start\ngo: GO ORE\n JUMP start\ndig: MINE\n JUMP start\nhome: GO BASE";
+        let p = assemble("t", src).unwrap();
+        let mut mem = [0; HIVE_MEM];
+        let mut run = |w: &World, vm: &mut Vm| {
+            vm.pc = 0;
+            let out = vm.run(&p, w, &mut mem);
+            (out, p.line_of(vm.last_pc).unwrap())
+        };
+        let mut vm = Vm::new(1);
+        assert_eq!(run(&World { cargo: 5, ore: 0 }, &mut vm), (Some((Action::Move, NONE)), 10), "full: home");
+        assert_eq!(run(&World { cargo: 0, ore: 1 }, &mut vm), (Some((Action::Mine, 0)), 8), "within reach: mine");
+        assert_eq!(run(&World { cargo: 0, ore: 5 }, &mut vm), (Some((Action::Move, DIR_S)), 6), "in sight: go");
+        // Nothing in sight: explore, on a course kept until a step fails.
+        let w = World { cargo: 0, ore: NONE };
+        let (Some((Action::Move, course)), 4) = run(&w, &mut vm) else { panic!("explores") };
+        assert!((0..360).contains(&course));
+        vm.ok = 1;
+        assert_eq!(run(&w, &mut vm).0, Some((Action::Move, course)), "the same course");
+        vm.ok = 0;
+        let mut changed = false;
+        for _ in 0..4 {
+            vm.ok = 0;
+            changed |= run(&w, &mut vm).0 != Some((Action::Move, course));
+        }
+        assert!(changed, "blocked: another course");
+        // IFFAIL reads ok; IFNEAR fires from a little further.
+        let p2 = assemble("t", "IFFAIL x\nWAIT\nx: MINE").unwrap();
+        let mut vm = Vm::new(1);
+        vm.ok = 0;
+        assert_eq!(vm.run(&p2, &w, &mut mem), Some((Action::Mine, 0)));
+        struct Foe;
+        impl Senses for Foe {
+            fn sense(&self, s: Sensor, arg: i32) -> i32 {
+                if s == Sensor::Dist && arg == thing::ENEMY { 2 } else { NONE }
+            }
+        }
+        let p3 = assemble("t", "IFNEAR ENEMY, f\nWAIT\nf: ATTACK").unwrap();
+        assert_eq!(Vm::new(1).run(&p3, &Foe, &mut mem), Some((Action::Attack, 0)));
     }
 
     #[test]

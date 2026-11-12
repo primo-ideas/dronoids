@@ -42,6 +42,28 @@ impl FogMap {
         self.pages[i].rows[row] |= 1 << bit;
     }
 
+    /// Every seen cell from (x0, y0) to (x1, y1) included, page by page:
+    /// only the cells seen cost anything.
+    pub fn each(&self, x0: i32, y0: i32, x1: i32, y1: i32, mut f: impl FnMut(i32, i32)) {
+        let (px0, px1, py0, py1) = (split(x0).0, split(x1).0, split(y0).0, split(y1).0);
+        for p in self.pages.iter().filter(|p| (px0..=px1).contains(&p.x) && (py0..=py1).contains(&p.y)) {
+            for (r, row) in p.rows.iter().enumerate() {
+                let cy = p.y * PAGE + r as i32;
+                if cy < y0 || cy > y1 {
+                    continue;
+                }
+                let mut bits = *row;
+                while bits != 0 {
+                    let cx = p.x * PAGE + bits.trailing_zeros() as i32;
+                    bits &= bits - 1;
+                    if (x0..=x1).contains(&cx) {
+                        f(cx, cy);
+                    }
+                }
+            }
+        }
+    }
+
     /// How many cells have been seen.
     pub fn count(&self) -> i64 {
         self.pages.iter().flat_map(|p| p.rows).map(|r| r.count_ones() as i64).sum()
@@ -57,6 +79,21 @@ impl FogMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_lists_the_seen_cells_in_bounds() {
+        let mut m = FogMap::default();
+        let spots = [(0, 0), (-1, -1), (31, 32), (-33, 7), (120_000, -90_000), (5, 5), (40, 3)];
+        for (x, y) in spots {
+            m.set(x, y);
+        }
+        let mut got = vec![];
+        m.each(-40, -5, 35, 40, |x, y| got.push((x, y)));
+        got.sort();
+        let mut want: Vec<(i32, i32)> = spots.into_iter().filter(|(x, y)| (-40..=35).contains(x) && (-5..=40).contains(y)).collect();
+        want.sort();
+        assert_eq!(got, want);
+    }
 
     #[test]
     fn cells_are_remembered_anywhere() {

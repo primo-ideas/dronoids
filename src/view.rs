@@ -147,14 +147,16 @@ impl Sight {
         let br = cam.s2w(vec2(screen_width(), screen_height()));
         let (x0, y0) = ((tl.x / cell).floor() as i32 - 1, (tl.y / cell).floor() as i32 - 1);
         let (x1, y1) = ((br.x / cell).ceil() as i32 + 1, (br.y / cell).ceil() as i32 + 1);
-        for cy in y0..=y1 {
-            for cx in x0..=x1 {
-                if self.explored_cell(cx, cy) {
-                    let c = cam.w2s(vec2((cx as f32 + 0.5) * cell, (cy as f32 + 0.5) * cell));
-                    draw_circle(c.x, c.y, cell * z * 0.78, FOG_EXPLORED);
-                }
+        // Round blots up close; far out, plain squares (cheaper, and as good).
+        let size = cell * z;
+        self.explored.each(x0, y0, x1, y1, |cx, cy| {
+            let c = cam.w2s(vec2((cx as f32 + 0.5) * cell, (cy as f32 + 0.5) * cell));
+            if size >= 6.0 {
+                draw_circle(c.x, c.y, size * 0.78, FOG_EXPLORED);
+            } else {
+                draw_rectangle(c.x - size * 0.6, c.y - size * 0.6, size * 1.2, size * 1.2, FOG_EXPLORED);
             }
-        }
+        });
         for (c, r) in &self.sources {
             let s = cam.w2s(*c);
             draw_circle(s.x, s.y, r * z, WHITE);
@@ -381,61 +383,63 @@ impl WorldView {
         let fixed = |v: f32| (v * FP as f32) as i32;
         let (x0, y0, x1, y1) = (fixed(tl.x - 9.0), fixed(tl.y - 9.0), fixed(br.x + 9.0), fixed(br.y + 9.0));
 
-        // Asteroids.
-        let edge = (z * 0.08).clamp(1.2, 3.0);
-        world.rocks_in(x0, y0, x1, y1, |_, r| {
-            let c = fpv(r.x, r.y);
-            let rad = fp(r.r);
-            if !cam.visible(c, rad + 1.0) || !(sight.explored(c) || sight.explored(c + vec2(rad, 0.0)) || sight.explored(c - vec2(rad, 0.0)) || sight.explored(c + vec2(0.0, rad)) || sight.explored(c - vec2(0.0, rad))) {
-                return;
-            }
-            let sc = cam.w2s(c);
-            if z * rad > 6.0 {
-                let pts = rock_outline(r.seed);
-                let outer: Vec<Vec2> = pts.iter().map(|p| sc + *p * rad * z).collect();
-                let inner: Vec<Vec2> = pts.iter().map(|p| sc + *p * rad * z * 0.55).collect();
-                let shade = 0.8 + 0.4 * hash(r.seed, 7);
-                for k in 0..outer.len() {
-                    draw_triangle(sc, outer[k], outer[(k + 1) % outer.len()], scale_rgb(pal::WALL_FILL, shade));
+        if z >= FAR_ZOOM {
+            // Asteroids.
+            let edge = (z * 0.08).clamp(1.2, 3.0);
+            world.rocks_in(x0, y0, x1, y1, |_, r| {
+                let c = fpv(r.x, r.y);
+                let rad = fp(r.r);
+                if !cam.visible(c, rad + 1.0) || !(sight.explored(c) || sight.explored(c + vec2(rad, 0.0)) || sight.explored(c - vec2(rad, 0.0)) || sight.explored(c + vec2(0.0, rad)) || sight.explored(c - vec2(0.0, rad))) {
+                    return;
                 }
-                poly_lines(&inner, 1.0, with_alpha(pal::WALL_EDGE, 0.18));
-                poly_lines(&outer, edge, pal::WALL_EDGE);
-            } else {
-                draw_circle(sc.x, sc.y, rad * z, pal::WALL_FILL);
-                draw_circle_lines(sc.x, sc.y, rad * z, 1.0, pal::WALL_EDGE);
-            }
-        });
+                let sc = cam.w2s(c);
+                if z * rad > 6.0 {
+                    let pts = rock_outline(r.seed);
+                    let outer: Vec<Vec2> = pts.iter().map(|p| sc + *p * rad * z).collect();
+                    let inner: Vec<Vec2> = pts.iter().map(|p| sc + *p * rad * z * 0.55).collect();
+                    let shade = 0.8 + 0.4 * hash(r.seed, 7);
+                    for k in 0..outer.len() {
+                        draw_triangle(sc, outer[k], outer[(k + 1) % outer.len()], scale_rgb(pal::WALL_FILL, shade));
+                    }
+                    poly_lines(&inner, 1.0, with_alpha(pal::WALL_EDGE, 0.18));
+                    poly_lines(&outer, edge, pal::WALL_EDGE);
+                } else {
+                    draw_circle(sc.x, sc.y, rad * z, pal::WALL_FILL);
+                    draw_circle_lines(sc.x, sc.y, rad * z, 1.0, pal::WALL_EDGE);
+                }
+            });
 
-        // Crystals.
-        world.ores_in(x0, y0, x1, y1, |o| {
-            let c = fpv(o.x, o.y);
-            if !cam.visible(c, 1.5) || !sight.explored(c) {
-                return;
-            }
-            let sc = cam.w2s(c);
-            let r = fp(ore_radius(o.amount)) * z;
-            let id = (o.id as u32) ^ ((o.id >> 32) as u32).wrapping_mul(2_654_435_761);
-            let h = hash(id, 3);
-            let pulse = 0.75 + 0.25 * (t * 1.6 + h * 20.0).sin();
-            if z < 5.0 {
-                draw_circle(sc.x, sc.y, r.max(1.0), with_alpha(pal::ORE, 0.8 * pulse));
-                return;
-            }
-            // A cluster of crystal shards pointing outwards.
-            let base = h * TAU;
-            let shards = 3 + (id % 3) as usize;
-            for k in 0..shards {
-                let a = base + k as f32 * TAU / shards as f32 + hash(id, k as u32) * 0.8;
-                let len = r * (0.9 + 0.6 * hash(id, 10 + k as u32));
-                let dir = Vec2::from_angle(a);
-                let side = dir.perp() * r * 0.28;
-                let root = sc - dir * r * 0.15;
-                let shard = [root + dir * len, root + side, root - dir * r * 0.25, root - side];
-                poly_fill(&shard, with_alpha(pal::ORE, 0.2 * pulse));
-                poly_lines(&shard, (z * 0.04).max(1.0), with_alpha(pal::ORE, 0.95 * pulse));
-            }
-            draw_circle(sc.x, sc.y, r * 0.2, with_alpha(pal::ORE_CORE, pulse));
-        });
+            // Crystals.
+            world.ores_in(x0, y0, x1, y1, |o| {
+                let c = fpv(o.x, o.y);
+                if !cam.visible(c, 1.5) || !sight.explored(c) {
+                    return;
+                }
+                let sc = cam.w2s(c);
+                let r = fp(ore_radius(o.amount)) * z;
+                let id = (o.id as u32) ^ ((o.id >> 32) as u32).wrapping_mul(2_654_435_761);
+                let h = hash(id, 3);
+                let pulse = 0.75 + 0.25 * (t * 1.6 + h * 20.0).sin();
+                if z < 5.0 {
+                    draw_circle(sc.x, sc.y, r.max(1.0), with_alpha(pal::ORE, 0.8 * pulse));
+                    return;
+                }
+                // A cluster of crystal shards pointing outwards.
+                let base = h * TAU;
+                let shards = 3 + (id % 3) as usize;
+                for k in 0..shards {
+                    let a = base + k as f32 * TAU / shards as f32 + hash(id, k as u32) * 0.8;
+                    let len = r * (0.9 + 0.6 * hash(id, 10 + k as u32));
+                    let dir = Vec2::from_angle(a);
+                    let side = dir.perp() * r * 0.28;
+                    let root = sc - dir * r * 0.15;
+                    let shard = [root + dir * len, root + side, root - dir * r * 0.25, root - side];
+                    poly_fill(&shard, with_alpha(pal::ORE, 0.2 * pulse));
+                    poly_lines(&shard, (z * 0.04).max(1.0), with_alpha(pal::ORE, 0.95 * pulse));
+                }
+                draw_circle(sc.x, sc.y, r * 0.2, with_alpha(pal::ORE_CORE, pulse));
+            });
+        }
 
         // Relics: a turning octagon in the colour of what it gives, a core,
         // and around it an arc for the shards left.
@@ -485,13 +489,17 @@ impl WorldView {
             }
             let sc = cam.w2s(c);
             let pc = player_color(b.owner);
-            let r = fp(BASE_RADIUS) * z;
+            // Far out, a base keeps a size one can spot, with a halo.
+            let r = (fp(BASE_RADIUS) * z).max(8.0);
             let hex = regular(sc, r, 6, PI / 6.0);
-            poly_fill(&hex, with_alpha(pc, 0.12));
-            poly_lines(&hex, (z * 0.1).max(1.5), pc);
-            if r < 8.0 {
+            if fp(BASE_RADIUS) * z < 8.0 {
+                draw_circle(sc.x, sc.y, r * 2.2, with_alpha(pc, 0.08));
+                poly_fill(&hex, with_alpha(pc, 0.35));
+                poly_lines(&hex, 1.5, pc);
                 continue;
             }
+            poly_fill(&hex, with_alpha(pc, 0.12));
+            poly_lines(&hex, (z * 0.1).max(1.5), pc);
             poly_lines(&regular(sc, r * 0.62, 6, PI / 6.0), (z * 0.035).max(1.0), with_alpha(pc, 0.45));
             poly_lines(&regular(sc, r * 0.3, 3, t * 0.6 + b.id as f32), (z * 0.05).max(1.0), mix(pc, WHITE, 0.3));
             draw_circle(sc.x, sc.y, r * 0.07, mix(pc, WHITE, 0.6));
@@ -631,6 +639,13 @@ fn rock_outline(seed: u32) -> Vec<Vec2> {
 
 /// How many units across the map shows.
 pub const MAP_SPAN: f32 = 360.0;
+
+/// How far the camera zooms out and in (pixels per world unit).
+pub const MIN_ZOOM: f32 = 0.5;
+pub const MAX_ZOOM: f32 = 70.0;
+/// Below this zoom, asteroids and crystals are too small to see and too
+/// many to draw: only the fog, the bases, the dronoids and the relics show.
+const FAR_ZOOM: f32 = 1.2;
 
 /// A small round sonar of the surroundings, centred on where we are looking
 /// and fading out at its rim: there is no overview of a world this large.

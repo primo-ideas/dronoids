@@ -1,6 +1,7 @@
 //! Dronoids — program dronoid colonies in a tiny assembly language, in
 //! a shared, persistent sector (or offline, for practice).
 
+mod blocks;
 mod editor;
 mod fx;
 mod game;

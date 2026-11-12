@@ -14,12 +14,13 @@ use dronoids::sim::quests::{self, QUESTS};
 use dronoids::sim::{Command, Doing, Event, World};
 use dronoids::vm::{self, Cat, Reg};
 
+use crate::blocks::Blocks;
 use crate::editor::{token_color, Editor};
 use crate::gfx::{self, mix, pal, player_color, with_alpha, Bloom, Fog};
 use crate::library::{self, Library};
 use crate::platform::Settings;
 use crate::ui::{self, TextField, Ui};
-use crate::view::{draw_minimap, fp, fpv, Cam, Highlight, Sight, WorldView, FOG_UNKNOWN};
+use crate::view::{draw_minimap, fp, fpv, Cam, Highlight, Sight, WorldView, FOG_UNKNOWN, MAX_ZOOM, MIN_ZOOM};
 
 /// Hash checks happen this often (must match the server).
 const HASH_EVERY: u64 = 50;
@@ -85,6 +86,8 @@ enum Act {
     NewProgram,
     Duplicate,
     ResetBuiltin,
+    /// Between the tiles and the text of the program.
+    ToggleTextMode,
     LoadProgram(String),
     CenterOn(Vec2),
     Follow(bool),
@@ -164,6 +167,9 @@ pub struct Game {
     /// The program list, folded away in the editor on small screens.
     list_open: bool,
     help_scroll: f32,
+    /// The program as tiles (the default), or as text.
+    blocks: Blocks,
+    text_mode: bool,
     /// What we can see (fog of war), refreshed every frame.
     sight: Sight,
     fog: Fog,
@@ -207,6 +213,8 @@ impl Game {
             touch_world: false,
             list_open: false,
             help_scroll: 0.0,
+            blocks: Blocks::default(),
+            text_mode: false,
             sight,
             fog: Fog::new(),
         };
@@ -707,6 +715,10 @@ impl Game {
                     Err(e) => self.toast(e, pal::BAD),
                 }
             }
+            Act::ToggleTextMode => {
+                self.text_mode = !self.text_mode;
+                self.editor.focused = self.text_mode && self.edit_target == EditTarget::Program;
+            }
             Act::ResetBuiltin => {
                 let name = self.edit_name.text.clone();
                 if let Some(src) = Library::builtin_source(&name) {
@@ -757,13 +769,15 @@ impl Game {
             .or_else(|| line.and_then(|l| self.line_program(l)).map(|p| self.world.programs[p as usize].source.clone()))
             .unwrap_or_else(|| programs::TEMPLATE.to_string());
         self.editor.set_text(&src);
+        self.blocks = Blocks::default();
         self.editor.read_only = false;
         self.editor.exec_line = None;
         self.edit_name.text = name.to_string();
         self.edit_target = EditTarget::Program;
         self.edit_line = line;
         self.editor_open = true;
-        self.editor.focused = true;
+        // Typing goes to the code only when it is shown as text.
+        self.editor.focused = self.text_mode;
         self.tool = Tool::None;
         // The base whose line this is stays in view beside the editor.
         if let Some(p) = line.and(self.world.base_of(self.me)).map(|b| fpv(b.x, b.y))
@@ -778,6 +792,7 @@ impl Game {
         let Some(d) = self.world.dronoid(id) else { return };
         let (prog, line) = (d.prog, d.line);
         self.editor.set_text(&self.world.programs[prog as usize].source);
+        self.blocks = Blocks::default();
         self.editor.read_only = true;
         self.edit_name.text = self.world.program_name(prog).to_string();
         self.debug_prog = prog;
@@ -1009,9 +1024,10 @@ impl Game {
                     draw_circle(h.x + name_w + 10.0, h.y + bh / 2.0, 4.0, pal::WARN);
                 }
                 let builtin = Library::is_builtin(&self.edit_name.text);
-                let row: [(&str, Option<Act>, bool, Color); 5] = [
+                let row: [(&str, Option<Act>, bool, Color); 6] = [
                     ("List", None, true, pal::ACCENT),
                     ("Apply", Some(Act::Apply), true, pal::GOOD),
+                    (if self.text_mode { "Tiles" } else { "Text" }, Some(Act::ToggleTextMode), true, pal::ACCENT),
                     ("New", Some(Act::NewProgram), true, pal::ACCENT),
                     ("Duplicate", Some(Act::Duplicate), true, pal::ACCENT),
                     ("Original", Some(Act::ResetBuiltin), builtin, pal::ACCENT),
@@ -1076,7 +1092,7 @@ impl Game {
             ];
             for (label, act, enabled) in rest {
                 let w = gfx::text_width(label, 13.0) + 20.0;
-                if x + w > h.x + h.w - 70.0 {
+                if x + w > h.x + h.w - 136.0 {
                     break;
                 }
                 if ui.button_ex(Rect::new(x, h.y, w, bh), label, false, enabled, pal::ACCENT) {
@@ -1089,6 +1105,13 @@ impl Game {
             }
             if ui.button(Rect::new(h.x + h.w - 64.0, h.y, 30.0, bh), "?") {
                 acts.push(Act::ToggleHelp);
+            }
+            let switch = Rect::new(h.x + h.w - 130.0, h.y, 62.0, bh);
+            if ui.button_ex(switch, if self.text_mode { "Tiles" } else { "Text" }, false, true, pal::ACCENT) {
+                acts.push(Act::ToggleTextMode);
+            }
+            if ui.hover(switch) {
+                ui.tooltip(if self.text_mode { "Back to the tiles" } else { "The program as text, to type it" });
             }
 
             self.program_list(ui, lib, Rect::new(l.list.x, l.list.y, l.list.w - 6.0, l.list.h), 24.0, acts);
@@ -1104,14 +1127,18 @@ impl Game {
             ui.pressed = false;
         }
 
-        if self.editor.update(ui, l.code) {
-            acts.push(Act::Apply);
-        }
-        if self.editor.focused {
-            self.edit_name.focused = false;
+        if self.text_mode {
+            if self.editor.update(ui, l.code) {
+                acts.push(Act::Apply);
+            }
+            if self.editor.focused {
+                self.edit_name.focused = false;
+            }
         }
         if debug_id.is_some() {
-            if let Some(line) = self.editor.exec_line {
+            if self.text_mode
+                && let Some(line) = self.editor.exec_line
+            {
                 self.editor.reveal(l.code, line);
             }
         } else {
@@ -1121,7 +1148,20 @@ impl Game {
                 Err(e) => e,
             };
         }
-        self.editor.draw(ui, l.code);
+        if self.text_mode {
+            self.editor.draw(ui, l.code);
+        } else {
+            self.editor.focused = false;
+            let src = self.editor.text();
+            let exec = debug_id.and(self.editor.exec_line);
+            if let Some(next) = self.blocks.ui(ui, l.code, &src, &self.editor.errors, exec, debug_id.is_some()) {
+                self.editor.set_text(&next);
+                self.editor.dirty = true;
+            }
+            if ui.ctrl && is_key_pressed(KeyCode::S) && debug_id.is_none() {
+                acts.push(Act::Apply);
+            }
+        }
         if let Some(r) = list_over {
             ui.pressed = list_pressed;
             ui.solid_panel(r);
@@ -1803,7 +1843,7 @@ impl Game {
 
         if !over && ui.wheel != 0.0 {
             let before = self.cam.s2w(ui.mouse);
-            self.cam.zoom = (self.cam.zoom * 1.15f32.powf(ui.wheel.signum())).clamp(2.0, 70.0);
+            self.cam.zoom = (self.cam.zoom * 1.15f32.powf(ui.wheel.signum())).clamp(MIN_ZOOM, MAX_ZOOM);
             let after = self.cam.s2w(ui.mouse);
             self.cam.center += before - after;
         }
@@ -1862,7 +1902,7 @@ impl Game {
             if self.touch_world {
                 if let Some(p) = ui.pinch {
                     let before = self.cam.s2w(p.mid - p.moved);
-                    self.cam.zoom = (self.cam.zoom * p.scale).clamp(2.0, 70.0);
+                    self.cam.zoom = (self.cam.zoom * p.scale).clamp(MIN_ZOOM, MAX_ZOOM);
                     let after = self.cam.s2w(p.mid);
                     self.cam.center += before - after;
                     self.follow = false;
@@ -2215,7 +2255,7 @@ fn help_overlay(ui: &mut Ui, acts: &mut Vec<Act>, scroll: &mut f32) {
     }
 }
 
-const HELP_INTRO: &str = "A free dronoid runs its instructions up to an ACTION, which takes time; then it starts over.";
+const HELP_INTRO: &str = "Drag tiles into the program (Text: type it instead). A dronoid runs its instructions up to an ACTION, which takes time; then it goes on.";
 
 const HELP_CATS: [(Cat, &str); 4] = [
     (Cat::Action, "actions · take time, set ok to 1 or 0"),
@@ -2386,6 +2426,7 @@ mod tests {
             ("ui.rs", include_str!("ui.rs")),
             ("editor.rs", include_str!("editor.rs")),
             ("view.rs", include_str!("view.rs")),
+            ("blocks.rs", include_str!("blocks.rs")),
         ];
         for (name, code) in screens {
             for line in code.lines().filter(|l| !l.trim_start().starts_with("//")) {
