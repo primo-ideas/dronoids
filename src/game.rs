@@ -1103,7 +1103,7 @@ impl Game {
             ("hold", format!("{}/{}", d.cargo, CARGO_CAP)),
             ("heading", format!("{}°", d.heading)),
             ("position", format!("{}, {}", d.x / FP, d.y / FP)),
-            ("HP", format!("{}/{}", d.hp, DRONOID_HP)),
+            ("HP", format!("{}", d.hp)),
         ];
         for (k, v) in rows {
             gfx::text(k, x, y, 12.0, pal::DIM);
@@ -1149,8 +1149,8 @@ impl Game {
             && let Some(b) = self.world.base_of(self.me)
         {
             let dronoids = self.world.dronoid_count(self.me);
-            let full = dronoids >= b.capacity as usize;
-            let crowd = format!("{dronoids}/{} dronoids{}", b.capacity, if full { " · hangar full" } else { "" });
+            let full = dronoids >= b.room();
+            let crowd = format!("{dronoids}/{} dronoids{}", b.room(), if full { " · hangar full" } else { "" });
             note(&crowd, if full { pal::WARN } else { pal::DIM });
         }
         if self.world.shielded(self.me) {
@@ -1231,7 +1231,7 @@ impl Game {
     fn dock(&self, ui: &mut Ui, acts: &mut Vec<Act>) {
         let Some(me) = self.world.players.get(self.me as usize) else { return };
         let compact = ui::compact();
-        let can_grow = self.world.base_of(self.me).is_some_and(|b| (b.capacity as usize) < MAX_DRONOIDS_PER_PLAYER);
+        let can_grow = self.world.base_of(self.me).is_some_and(|b| b.room() < MAX_DRONOIDS_PER_PLAYER);
         let can = me.minerals >= EXPAND_COST && me.alive && can_grow;
         let items: [(String, bool, bool, Color, Act); 5] = [
             (
@@ -1298,7 +1298,7 @@ impl Game {
             .world
             .players
             .iter()
-            .map(|p| (p.id, self.world.base_of(p.id).map_or(0, |b| b.capacity as usize), self.world.dronoid_count(p.id), p.alive))
+            .map(|p| (p.id, self.world.base_of(p.id).map_or(0, |b| b.room()), self.world.dronoid_count(p.id), p.alive))
             .collect();
         rows.sort_by_key(|r| (!r.3, std::cmp::Reverse(r.2 * 1000 + r.1), r.0));
         let shown = rows.len().min(14);
@@ -1420,7 +1420,7 @@ impl Game {
             Sel::Dronoid(id) => {
                 let Some(d) = self.world.dronoid(id) else { return };
                 ui.panel(r);
-                health(d.hp, DRONOID_HP);
+                health(d.hp, self.world.base_of(d.owner).map_or(DRONOID_HP, |b| b.dronoid_hp()));
                 let (state, col) = doing_label(d.doing);
                 if d.owner != self.me {
                     theirs(d.owner, &state);
@@ -1444,7 +1444,7 @@ impl Game {
     /// Rows of my base's panel, top to bottom.
     const BASE_HEAD: f32 = 74.0;
     const LINE_ROW: f32 = 32.0;
-    const PERK_ROW: f32 = 36.0;
+    const PERK_ROW: f32 = 64.0;
 
     fn base_panel_height(b: &dronoids::sim::Base) -> f32 {
         let perks = if b.has_perks() { Game::PERK_ROW } else { 0.0 };
@@ -1461,15 +1461,15 @@ impl Game {
         let me = &self.world.players[self.me as usize];
         let out = self.world.dronoid_count(self.me);
         gfx::text("base", x + 12.0, y + 10.0, 15.0, pal::ACCENT);
-        let hangar = format!("{out}/{} dronoids", b.capacity);
-        let full = out >= b.capacity as usize;
+        let hangar = format!("{out}/{} dronoids", b.room());
+        let full = out >= b.room();
         gfx::text(&hangar, x + w - 12.0 - gfx::text_width(&hangar, 12.0), y + 12.0, 12.0, if full { pal::WARN } else { pal::DIM });
         if b.hp < b.max_hp() && ui.hover(Rect::new(x, y + 26.0, w, 12.0)) {
             ui.tooltip(&format!("{} / {}: a damaged base slowly mends itself", b.hp, b.max_hp()));
         }
 
         let cy = y + 40.0;
-        let room = (b.capacity as usize) < MAX_DRONOIDS_PER_PLAYER;
+        let room = b.room() < MAX_DRONOIDS_PER_PLAYER;
         let expand = Rect::new(x + 12.0, cy, 128.0, 26.0);
         if ui.button_ex(expand, &format!("Expand · {EXPAND_COST}"), false, room && me.minerals >= EXPAND_COST, pal::GOOD) {
             acts.push(Act::Issue(Command::Expand));
@@ -1531,7 +1531,7 @@ impl Game {
                 ("paused".to_string(), 0.0)
             } else if n >= l.quota as usize {
                 ("full: its quota is reached".to_string(), 1.0)
-            } else if out >= b.capacity as usize {
+            } else if out >= b.room() {
                 ("the hangar is full: Expand".to_string(), 1.0)
             } else if me.minerals < DRONOID_COST {
                 (format!("needs {DRONOID_COST} crystals"), 0.0)
@@ -1550,7 +1550,7 @@ impl Game {
             ly += Game::LINE_ROW;
         }
         if b.has_perks() {
-            self.perk_row(ui, b, Rect::new(x + 12.0, ly + 4.0, w - 24.0, 26.0));
+            self.perk_row(ui, b, Rect::new(x + 12.0, ly + 4.0, w - 24.0, Game::PERK_ROW - 8.0));
             ly += Game::PERK_ROW;
         }
         if b.lines.len() < MAX_LINES {
@@ -1586,29 +1586,37 @@ impl Game {
         }
     }
 
-    /// What relics gave the base: one cell a perk, its name over a bar of
-    /// three levels, the one under way filling up shard by shard.
+    /// What relics gave the base: two rows of five cells, a perk's name
+    /// and level over a bar of its hundred levels, the next one filling up
+    /// shard by shard just under it.
     fn perk_row(&self, ui: &mut Ui, b: &dronoids::sim::Base, r: Rect) {
-        let cell = r.w / PERKS as f32;
+        let per_row = PERKS.div_ceil(2);
+        let cell = r.w / per_row as f32;
+        let row_h = r.h / 2.0;
         for p in Perk::ALL {
-            let cr = Rect::new(r.x + p.index() as f32 * cell, r.y, cell - 6.0, r.h);
+            let (col_i, row_i) = (p.index() % per_row, p.index() / per_row);
+            let cr = Rect::new(r.x + col_i as f32 * cell, r.y + row_i as f32 * row_h, cell - 6.0, row_h - 4.0);
             let (shards, level) = (b.shards(p), b.level(p));
             let col = if shards > 0 { gfx::perk_color(p) } else { pal::FAINT };
-            gfx::text(p.name(), cr.x, cr.y, gfx::fit_size(p.name(), 11.0, cr.w), if shards > 0 { mix(col, WHITE, 0.3) } else { pal::DIM });
-            let seg = (cr.w - 4.0) / PERK_MAX_LEVEL as f32;
-            for l in 0..PERK_MAX_LEVEL {
-                let fill = ((shards - l * RELIC_SHARDS) as f32 / RELIC_SHARDS as f32).clamp(0.0, 1.0);
-                let sx = cr.x + l as f32 * (seg + 2.0);
-                draw_rectangle(sx, cr.y + 17.0, seg, 4.0, with_alpha(pal::FAINT, 0.7));
-                draw_rectangle(sx, cr.y + 17.0, seg * fill, 4.0, with_alpha(col, if fill >= 1.0 { 1.0 } else { 0.55 }));
+            let tc = if shards > 0 { mix(col, WHITE, 0.3) } else { pal::DIM };
+            let l = if level > 0 { format!("{level}") } else { String::new() };
+            let lw = if level > 0 { gfx::text_width(&l, 10.0) + 4.0 } else { 0.0 };
+            gfx::text(p.name(), cr.x, cr.y, gfx::fit_size(p.name(), 11.0, cr.w - lw), tc);
+            gfx::text(&l, cr.x + cr.w - lw + 4.0, cr.y + 1.0, 10.0, col);
+            let k = level as f32 / PERK_MAX_LEVEL as f32;
+            draw_rectangle(cr.x, cr.y + 16.0, cr.w, 4.0, with_alpha(pal::FAINT, 0.7));
+            draw_rectangle(cr.x, cr.y + 16.0, cr.w * k, 4.0, col);
+            if level < PERK_MAX_LEVEL {
+                let next = (shards - level * SHARDS_PER_LEVEL) as f32 / SHARDS_PER_LEVEL as f32;
+                draw_rectangle(cr.x, cr.y + 22.0, cr.w * next, 2.0, with_alpha(col, 0.5));
             }
             if ui.hover(cr) {
                 let next = if level >= PERK_MAX_LEVEL {
                     "as high as it goes".to_string()
                 } else {
-                    format!("{}/{RELIC_SHARDS} shards to level {}", shards - level * RELIC_SHARDS, level + 1)
+                    format!("{}/{SHARDS_PER_LEVEL} shards to level {}", shards - level * SHARDS_PER_LEVEL, level + 1)
                 };
-                let now = if level > 0 { format!("level {level}, {}", p.effect(level)) } else { format!("a level: {}", p.effect(1)) };
+                let now = if level > 0 { format!("level {level}/{PERK_MAX_LEVEL}, {}", p.effect(level)) } else { format!("one level: {}", p.effect(1)) };
                 ui.tooltip(&format!("{}: {now} · {next}", p.name()));
             }
         }
@@ -1629,7 +1637,7 @@ impl Game {
 
     fn relic_text(k: &dronoids::sim::RelicSpot) -> String {
         format!(
-            "{} relic, {} shard{} left · MINE it, {RELIC_SHARDS} shards a level: {} (prospector looks for them)",
+            "{} relic, {} shard{} left · MINE it, {SHARDS_PER_LEVEL} shards a level: {} (prospector looks for them)",
             k.perk.name(),
             k.left,
             if k.left == 1 { "" } else { "s" },
@@ -2009,7 +2017,7 @@ impl Game {
     pub fn demo_relics(&mut self, look: bool) {
         let Some(bi) = self.world.bases.iter().position(|b| b.owner == self.me) else { return };
         let (fx, fy) = (self.world.bases[bi].x, self.world.bases[bi].y);
-        self.world.bases[bi].perks = [14, 25, 30, 5, 0];
+        self.world.bases[bi].perks = [140, 90, 33, 260, 5, 70, 400, 18, 52, 0];
         if !look {
             return;
         }
@@ -2176,10 +2184,11 @@ fn help_sections(touch: bool) -> Vec<(&'static str, Vec<String>)> {
         ]),
         ("relics · far from the starting places", vec![
             format!("MINE within reach of a RELIC takes 1 of its {RELIC_SHARDS} shards"),
-            format!("{RELIC_SHARDS} shards of a kind: a level of that perk for the base (up to {PERK_MAX_LEVEL})"),
-            "Forge: faster lines · Assembly: one more line".into(),
-            "Refinery: more per unload · Bulwark: more hull".into(),
-            "Arsenal: harder hits".into(),
+            format!("{SHARDS_PER_LEVEL} shards of a kind: a level of that perk for the base (up to {PERK_MAX_LEVEL})"),
+            format!("Forge: faster lines · Assembly: a line every {ASSEMBLY_LEVELS} levels"),
+            "Refinery: more per unload · Bulwark: more hull · Arsenal: harder hits".into(),
+            "Vision: the base sees further · Drills: faster mining".into(),
+            "Armor: tougher dronoids · Hangar: more room · Nanites: faster mending".into(),
         ]),
     ];
     if touch {

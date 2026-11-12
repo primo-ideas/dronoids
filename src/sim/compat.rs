@@ -153,7 +153,7 @@ pub(super) fn from_json(bytes: &[u8]) -> Result<World, String> {
 pub(super) fn found_bases(w: &mut World, mut factories: Vec<Factory>, boosts: &BTreeMap<u32, [u16; 4]>) {
     factories.retain(|f| f.hp > 0);
     factories.sort_by_key(|f| f.id);
-    let full = (RELIC_SHARDS * PERK_MAX_LEVEL) as u16;
+    let full = (SHARDS_PER_LEVEL * PERK_MAX_LEVEL) as u16;
     // Factory id -> line id.
     let mut moved: BTreeMap<u32, u32> = BTreeMap::new();
     let mut first_line: BTreeMap<u8, u32> = BTreeMap::new();
@@ -190,6 +190,7 @@ pub(super) fn found_bases(w: &mut World, mut factories: Vec<Factory>, boosts: &B
             mem: first.mem,
             lines,
             perks,
+            refined: 0,
             spawned: mine.iter().map(|f| f.spawned).sum(),
         };
         base.hp = base.max_hp();
@@ -487,11 +488,12 @@ mod tests {
     fn factories_and_their_bonuses_become_a_base_and_its_perks() {
         let mut w = lived_in();
         let mut factories = factories_of(&w);
-        // Ana had five factories, more than a base runs lines, one of them
-        // a scout factory; a destroyed one is left out.
+        // Ana had nine factories, more than a base runs lines, some of them
+        // scout factories; a destroyed one is left out.
         let ana: Vec<u32> = factories.iter().filter(|f| f.owner == 0).map(|f| f.id).collect();
         let scout = w.intern_program("scout", programs::builtin("scout").unwrap().source).unwrap();
-        for (i, prog) in [w.bases[0].lines[0].prog, scout, scout, w.bases[0].lines[0].prog].into_iter().enumerate() {
+        let miner = w.bases[0].lines[0].prog;
+        for (i, prog) in [miner, scout, scout, miner, scout, miner, miner].into_iter().enumerate() {
             let mut f = factories[0].clone();
             f.id = 9000 + i as u32;
             f.x += (i as i32 + 2) * 6 * FP;
@@ -502,9 +504,9 @@ mod tests {
         gone.id = 9100;
         gone.hp = 0;
         factories.push(gone);
-        // A dronoid of the fifth factory (whose program is the first's).
+        // A dronoid of the ninth factory (whose program is the first's).
         let d = w.dronoids.iter_mut().find(|d| d.owner == 0).unwrap();
-        d.line = 9003;
+        d.line = 9006;
         let moved = d.id;
         let mut json: serde_json::Value = serde_json::from_slice(&w.to_save()).unwrap();
         let fields = json.as_object_mut().unwrap();
@@ -519,13 +521,13 @@ mod tests {
         let b = back.base_of(0).unwrap();
         assert_eq!((b.x, b.y), (factories[0].x, factories[0].y), "where the oldest factory stood");
         assert_eq!(b.lines.len(), MAX_LINES);
-        assert_eq!(b.lines.iter().map(|l| l.id).collect::<Vec<_>>(), vec![ana[0], ana[1], 9000, 9001, 9002]);
+        assert_eq!(b.lines.iter().map(|l| l.id).collect::<Vec<_>>(), vec![ana[0], ana[1], 9000, 9001, 9002, 9003, 9004]);
         assert_eq!(back.dronoid(moved).unwrap().line, ana[0], "with the line running its program");
-        assert_eq!(b.level(Perk::Forge), 2);
-        assert_eq!((b.shards(Perk::Refinery), b.shards(Perk::Bulwark), b.shards(Perk::Arsenal)), (5, 36, 1));
+        assert_eq!(b.level(Perk::Forge), 24 / SHARDS_PER_LEVEL);
+        assert_eq!((b.shards(Perk::Refinery), b.shards(Perk::Bulwark), b.shards(Perk::Arsenal)), (5, 60, 1));
         assert_eq!(b.level(Perk::Assembly), 0);
         assert_eq!(b.hp, b.max_hp());
-        assert!(b.capacity >= 6 * DEFAULT_QUOTA as u16);
+        assert!(b.capacity >= 9 * DEFAULT_QUOTA as u16);
         assert!(back.dronoids.iter().all(|d| back.base_of(d.owner).and_then(|b| b.line(d.line)).is_some()));
         // And it is saved as a base from then on.
         let again = World::from_save(&back.to_save()).unwrap();

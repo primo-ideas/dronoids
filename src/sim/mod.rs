@@ -134,8 +134,13 @@ pub struct Base {
     /// Hive memory, shared by all its dronoids (PEEK / POKE).
     pub mem: [i32; HIVE_MEM],
     pub lines: Vec<Line>,
-    /// Shards received, by kind of perk (`Perk::index`).
+    /// Shards received, by kind of perk (`Perk::index`). Kept as a list,
+    /// so that saves from when there were fewer kinds still read.
+    #[serde(with = "perk_shards")]
     pub perks: [u16; PERKS],
+    /// Refinery's extra, in hundredths of a crystal, until a whole one.
+    #[serde(default)]
+    pub refined: u32,
     /// Dronoids it ever built.
     pub spawned: u32,
 }
@@ -152,10 +157,63 @@ pub struct Line {
     pub quota: u8,
 }
 
+/// A base's shards, as a list of any length (missing kinds have none).
+mod perk_shards {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::rules::PERKS;
+
+    pub fn serialize<S: Serializer>(perks: &[u16; PERKS], s: S) -> Result<S::Ok, S::Error> {
+        perks.as_slice().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u16; PERKS], D::Error> {
+        let list = Vec::<u16>::deserialize(d)?;
+        let mut out = [0; PERKS];
+        for (o, v) in out.iter_mut().zip(list) {
+            *o = v;
+        }
+        Ok(out)
+    }
+}
+
 impl Base {
     /// How many levels of `perk` it has.
     pub fn level(&self, perk: Perk) -> i32 {
-        (self.perks[perk.index()] as i32 / RELIC_SHARDS).min(PERK_MAX_LEVEL)
+        (self.perks[perk.index()] as i32 / SHARDS_PER_LEVEL).min(PERK_MAX_LEVEL)
+    }
+
+    /// How many living dronoids it holds: its hangar, and what Hangar adds.
+    pub fn room(&self) -> usize {
+        (self.capacity as usize + HANGAR_SLOTS as usize * self.level(Perk::Hangar) as usize).min(MAX_DRONOIDS_PER_PLAYER)
+    }
+
+    /// Hull of a dronoid it builds now.
+    pub fn dronoid_hp(&self) -> i32 {
+        DRONOID_HP + self.level(Perk::Armor) / ARMOR_LEVELS
+    }
+
+    /// How far it sees.
+    pub fn vision(&self) -> i32 {
+        VISION_BASE + VISION_PER_LEVEL * self.level(Perk::Vision)
+    }
+
+    /// Damage of a shot of one of its dronoids. Between two whole points,
+    /// the next one comes as often in ten as the levels past the last.
+    pub fn damage(&self, roll: u64) -> i32 {
+        let level = self.level(Perk::Arsenal);
+        let extra = (roll % ARSENAL_LEVELS as u64) < (level % ARSENAL_LEVELS) as u64;
+        ATTACK_DAMAGE + level / ARSENAL_LEVELS + extra as i32
+    }
+
+    /// How long one MINE of its dronoids takes.
+    pub fn mine_ticks(&self) -> i32 {
+        (MINE_TICKS * 100 / (100 + DRILL_PERCENT * self.level(Perk::Drills))).max(1)
+    }
+
+    /// Points it mends every `BASE_REPAIR_TICKS`.
+    pub fn repair(&self) -> i32 {
+        1 + self.level(Perk::Nanites) / NANITE_LEVELS
     }
 
     /// Shards it holds of `perk` (levels reached included).
@@ -174,12 +232,12 @@ impl Base {
 
     /// Ticks between two dronoids of one of its lines.
     pub fn spawn_ticks(&self) -> i32 {
-        SPAWN_TICKS * (100 - FORGE_PERCENT * self.level(Perk::Forge)) / 100
+        SPAWN_TICKS * 100 / (100 + FORGE_PERCENT * self.level(Perk::Forge))
     }
 
     /// How many production lines it runs.
     pub fn lines_allowed(&self) -> usize {
-        (BASE_LINES + self.level(Perk::Assembly) as usize).min(MAX_LINES)
+        (BASE_LINES + (self.level(Perk::Assembly) / ASSEMBLY_LEVELS) as usize).min(MAX_LINES)
     }
 
     pub fn line(&self, id: u32) -> Option<&Line> {
@@ -809,6 +867,7 @@ impl World {
             for s in b.perks {
                 h.add(s as i64);
             }
+            h.add(b.refined as i64);
             for l in &b.lines {
                 for v in [l.id as i32, l.prog as i32, l.timer, l.enabled as i32, l.spawned as i32, l.quota as i32] {
                     h.add(v as i64);
@@ -893,6 +952,7 @@ impl World {
             mem: [0; HIVE_MEM],
             lines,
             perks: [0; PERKS],
+            refined: 0,
             spawned: 0,
         });
     }
@@ -1114,10 +1174,10 @@ impl World {
                 let Some(bi) = self.base_index_of(player) else { return };
                 let p = &mut self.players[player as usize];
                 let b = &mut self.bases[bi];
-                if p.minerals >= EXPAND_COST && (b.capacity as usize) < MAX_DRONOIDS_PER_PLAYER {
+                if p.minerals >= EXPAND_COST && b.room() < MAX_DRONOIDS_PER_PLAYER {
                     p.minerals -= EXPAND_COST;
                     b.capacity = (b.capacity + EXPAND_SLOTS).min(MAX_DRONOIDS_PER_PLAYER as u16);
-                    let capacity = b.capacity;
+                    let capacity = b.room() as u16;
                     self.events.push(Event::Expanded { owner: player, capacity });
                 }
             }
@@ -1179,16 +1239,17 @@ impl World {
         }
         let repair = self.tick.is_multiple_of(BASE_REPAIR_TICKS);
         for bi in 0..self.bases.len() {
-            let (max_hp, wait) = (self.bases[bi].max_hp(), self.bases[bi].spawn_ticks());
+            let b = &self.bases[bi];
+            let (max_hp, wait, mend, hull, room) = (b.max_hp(), b.spawn_ticks(), b.repair(), b.dronoid_hp(), b.room());
             let b = &mut self.bases[bi];
             if repair && b.hp > 0 && b.hp < max_hp {
-                b.hp += 1;
+                b.hp = (b.hp + mend).min(max_hp);
             }
+            // (A hull from when Bulwark gave more stays until it is hit.)
             if b.hp <= 0 {
                 continue;
             }
             let owner = b.owner as usize;
-            let room = (b.capacity as usize).min(MAX_DRONOIDS_PER_PLAYER);
             for li in 0..self.bases[bi].lines.len() {
                 let b = &mut self.bases[bi];
                 let l = &mut b.lines[li];
@@ -1232,7 +1293,7 @@ impl World {
                     prev_x: bx,
                     prev_y: by,
                     heading: geo::norm_deg(angle),
-                    hp: DRONOID_HP,
+                    hp: hull,
                     cargo: 0,
                     line,
                     prog,
@@ -1315,6 +1376,7 @@ impl World {
                 true
             }
             Action::Mine => {
+                let mine_ticks = self.base_of(owner).map_or(MINE_TICKS, |b| b.mine_ticks());
                 // A relic within reach, and no crystal nearer: a shard of
                 // it, for the dronoid's base.
                 let ore_gap = self.nearest(x, y, owner, id, thing::ORE).map_or(i32::MAX, |t| t.gap);
@@ -1325,7 +1387,7 @@ impl World {
                     face(self, tx, ty);
                     let d = &mut self.dronoids[di];
                     d.doing = Doing::Mine { tx, ty };
-                    d.busy = MINE_TICKS;
+                    d.busy = mine_ticks;
                     let (perk, level, depleted) = shard;
                     self.events.push(Event::Shard { owner, x, y, tx, ty, perk, level, depleted });
                     return true;
@@ -1343,7 +1405,7 @@ impl World {
                 let d = &mut self.dronoids[di];
                 d.cargo += 1;
                 d.doing = Doing::Mine { tx: ox, ty: oy };
-                d.busy = MINE_TICKS;
+                d.busy = mine_ticks;
                 self.events.push(Event::Mine { owner, x, y, tx: ox, ty: oy, depleted: left <= 0 });
                 true
             }
@@ -1357,7 +1419,13 @@ impl World {
                 };
                 let (tx, ty) = (x + t.dx, y + t.dy);
                 // A refinery makes more of what is unloaded there.
-                let refined = cargo * self.base(t.id as u32).map_or(0, |b| b.level(Perk::Refinery)) / REFINERY_PER;
+                let refined = self.base_index(t.id as u32).map_or(0, |bi| {
+                    let b = &mut self.bases[bi];
+                    b.refined += (cargo * REFINERY_PERCENT * b.level(Perk::Refinery)) as u32;
+                    let whole = b.refined / 100;
+                    b.refined %= 100;
+                    whole as i32
+                });
                 self.players[owner as usize].minerals += cargo + refined;
                 face(self, tx, ty);
                 let d = &mut self.dronoids[di];
@@ -1378,8 +1446,8 @@ impl World {
                 let base = self
                     .nearest(x, y, owner, id, thing::EBASE)
                     .filter(|t| t.gap <= ATTACK_RANGE && self.base(t.id as u32).is_some_and(|b| !self.shielded(b.owner)));
-                let arsenal = self.base_of(owner).map_or(0, |b| b.level(Perk::Arsenal));
-                let damage = ATTACK_DAMAGE + ARSENAL_DAMAGE * arsenal;
+                let roll = mix(self.tick, id as u64);
+                let damage = self.base_of(owner).map_or(ATTACK_DAMAGE, |b| b.damage(roll));
                 let (tx, ty) = match (dronoid, base) {
                     (Some(t), b) if b.is_none_or(|b| t.gap <= b.gap) => {
                         let ti = self.dronoid_index(t.id as u32).unwrap();
@@ -1423,7 +1491,7 @@ impl World {
         let perk = Perk::of(self.terrain.relic(relic)?.kind);
         let bi = self.base_index_of(owner)?;
         let before = self.bases[bi].level(perk);
-        if self.bases[bi].shards(perk) >= RELIC_SHARDS * PERK_MAX_LEVEL {
+        if self.bases[bi].shards(perk) >= SHARDS_PER_LEVEL * PERK_MAX_LEVEL {
             return None;
         }
         self.bases[bi].perks[perk.index()] += 1;
@@ -1438,6 +1506,12 @@ impl World {
                 // The new plating comes whole.
                 Perk::Bulwark => self.bases[bi].hp += BULWARK_HP,
                 Perk::Assembly => self.add_lines(bi),
+                // It sees further at once.
+                Perk::Vision => {
+                    let b = &self.bases[bi];
+                    let (x, y, r) = (b.x, b.y, b.vision());
+                    self.reveal(owner, x, y, r);
+                }
                 _ => {}
             }
         }
@@ -2105,8 +2179,8 @@ mod relic_tests {
                 _ => None,
             }));
         }
-        assert_eq!(levels, vec![(0, relic.perk, 1, true)]);
-        assert_eq!(w.bases[0].level(relic.perk), 1);
+        assert_eq!(levels, vec![(0, relic.perk, 1, false), (0, relic.perk, 2, false), (0, relic.perk, 3, true)], "a relic is three levels");
+        assert_eq!(w.bases[0].level(relic.perk), 3);
         assert_eq!(w.bases[0].shards(relic.perk), RELIC_SHARDS);
         let mut left = 0;
         w.relics_near(relic.x, relic.y, FP, |_| left += 1);
@@ -2118,7 +2192,7 @@ mod relic_tests {
         let copy = World::from_bytes(&w.to_bytes()).unwrap();
         assert_eq!(copy.state_hash(), w.state_hash());
         let saved = World::from_save(&w.to_save()).unwrap();
-        assert_eq!(saved.bases[0].level(relic.perk), 1);
+        assert_eq!(saved.bases[0].level(relic.perk), 3);
         assert_eq!(saved.state_hash(), w.state_hash());
 
         // A day later it is whole again.
@@ -2130,10 +2204,12 @@ mod relic_tests {
     }
 
     #[test]
-    fn a_base_takes_three_levels_of_a_perk_and_no_more() {
+    fn a_base_takes_a_hundred_levels_of_a_perk_and_no_more() {
         let mut w = colony("miner");
         let relic = nearest_relic(&w);
-        let full = (RELIC_SHARDS * PERK_MAX_LEVEL) as u16;
+        let full = (SHARDS_PER_LEVEL * PERK_MAX_LEVEL) as u16;
+        // A whole relic is three levels.
+        assert_eq!(RELIC_SHARDS / SHARDS_PER_LEVEL, 3);
         w.bases[0].perks[relic.perk.index()] = full - 1;
         assert_eq!(w.bases[0].level(relic.perk), PERK_MAX_LEVEL - 1);
         assert_eq!(w.take_shard(0, relic.id), Some((relic.perk, Some(PERK_MAX_LEVEL), false)));
@@ -2141,6 +2217,19 @@ mod relic_tests {
         assert_eq!(w.worn[&relic.id].left, RELIC_SHARDS - 1, "and the relic is left to others");
         w.step(&[(1, Command::Join { name: "b".into(), bot: false })]);
         assert_eq!(w.take_shard(1, relic.id), None, "no base, no shard");
+    }
+
+    /// Bases from when there were five kinds of perks read back.
+    #[test]
+    fn a_base_saved_with_fewer_kinds_of_perks_reads_back() {
+        let w = colony("miner");
+        let mut json: serde_json::Value = serde_json::from_slice(&w.to_save()).unwrap();
+        let base = &mut json["bases"][0];
+        base["perks"] = serde_json::json!([36, 24, 36, 36, 36]);
+        base.as_object_mut().unwrap().remove("refined");
+        let back = World::from_save(&serde_json::to_vec(&json).unwrap()).unwrap();
+        assert_eq!(back.bases[0].perks, [36, 24, 36, 36, 36, 0, 0, 0, 0, 0]);
+        assert_eq!(back.bases[0].level(Perk::Forge), 9);
     }
 
     /// Every kind of relic, somewhere in the sector.
@@ -2157,14 +2246,31 @@ mod relic_tests {
         let mut w = colony("miner");
         let b = &w.bases[0];
         assert_eq!((b.spawn_ticks(), b.max_hp(), b.lines_allowed()), (SPAWN_TICKS, BASE_HP, BASE_LINES));
-        w.bases[0].perks = [(RELIC_SHARDS * 2) as u16; PERKS];
+        assert_eq!((b.room(), b.dronoid_hp(), b.vision(), b.mine_ticks(), b.repair()), (BASE_CAPACITY as usize, DRONOID_HP, VISION_BASE, MINE_TICKS, 1));
+        let level = |n: i32| (n * SHARDS_PER_LEVEL) as u16;
+        w.bases[0].perks = [level(50); PERKS];
         let b = &w.bases[0];
-        assert_eq!(b.spawn_ticks(), SPAWN_TICKS * 60 / 100);
-        assert_eq!(b.max_hp(), BASE_HP + 2 * BULWARK_HP);
+        assert_eq!(b.spawn_ticks(), SPAWN_TICKS * 100 / 250);
+        assert_eq!(b.max_hp(), BASE_HP + 50 * BULWARK_HP);
         assert_eq!(b.lines_allowed(), BASE_LINES + 2);
+        assert_eq!(b.room(), BASE_CAPACITY as usize + 50);
+        assert_eq!(b.dronoid_hp(), DRONOID_HP + 10);
+        assert_eq!(b.vision(), VISION_BASE + 50 * FP);
+        assert_eq!(b.mine_ticks(), MINE_TICKS / 2);
+        assert_eq!(b.repair(), 11);
+        // Arsenal: 5 points more, and the sixth never yet at a round level.
+        assert!((0..20).all(|r| b.damage(r) == ATTACK_DAMAGE + 5));
+        w.bases[0].perks[Perk::Arsenal.index()] = level(53);
+        let hits: i32 = (0..1000).map(|r| w.bases[0].damage(r)).sum();
+        assert_eq!(hits, 1000 * (ATTACK_DAMAGE + 5) + 300, "three shots in ten hit a point harder");
+        w.bases[0].perks = [level(100); PERKS];
+        assert_eq!(w.bases[0].lines_allowed(), MAX_LINES);
+        assert_eq!(w.bases[0].mine_ticks(), MINE_TICKS / 3);
+        assert!(w.bases[0].room() <= MAX_DRONOIDS_PER_PLAYER);
 
-        // Assembly: a level more and a new line opens, running the first's program.
-        w.bases[0].perks[Perk::Assembly.index()] = (RELIC_SHARDS * 3 - 1) as u16;
+        // Assembly: twenty levels more and a new line opens, running the first's program.
+        w.bases[0].perks = [0; PERKS];
+        w.bases[0].perks[Perk::Assembly.index()] = level(ASSEMBLY_LEVELS) - 1;
         let relic = (0..)
             .map(|k| {
                 let mut found = None;
@@ -2179,34 +2285,74 @@ mod relic_tests {
             .flatten()
             .next()
             .expect("an Assembly relic");
-        w.add_lines(0);
-        assert_eq!(w.bases[0].lines.len(), BASE_LINES + 2);
-        assert_eq!(w.take_shard(0, relic.id), Some((Perk::Assembly, Some(3), false)));
+        assert_eq!(w.bases[0].lines.len(), BASE_LINES);
+        assert_eq!(w.take_shard(0, relic.id), Some((Perk::Assembly, Some(ASSEMBLY_LEVELS), false)));
         let b = &w.bases[0];
-        assert_eq!(b.lines.len(), MAX_LINES);
+        assert_eq!(b.lines.len(), BASE_LINES + 1);
         assert_eq!(b.lines.last().unwrap().prog, b.lines[0].prog);
 
-        // Refinery: a full hold unloaded there is worth two more crystals.
+        // Refinery: at level 7, 14 % more of every unload, the
+        // fractions adding up from one unload to the next.
+        w.bases[0].perks[Perk::Refinery.index()] = level(7);
         for l in &mut w.bases[0].lines {
             l.quota = 0;
         }
         w.dronoids.truncate(1);
         let (bx, by) = (w.bases[0].x, w.bases[0].y);
-        let d = &mut w.dronoids[0];
-        (d.x, d.y, d.cargo, d.doing, d.busy) = (bx + BASE_RADIUS + DRONOID_RADIUS + FP / 2, by, CARGO_CAP, Doing::Idle, 1);
-        d.vm.reset();
         let before = w.players[0].minerals;
-        for _ in 0..3 {
-            w.step(&[]);
+        for _ in 0..5 {
+            let d = &mut w.dronoids[0];
+            (d.x, d.y, d.cargo, d.doing, d.busy) = (bx + BASE_RADIUS + DRONOID_RADIUS + FP / 2, by, CARGO_CAP, Doing::Idle, 1);
+            d.vm.reset();
+            for _ in 0..3 {
+                w.step(&[]);
+            }
+            assert_eq!(w.dronoids[0].cargo, 0);
         }
-        assert_eq!(w.dronoids[0].cargo, 0);
-        assert_eq!(w.players[0].minerals, before + CARGO_CAP + 2);
+        assert_eq!(w.players[0].minerals, before + 5 * CARGO_CAP + 3, "25 crystals unloaded, 3.5 more");
 
-        // Bulwark: the hull mends up to its new size.
-        w.bases[0].hp = BASE_HP + 2 * BULWARK_HP - 1;
+        // Bulwark and Nanites: the hull mends faster, up to its new size.
+        w.bases[0].perks[Perk::Bulwark.index()] = level(2);
+        w.bases[0].perks[Perk::Nanites.index()] = level(10);
+        w.bases[0].hp = BASE_HP + 2 * BULWARK_HP - 10;
         w.tick = w.tick.next_multiple_of(BASE_REPAIR_TICKS);
         w.step(&[]);
-        assert_eq!(w.bases[0].hp, BASE_HP + 2 * BULWARK_HP);
+        assert_eq!(w.bases[0].hp, BASE_HP + 2 * BULWARK_HP - 7);
+        for _ in 0..4 * BASE_REPAIR_TICKS {
+            w.step(&[]);
+        }
+        assert_eq!(w.bases[0].hp, BASE_HP + 2 * BULWARK_HP, "and never past it");
+
+        // Armor: new dronoids come out tougher.
+        w.bases[0].perks[Perk::Armor.index()] = level(25);
+        w.players[0].minerals = 1000;
+        for l in &mut w.bases[0].lines {
+            l.quota = 5;
+            l.timer = 0;
+        }
+        w.step(&[]);
+        assert!(w.dronoids.iter().any(|d| d.hp == DRONOID_HP + 5));
+
+        // Vision: the base sees further at once.
+        let far = w.bases[0].vision() + 20 * FP;
+        assert!(!w.explored(0, bx + far, by));
+        w.bases[0].perks[Perk::Vision.index()] = level(40) - 1;
+        let vision = (0..)
+            .map(|k| {
+                let mut found = None;
+                w.relics_near(k * 400 * FP, 0, 400 * FP, |r| {
+                    if r.perk == Perk::Vision {
+                        found = Some(r);
+                    }
+                });
+                found
+            })
+            .take(20)
+            .flatten()
+            .next()
+            .expect("a Vision relic");
+        w.take_shard(0, vision.id);
+        assert!(w.explored(0, bx + far, by));
     }
 
     #[test]
@@ -2223,13 +2369,13 @@ mod relic_tests {
         for p in &mut w.players {
             p.shield_until = 0;
         }
-        w.bases.iter_mut().find(|b| b.owner == 0).unwrap().perks[Perk::Arsenal.index()] = RELIC_SHARDS as u16;
+        w.bases.iter_mut().find(|b| b.owner == 0).unwrap().perks[Perk::Arsenal.index()] = (ARSENAL_LEVELS * SHARDS_PER_LEVEL) as u16;
         let shooter = w.dronoids.iter().position(|d| d.owner == 0).unwrap();
         let victim = w.dronoids.iter().position(|d| d.owner == 1).unwrap();
         let (x, y) = (w.dronoids[shooter].x, w.dronoids[shooter].y);
         (w.dronoids[victim].x, w.dronoids[victim].y) = (x + 2 * FP, y);
         w.index_dronoids();
         assert!(w.start(shooter, Action::Attack, 0));
-        assert_eq!(w.dronoids[victim].hp, DRONOID_HP - ATTACK_DAMAGE - ARSENAL_DAMAGE);
+        assert_eq!(w.dronoids[victim].hp, DRONOID_HP - ATTACK_DAMAGE - 1);
     }
 }

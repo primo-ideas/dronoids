@@ -109,7 +109,7 @@ impl Bot {
             // The first line mines; once hunting is allowed the second one
             // hunts (guards, for the easiest colonies); any other mines.
             let fighter = if self.level == Level::Easy { "guard" } else { "hunter" };
-            let cap = base.capacity as u32;
+            let cap = base.room() as u32;
             let fighters = if hunting { cap * self.level.hunter_percent() / 100 } else { 0 };
             let miners = base.lines.len() as u32 - (hunting && base.lines.len() > 1) as u32;
             for (i, l) in base.lines.iter().enumerate() {

@@ -59,15 +59,25 @@ A recent stable Rust (edition 2024). Dependencies: `macroquad` (rendering), `ser
   ones let them roam): settling far from them means growing in
   peace.
 - **Perks, from relics**: rare remains (about one square of 64 units in five, never
-  within 50 units of a starting place), each of 12 shards, of five kinds. A dronoid
-  that `MINE`s one sends the shard to its base; 12 shards of a kind raise the base one
-  level of that perk, up to 3: **Forge** (every line waits 20 % less a level between
-  two dronoids), **Assembly** (one more production line a level, running what the
-  first one runs: up to five lines), **Refinery** (one more crystal a level for every
-  5 unloaded), **Bulwark** (1000 more hull a level), **Arsenal** (its dronoids' shots
-  do 1 more damage a level). A base's perks go with it when it falls; a relic mined
-  out is whole again a day later. The built-in `prospector` looks for them, naively;
-  the miners ignore them.
+  within 50 units of a starting place), each of 12 shards, of ten kinds. A dronoid
+  that `MINE`s one sends the shard to its base; every 4 shards of a kind raise the
+  base one level of that perk (a whole relic is three levels), up to **100 levels**:
+
+  | Perk | A level | At level 100 |
+  | --- | --- | --- |
+  | **Forge** | every line builds 3 % faster | 4 times as fast |
+  | **Assembly** | a production line every 20 levels, running what the first one runs | 7 lines |
+  | **Refinery** | 2 % more of every unload (fractions add up) | 3 times as much |
+  | **Bulwark** | 50 more hull | 8000 hull |
+  | **Arsenal** | a tenth of a point more per shot (the extra point comes that often) | 12 a shot |
+  | **Vision** | the base sees 1 unit further (and maps it at once) | 124 units |
+  | **Drills** | its dronoids mine 2 % faster | 3 times as fast |
+  | **Armor** | a point more hull for new dronoids every 5 levels | 30 hull |
+  | **Hangar** | room for 1 more dronoid | 100 more |
+  | **Nanites** | the base mends a point more a second every 5 levels | 21 a second |
+
+  A base's perks go with it when it falls; a relic mined out is whole again a day
+  later. The built-in `prospector` looks for them, naively; the miners ignore them.
 - **Accounts**: the shared sector only lets in players signed in on the site, with a
   nickname and a password. A sector of one's own (a server started without the site)
   lets anyone in, the nickname then protected by a secret token kept by the browser

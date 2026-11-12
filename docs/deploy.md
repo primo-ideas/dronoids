@@ -78,6 +78,11 @@ carries on; the bonuses relics gave its factories, added up, become the base's p
 hangar holds as many dronoids as the factories' quotas together (12 at least). A
 colony that had no factory left loses its dronoids and lands anew.
 
+Protocol 11 brought five more kinds of perks (Vision, Drills, Armor, Hangar,
+Nanites) and a hundred levels to each, at 4 shards a level instead of 12. A base saved
+with five kinds reads back with none of the new ones; its shards stay as they were,
+so each former level is now three.
+
 ## Preparing the machine (once)
 
 ```bash

@@ -88,7 +88,7 @@ impl Sight {
     pub fn of(world: &World, me: u8, alpha: f32, area: Rect) -> Sight {
         let mut sources: Vec<(Vec2, f32)> = vec![];
         for b in world.bases.iter().filter(|b| b.owner == me) {
-            sources.push((fpv(b.x, b.y), fp(VISION_BASE)));
+            sources.push((fpv(b.x, b.y), fp(b.vision())));
         }
         let a = alpha.clamp(0.0, 1.0);
         for d in world.dronoids.iter().filter(|d| d.owner == me) {
@@ -509,14 +509,17 @@ impl WorldView {
                     arc(at, r * 0.17, -PI / 2.0, -PI / 2.0 + TAU * prog, (z * 0.03).max(1.0), with_alpha(mix(col, WHITE, 0.3), 0.7));
                 }
             }
+            // Perks: an arc a kind around the hull, as long as its level.
             if z >= 6.0 {
+                let sector = TAU / PERKS as f32;
                 for p in Perk::ALL {
-                    let col = perk_color(p);
-                    let a0 = -PI / 2.0 + (p.index() as f32 + 0.5) * TAU / PERKS as f32;
-                    for lvl in 0..b.level(p) {
-                        let at = sc + Vec2::from_angle(a0 + (lvl as f32 - 1.0) * 0.11) * r * 1.16;
-                        draw_poly(at.x, at.y, 4, (z * 0.16).max(2.5), 0.0, col);
+                    let level = b.level(p);
+                    if level == 0 {
+                        continue;
                     }
+                    let a0 = -PI / 2.0 + p.index() as f32 * sector + sector * 0.12;
+                    let span = sector * 0.76 * level as f32 / PERK_MAX_LEVEL as f32;
+                    arc(sc, r * 1.16, a0, a0 + span.max(0.04), (z * 0.09).max(2.0), perk_color(p));
                 }
             }
             let max_hp = b.max_hp();

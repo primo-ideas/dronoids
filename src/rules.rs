@@ -111,25 +111,41 @@ pub const SPAWN_SLOTS: usize = 24;
 
 /// Relics: rare remains scattered far from the starting places. MINE takes
 /// one shard at a time, which goes straight to the base of the dronoid that
-/// mined it; a relic's worth of shards of one kind raises that base one
-/// level of that perk (`Perk`).
+/// mined it; every `SHARDS_PER_LEVEL` shards of one kind raise that base one
+/// level of that perk (`Perk`), up to `PERK_MAX_LEVEL`.
 pub const RELIC_RADIUS: i32 = FP * 9 / 10;
 pub const RELIC_SHARDS: i32 = 12;
-pub const PERK_MAX_LEVEL: i32 = 3;
+/// A whole relic is three levels.
+pub const SHARDS_PER_LEVEL: i32 = 4;
+pub const PERK_MAX_LEVEL: i32 = 100;
+/// Assembly: one more production line every so many levels.
+pub const ASSEMBLY_LEVELS: i32 = 20;
 /// A base never has more production lines than this.
-pub const MAX_LINES: usize = BASE_LINES + PERK_MAX_LEVEL as usize;
+pub const MAX_LINES: usize = BASE_LINES + (PERK_MAX_LEVEL / ASSEMBLY_LEVELS) as usize;
 /// A relic mined out is whole again this long after its last shard (24 h).
 pub const RELIC_REGROW_TICKS: u64 = (24.0 * 3600.0 * TICKS_PER_SEC) as u64;
-/// Forge: the wait between two dronoids shrinks by this many percent a level.
-pub const FORGE_PERCENT: i32 = 20;
-/// Refinery: one more crystal a level for every this many unloaded there.
-pub const REFINERY_PER: i32 = 5;
+/// Forge: every line builds this many percent faster a level.
+pub const FORGE_PERCENT: i32 = 3;
+/// Refinery: this many percent more of every unload a level.
+pub const REFINERY_PERCENT: i32 = 2;
 /// Bulwark: more hull a level.
-pub const BULWARK_HP: i32 = 1000;
-/// Arsenal: more damage a level for each shot of the base's dronoids.
-pub const ARSENAL_DAMAGE: i32 = 1;
+pub const BULWARK_HP: i32 = 50;
+/// Arsenal: a point more damage a shot every so many levels (in between,
+/// the extra point comes as often in ten as the levels past the last one).
+pub const ARSENAL_LEVELS: i32 = 10;
+/// Vision: the base sees this much further a level.
+pub const VISION_PER_LEVEL: i32 = FP;
+/// Drills: the base's dronoids mine this many percent faster a level.
+pub const DRILL_PERCENT: i32 = 2;
+/// Armor: a point more hull for each new dronoid every so many levels.
+pub const ARMOR_LEVELS: i32 = 5;
+/// Hangar: room for more dronoids a level.
+pub const HANGAR_SLOTS: u16 = 1;
+/// Nanites: the base mends a point more a second every so many levels.
+pub const NANITE_LEVELS: i32 = 5;
 
-/// The ways a relic improves the base whose dronoids mine it.
+/// The ways a relic improves the base whose dronoids mine it. The order is
+/// that of the saves: new kinds only ever go at the end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Perk {
     Forge,
@@ -137,13 +153,29 @@ pub enum Perk {
     Refinery,
     Bulwark,
     Arsenal,
+    Vision,
+    Drills,
+    Armor,
+    Hangar,
+    Nanites,
 }
 
 /// How many kinds of perks there are.
-pub const PERKS: usize = 5;
+pub const PERKS: usize = 10;
 
 impl Perk {
-    pub const ALL: [Perk; PERKS] = [Perk::Forge, Perk::Assembly, Perk::Refinery, Perk::Bulwark, Perk::Arsenal];
+    pub const ALL: [Perk; PERKS] = [
+        Perk::Forge,
+        Perk::Assembly,
+        Perk::Refinery,
+        Perk::Bulwark,
+        Perk::Arsenal,
+        Perk::Vision,
+        Perk::Drills,
+        Perk::Armor,
+        Perk::Hangar,
+        Perk::Nanites,
+    ];
 
     pub fn of(kind: u8) -> Perk {
         Perk::ALL[kind as usize % PERKS]
@@ -160,6 +192,11 @@ impl Perk {
             Perk::Refinery => "Refinery",
             Perk::Bulwark => "Bulwark",
             Perk::Arsenal => "Arsenal",
+            Perk::Vision => "Vision",
+            Perk::Drills => "Drills",
+            Perk::Armor => "Armor",
+            Perk::Hangar => "Hangar",
+            Perk::Nanites => "Nanites",
         }
     }
 
@@ -169,10 +206,24 @@ impl Perk {
         let s = |n: i32| if n == 1 { "" } else { "s" };
         match self {
             Perk::Forge => format!("every line builds {} % faster", FORGE_PERCENT * level),
-            Perk::Assembly => format!("+{level} production line{}", s(level)),
-            Perk::Refinery => format!("+{level} crystal{} for every {REFINERY_PER} unloaded", s(level)),
+            Perk::Assembly => {
+                let lines = level / ASSEMBLY_LEVELS;
+                format!("+{lines} production line{} (one every {ASSEMBLY_LEVELS} levels)", s(lines))
+            }
+            Perk::Refinery => format!("+{} % on every unload", REFINERY_PERCENT * level),
             Perk::Bulwark => format!("+{} hull", BULWARK_HP * level),
-            Perk::Arsenal => format!("its dronoids hit {} harder", ARSENAL_DAMAGE * level),
+            Perk::Arsenal => format!("its dronoids hit {}.{} harder", level / ARSENAL_LEVELS, level % ARSENAL_LEVELS),
+            Perk::Vision => format!("the base sees {} units further", VISION_PER_LEVEL / FP * level),
+            Perk::Drills => format!("its dronoids mine {} % faster", DRILL_PERCENT * level),
+            Perk::Armor => {
+                let hull = level / ARMOR_LEVELS;
+                format!("+{hull} hull for each new dronoid (one every {ARMOR_LEVELS} levels)")
+            }
+            Perk::Hangar => format!("room for {} more dronoid{}", HANGAR_SLOTS as i32 * level, s(level)),
+            Perk::Nanites => {
+                let more = level / NANITE_LEVELS;
+                format!("the base mends {more} more point{} a second", s(more))
+            }
         }
     }
 }

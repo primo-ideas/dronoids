@@ -47,6 +47,11 @@ pub fn perk_color(p: dronoids::rules::Perk) -> Color {
         Perk::Refinery => 0x5cff8a,
         Perk::Bulwark => 0x4d9dff,
         Perk::Arsenal => 0xff3860,
+        Perk::Vision => 0x7df9ff,
+        Perk::Drills => 0xffd23f,
+        Perk::Armor => 0x9aa7ff,
+        Perk::Hangar => 0xff8fd8,
+        Perk::Nanites => 0x3dffc5,
     })
 }
 
