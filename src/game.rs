@@ -2087,7 +2087,8 @@ impl Game {
     pub fn demo_relics(&mut self, look: bool) {
         let Some(bi) = self.world.bases.iter().position(|b| b.owner == self.me) else { return };
         let (fx, fy) = (self.world.bases[bi].x, self.world.bases[bi].y);
-        self.world.bases[bi].perks = [140, 90, 33, 260, 5, 70, 400, 18, 52, 0];
+        self.world.bases[bi].perks = [140, 60, 33, 260, 5, 70, 400, 18, 52, 0];
+        self.world.bases[bi].hp = self.world.bases[bi].max_hp();
         if !look {
             return;
         }
