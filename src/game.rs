@@ -2,7 +2,7 @@
 //! of the shared world), handles input and draws a deliberately quiet HUD,
 //! the panels, the program editor and the debugger.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use macroquad::prelude::*;
 
@@ -93,6 +93,23 @@ enum Act {
     Menu,
 }
 
+/// What was asked of a production line and is not yet in the world: a
+/// command takes a server tick and a frame to come back, and the panel shows
+/// the new setting meanwhile (and counts the next click from it).
+#[derive(Default)]
+struct Pending {
+    quota: Option<u8>,
+    enabled: Option<bool>,
+    program: Option<String>,
+    /// When it was last asked (`get_time`).
+    at: f64,
+}
+
+/// Shown as asked at least this long, and given up after that long if the
+/// world never agrees (a command the server refused).
+const PENDING_MIN: f64 = 1.5;
+const PENDING_MAX: f64 = 6.0;
+
 struct Toast {
     text: String,
     color: Color,
@@ -136,6 +153,8 @@ pub struct Game {
     /// My base's hull, to notice a raid, and when the last warning was given.
     hull: Option<i32>,
     warned_at: f64,
+    /// Line settings asked for, by line id, until the world shows them.
+    pending: HashMap<u32, Pending>,
     follow: bool,
     over_dismissed: bool,
     step_once: bool,
@@ -180,6 +199,7 @@ impl Game {
             toasts: vec![],
             hull: None,
             warned_at: -60.0,
+            pending: HashMap::new(),
             follow: false,
             over_dismissed: false,
             step_once: false,
@@ -238,10 +258,57 @@ impl Game {
     }
 
     fn issue(&mut self, cmd: Command) {
+        self.expect(&cmd);
         match &mut self.driver {
             Driver::Offline { pending, .. } => pending.push(cmd),
             Driver::Online { conn, .. } => conn.send(&ClientMsg::Cmd(cmd)),
         }
+    }
+
+    /// Remember what a command changes on one of my lines, to show it now.
+    fn expect(&mut self, cmd: &Command) {
+        let line = match cmd {
+            Command::SetQuota { line, .. } | Command::ToggleLine { line } | Command::SetProgram { line, .. } => *line,
+            _ => return,
+        };
+        let Some(l) = self.world.base_of(self.me).and_then(|b| b.line(line)) else { return };
+        let enabled = self.shown_line(l).0.enabled;
+        let p = self.pending.entry(line).or_default();
+        p.at = get_time();
+        match cmd {
+            Command::SetQuota { quota, .. } => p.quota = Some((*quota).min(MAX_QUOTA)),
+            Command::ToggleLine { .. } => p.enabled = Some(!enabled),
+            Command::SetProgram { name, .. } => p.program = Some(name.clone()),
+            _ => {}
+        }
+    }
+
+    /// A line as the panel shows it: what the world says, with what was
+    /// asked and is not there yet; and its program's name.
+    fn shown_line(&self, l: &dronoids::sim::Line) -> (dronoids::sim::Line, String) {
+        let mut shown = l.clone();
+        let mut name = self.world.program_name(l.prog).to_string();
+        if let Some(p) = self.pending.get(&l.id) {
+            shown.quota = p.quota.unwrap_or(shown.quota);
+            shown.enabled = p.enabled.unwrap_or(shown.enabled);
+            name = p.program.clone().unwrap_or(name);
+        }
+        (shown, name)
+    }
+
+    /// Forget what the world now shows (or never will).
+    fn settle_pending(&mut self) {
+        let now = get_time();
+        let base = self.world.base_of(self.me);
+        let world = &self.world;
+        self.pending.retain(|id, p| {
+            let Some(l) = base.and_then(|b| b.line(*id)) else { return false };
+            let age = now - p.at;
+            let there = p.quota.is_none_or(|q| q == l.quota)
+                && p.enabled.is_none_or(|e| e == l.enabled)
+                && p.program.as_deref().is_none_or(|n| n == world.program_name(l.prog));
+            age < PENDING_MIN || (!there && age < PENDING_MAX)
+        });
     }
 
     fn toast(&mut self, text: impl Into<String>, color: Color) {
@@ -413,6 +480,7 @@ impl Game {
         }
         self.toasts.retain(|t| t.t < 4.0);
         self.validate_selection();
+        self.settle_pending();
         self.watch_base();
         if was_landing && !self.landing() {
             // The base has landed: select it.
@@ -1493,7 +1561,9 @@ impl Game {
         let mut menu_at = None;
         for (i, l) in b.lines.iter().enumerate() {
             let row = Rect::new(x + 8.0, ly, w - 16.0, Game::LINE_ROW - 4.0);
-            let pname = self.world.program_name(l.prog);
+            // As asked, even before the world has it.
+            let (l, pname) = self.shown_line(l);
+            let (l, pname) = (&l, pname.as_str());
             let n = self.world.dronoids_of_line(l.id);
             // From the right: pause, code, +, −, the count; the program takes the rest.
             let bh = row.h;
