@@ -264,12 +264,12 @@ impl Editor {
 
     fn indent_lines(&mut self, out: bool) {
         let (a, b) = self.selection().unwrap_or((self.cur, self.cur));
-        for l in a.line..=b.line {
+        for line in &mut self.lines[a.line..=b.line] {
             if out {
-                let n = self.lines[l].chars().take(4).take_while(|c| *c == ' ').count();
-                self.lines[l].replace_range(0..n, "");
+                let n = line.chars().take(4).take_while(|c| *c == ' ').count();
+                line.replace_range(0..n, "");
             } else {
-                self.lines[l].insert_str(0, "    ");
+                line.insert_str(0, "    ");
             }
         }
         self.dirty = true;

@@ -1223,10 +1223,9 @@ impl Game {
         y += 16.0;
         if let Some(b) = self.world.base_of(d.owner) {
             let cw = (col_w - 20.0) / 4.0;
-            for i in 0..HIVE_MEM {
+            for (i, &v) in b.mem.iter().enumerate() {
                 let cx = x + (i % 4) as f32 * cw;
                 let cy = y + (i / 4) as f32 * cell_h;
-                let v = b.mem[i];
                 gfx::text(&format!("{v}"), cx + 2.0, cy + 2.0, 12.0, if v != 0 { pal::TEXT } else { pal::FAINT });
             }
             y += HIVE_MEM.div_ceil(4) as f32 * cell_h + 6.0;
