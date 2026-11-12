@@ -105,3 +105,62 @@ pub const FOG_CELL: i32 = 4 * FP;
 
 /// Number of possible starting places generated with a first sector.
 pub const SPAWN_SLOTS: usize = 24;
+
+/// Relics: rare remains scattered far from the starting places. MINE takes
+/// one shard at a time, which goes straight to the factory of the dronoid
+/// that mined it; a relic's worth of shards of one kind raises that factory
+/// one level of that kind (`Bonus`).
+pub const RELIC_RADIUS: i32 = FP * 9 / 10;
+pub const RELIC_SHARDS: i32 = 12;
+pub const BONUS_MAX_LEVEL: i32 = 3;
+/// A relic mined out is whole again this long after its last shard (24 h).
+pub const RELIC_REGROW_TICKS: u64 = (24.0 * 3600.0 * TICKS_PER_SEC) as u64;
+/// Forge: the wait between two dronoids shrinks by this many percent a level.
+pub const FORGE_PERCENT: i32 = 20;
+/// Refinery: one more crystal a level for every this many unloaded there.
+pub const REFINERY_PER: i32 = 5;
+/// Bulwark: more hull a level.
+pub const BULWARK_HP: i32 = 150;
+/// Arsenal: more damage a level for each shot of the factory's dronoids.
+pub const ARSENAL_DAMAGE: i32 = 1;
+
+/// The ways a relic improves the factory whose dronoids mine it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bonus {
+    Forge,
+    Refinery,
+    Bulwark,
+    Arsenal,
+}
+
+impl Bonus {
+    pub const ALL: [Bonus; 4] = [Bonus::Forge, Bonus::Refinery, Bonus::Bulwark, Bonus::Arsenal];
+
+    pub fn of(kind: u8) -> Bonus {
+        Bonus::ALL[kind as usize % Bonus::ALL.len()]
+    }
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Bonus::Forge => "Forge",
+            Bonus::Refinery => "Refinery",
+            Bonus::Bulwark => "Bulwark",
+            Bonus::Arsenal => "Arsenal",
+        }
+    }
+
+    /// What `level` levels of it do for a factory.
+    pub fn effect(self, level: i32) -> String {
+        let level = level.max(1);
+        match self {
+            Bonus::Forge => format!("builds dronoids {} % faster", FORGE_PERCENT * level),
+            Bonus::Refinery => format!("+{} crystal{} for every {REFINERY_PER} unloaded here", level, if level == 1 { "" } else { "s" }),
+            Bonus::Bulwark => format!("+{} hull", BULWARK_HP * level),
+            Bonus::Arsenal => format!("its dronoids hit {} harder", ARSENAL_DAMAGE * level),
+        }
+    }
+}

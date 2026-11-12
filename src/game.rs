@@ -260,7 +260,11 @@ impl Game {
         let keep = |e: &Event| {
             matches!(
                 e,
-                Event::PlayerJoined { .. } | Event::PlayerEliminated { .. } | Event::FactoryDestroyed { .. } | Event::QuestDone { .. }
+                Event::PlayerJoined { .. }
+                    | Event::PlayerEliminated { .. }
+                    | Event::FactoryDestroyed { .. }
+                    | Event::QuestDone { .. }
+                    | Event::Shard { level: Some(_), .. }
             )
         };
         match &mut self.driver {
@@ -362,6 +366,10 @@ impl Game {
                 }
                 Event::FactoryDestroyed { owner, .. } if owner == self.me => {
                     self.toast("One of your factories was destroyed", pal::BAD);
+                }
+                Event::Shard { owner, bonus, level: Some(level), .. } if owner == self.me => {
+                    let text = format!("{} level {level}: a factory {}", bonus.name(), bonus.effect(level));
+                    self.toast(text, gfx::bonus_color(bonus));
                 }
                 Event::QuestDone { player, quest, reward } if player == self.me => {
                     let title = QUESTS.get(quest as usize).map_or("", |q| q.title);
@@ -1336,7 +1344,8 @@ impl Game {
         let h = match self.sel {
             Sel::None => return None,
             Sel::Factory(id) => match self.world.factory(id) {
-                Some(f) if f.owner == self.me => 112.0,
+                // One more row once relics gave it something.
+                Some(f) if f.owner == self.me => 112.0 + if self.world.boosts.contains_key(&f.id) { 34.0 } else { 0.0 },
                 Some(_) => 44.0,
                 None => return None,
             },
@@ -1377,7 +1386,8 @@ impl Game {
             Sel::Factory(id) => {
                 let Some(f) = self.world.factory(id) else { return };
                 ui.panel(r);
-                health(f.hp, FACTORY_HP);
+                let max_hp = self.world.factory_max_hp(id);
+                health(f.hp, max_hp);
                 let pname = self.world.program_name(f.prog);
                 if f.owner != self.me {
                     theirs(f.owner, "factory");
@@ -1406,8 +1416,8 @@ impl Game {
                     };
                     gfx::text(&what, x + w - 12.0 - gfx::text_width(&what, 12.0), y + 12.0, 12.0, col);
                 }
-                if f.hp < FACTORY_HP && ui.hover(Rect::new(x, y + 26.0, w, 12.0)) {
-                    ui.tooltip(&format!("{} / {FACTORY_HP}: a damaged factory slowly mends itself", f.hp));
+                if f.hp < max_hp && ui.hover(Rect::new(x, y + 26.0, w, 12.0)) {
+                    ui.tooltip(&format!("{} / {max_hp}: a damaged factory slowly mends itself", f.hp));
                 }
                 let mut cy = y + 40.0;
                 if ui.button_ex(Rect::new(x + 12.0, cy, 128.0, 28.0), "Program", false, true, pal::GOOD) {
@@ -1434,6 +1444,9 @@ impl Game {
                 }
                 if f.mem[2] != 0 && ui.button_ex(Rect::new(x + 254.0, cy, 24.0, 26.0), "×", false, true, pal::PINK) {
                     acts.push(Act::Issue(Command::SetMemory { factory: id, index: 2, value: 0 }));
+                }
+                if self.world.boosts.contains_key(&id) {
+                    self.bonus_row(ui, id, Rect::new(x + 12.0, cy + 34.0, w - 24.0, 26.0));
                 }
 
                 if self.program_menu == Some(id) {
@@ -1489,6 +1502,57 @@ impl Game {
                 }
             }
         }
+    }
+
+    /// What relics gave a factory: one cell a kind, its name over a bar of
+    /// three levels, the one under way filling up shard by shard.
+    fn bonus_row(&self, ui: &mut Ui, factory: u32, r: Rect) {
+        let cell = r.w / Bonus::ALL.len() as f32;
+        for b in Bonus::ALL {
+            let cr = Rect::new(r.x + b.index() as f32 * cell, r.y, cell - 6.0, r.h);
+            let (shards, level) = (self.world.bonus_shards(factory, b), self.world.bonus_level(factory, b));
+            let col = if shards > 0 { gfx::bonus_color(b) } else { pal::FAINT };
+            gfx::text(b.name(), cr.x, cr.y, gfx::fit_size(b.name(), 11.0, cr.w), if shards > 0 { mix(col, WHITE, 0.3) } else { pal::DIM });
+            let seg = (cr.w - 4.0) / BONUS_MAX_LEVEL as f32;
+            for l in 0..BONUS_MAX_LEVEL {
+                let fill = ((shards - l * RELIC_SHARDS) as f32 / RELIC_SHARDS as f32).clamp(0.0, 1.0);
+                let sx = cr.x + l as f32 * (seg + 2.0);
+                draw_rectangle(sx, cr.y + 17.0, seg, 4.0, with_alpha(pal::FAINT, 0.7));
+                draw_rectangle(sx, cr.y + 17.0, seg * fill, 4.0, with_alpha(col, if fill >= 1.0 { 1.0 } else { 0.55 }));
+            }
+            if ui.hover(cr) {
+                let next = if level >= BONUS_MAX_LEVEL {
+                    "as high as it goes".to_string()
+                } else {
+                    format!("{}/{RELIC_SHARDS} shards to level {}", shards - level * RELIC_SHARDS, level + 1)
+                };
+                let now = if level > 0 { format!("level {level}, {}", b.effect(level)) } else { format!("a level {}", b.effect(1)) };
+                ui.tooltip(&format!("{}: {now} · {next}", b.name()));
+            }
+        }
+    }
+
+    /// The relic under a point of the map, if we know of it.
+    fn relic_at(&self, wp: Vec2) -> Option<dronoids::sim::RelicSpot> {
+        let (x, y) = ((wp.x * FP as f32) as i32, (wp.y * FP as f32) as i32);
+        let mut found = None;
+        self.world.relics_near(x, y, 2 * FP, |k| {
+            let c = fpv(k.x, k.y);
+            if c.distance(wp) < fp(RELIC_RADIUS) * 1.6 && self.sight.explored(c) {
+                found = Some(k);
+            }
+        });
+        found
+    }
+
+    fn relic_text(k: &dronoids::sim::RelicSpot) -> String {
+        format!(
+            "{} relic, {} shard{} left · MINE it: the factory of the dronoid that does {} (prospector looks for them)",
+            k.bonus.name(),
+            k.left,
+            if k.left == 1 { "" } else { "s" },
+            k.bonus.effect(1)
+        )
     }
 
     /// Recent messages, piled up from `y`.
@@ -1567,6 +1631,15 @@ impl Game {
     fn world_input(&mut self, ui: &mut Ui, lib: &Library, acts: &mut Vec<Act>) {
         let over = ui.over_ui();
         let dt = get_frame_time().min(0.1);
+
+        // Pointing at a relic says what it is.
+        if !over
+            && !ui.touch
+            && self.tool == Tool::None
+            && let Some(k) = self.relic_at(self.cam.s2w(ui.mouse))
+        {
+            ui.tooltip(&Game::relic_text(&k));
+        }
 
         if !over && ui.wheel != 0.0 {
             let before = self.cam.s2w(ui.mouse);
@@ -1709,6 +1782,13 @@ impl Game {
             && let Some(f) = self.world.factory(id).filter(|f| f.owner == self.me)
         {
             acts.push(Act::OpenProgram(self.world.program_name(f.prog).to_string(), Some(id)));
+        }
+        // A finger has no hover: tapping a relic says what it is.
+        if ui.touch
+            && sel == Sel::None
+            && let Some(k) = self.relic_at(wp)
+        {
+            self.toast(Game::relic_text(&k), gfx::bonus_color(k.bonus));
         }
         acts.push(Act::Select(sel));
     }
@@ -1855,6 +1935,30 @@ impl Game {
         }
     }
 
+    /// Screenshots of relics: the first factory gets some of each bonus,
+    /// and with `look` a dronoid is put beside the nearest relic, with the
+    /// camera on it.
+    pub fn demo_relics(&mut self, look: bool) {
+        let Some(f) = self.world.factories.iter().find(|f| f.owner == self.me) else { return };
+        let (fid, fx, fy) = (f.id, f.x, f.y);
+        self.world.boosts.insert(fid, [14, 30, 5, 0]);
+        if !look {
+            return;
+        }
+        let mut best: Option<dronoids::sim::RelicSpot> = None;
+        let d2 = |k: &dronoids::sim::RelicSpot| fpv(k.x, k.y).distance_squared(fpv(fx, fy));
+        self.world.relics_near(fx, fy, 600 * FP, |k| {
+            if best.is_none_or(|b| d2(&k) < d2(&b)) {
+                best = Some(k);
+            }
+        });
+        if let (Some(k), Some(d)) = (best, self.world.dronoids.iter_mut().find(|d| d.owner == self.me)) {
+            (d.x, d.y, d.prev_x, d.prev_y) = (k.x + 3 * FP, k.y + FP, k.x + 3 * FP, k.y + FP);
+            self.cam.center = fpv(k.x, k.y);
+            self.sel = Sel::None;
+        }
+    }
+
     pub fn set_zoom(&mut self, z: f32) {
         self.cam.zoom = z;
     }
@@ -1989,7 +2093,7 @@ fn help_sections(touch: bool) -> Vec<(&'static str, Vec<String>)> {
             "x grows eastwards, y southwards (POSX, POSY, DX, DY, ANGLE)",
         ])),
         ("things · SCAN, DIST, DX, DY, COUNT, LOOK", vec![
-            "EMPTY=0  WALL=1  ORE=2  ALLY=3  ENEMY=4  BASE=5  EBASE=6".into(),
+            "EMPTY=0  WALL=1  ORE=2  ALLY=3  ENEMY=4  BASE=5  EBASE=6  RELIC=7".into(),
             format!("sensors: {} units; EBASE: {}; BASE: anywhere", SENSOR_RANGE / FP, EBASE_RANGE / FP),
             "DIST measures the gap between the two hulls (0 = touching)".into(),
             format!("FULL = {CARGO_CAP} (hold capacity)"),
@@ -2001,6 +2105,12 @@ fn help_sections(touch: bool) -> Vec<(&'static str, Vec<String>)> {
         ("hive memory", vec![
             format!("{HIVE_MEM} cells shared by a factory's dronoids (PEEK / POKE)"),
             "Target writes 0 = X, 1 = Y, 2 = 1".into(),
+        ]),
+        ("relics · far from the starting places", vec![
+            format!("MINE within reach of a RELIC takes 1 of its {RELIC_SHARDS} shards"),
+            format!("{RELIC_SHARDS} shards of a kind: one level for the miner's factory (up to {BONUS_MAX_LEVEL})"),
+            "Forge: faster builds · Refinery: more per unload".into(),
+            "Bulwark: more hull · Arsenal: harder hits".into(),
         ]),
     ];
     if touch {

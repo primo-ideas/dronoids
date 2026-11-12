@@ -12,7 +12,7 @@ use dronoids::sim::fog::FogMap;
 use dronoids::sim::{ore_radius, Doing, Event, World};
 
 use crate::fx::Fx;
-use crate::gfx::{arc, mix, pal, player_color, poly_fill, poly_lines, regular, scale_rgb, with_alpha};
+use crate::gfx::{arc, bonus_color, mix, pal, player_color, poly_fill, poly_lines, regular, scale_rgb, with_alpha};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Cam {
@@ -212,7 +212,7 @@ impl WorldView {
                 | Event::FactoryDestroyed { x, y, .. }
                 | Event::FactoryBuilt { x, y, .. }
                 | Event::OreGrown { x, y } => sight.visible(fpv(x, y)),
-                Event::Mine { tx, ty, .. } | Event::Drop { tx, ty, .. } => sight.visible(fpv(tx, ty)),
+                Event::Mine { tx, ty, .. } | Event::Drop { tx, ty, .. } | Event::Shard { tx, ty, .. } => sight.visible(fpv(tx, ty)),
                 Event::Attack { x, y, tx, ty, .. } => sight.visible(fpv(x, y)) || sight.visible(fpv(tx, ty)),
                 Event::PlayerJoined { player } => {
                     world.players.get(player as usize).is_some_and(|p| sight.visible(fpv(p.home.0, p.home.1)))
@@ -233,6 +233,24 @@ impl WorldView {
                     }
                     if depleted {
                         self.fx.burst(fpv(tx, ty), pal::ORE, 14, 3.0, 0.8);
+                    }
+                }
+                Event::Shard { factory, x, y, tx, ty, bonus, level, depleted, .. } => {
+                    let c = bonus_color(bonus);
+                    self.fx.beam(fpv(tx, ty), fpv(x, y), mix(c, WHITE, 0.4), 0.1, 0.5);
+                    self.fx.dots(fpv(tx, ty), c, 5, 1.6, 0.7);
+                    if depleted {
+                        self.fx.burst(fpv(tx, ty), c, 24, 3.5, 1.0);
+                        self.fx.ring(fpv(tx, ty), c, 3.0, 0.9);
+                    }
+                    // The factory it went to lights up when it gains a level.
+                    if level.is_some()
+                        && let Some(f) = world.factory(factory)
+                    {
+                        let at = fpv(f.x, f.y);
+                        self.fx.ring(at, c, 5.0, 1.2);
+                        self.fx.ring(at, WHITE, 3.0, 0.8);
+                        self.fx.dots(at, c, 30, 3.5, 1.2);
                     }
                 }
                 Event::Drop { x, y, tx, ty, .. } => {
@@ -429,6 +447,31 @@ impl WorldView {
             draw_circle(sc.x, sc.y, r * 0.2, with_alpha(pal::ORE_CORE, pulse));
         });
 
+        // Relics: a turning octagon in the colour of what it gives, a core,
+        // and around it an arc for the shards left.
+        world.relics_in(x0, y0, x1, y1, |k| {
+            let c = fpv(k.x, k.y);
+            if !cam.visible(c, 3.0) || !sight.explored(c) {
+                return;
+            }
+            let sc = cam.w2s(c);
+            let col = bonus_color(k.bonus);
+            let r = fp(RELIC_RADIUS) * z;
+            let pulse = 0.7 + 0.3 * (t * 2.2 + (k.id % 97) as f32).sin();
+            if z < 5.0 {
+                draw_poly(sc.x, sc.y, 4, r.max(2.5), 0.0, with_alpha(col, pulse));
+                return;
+            }
+            draw_circle_lines(sc.x, sc.y, r * (1.9 + 0.25 * pulse), 1.0, with_alpha(col, 0.25 * pulse));
+            let hull = regular(sc, r, 8, t * 0.5);
+            poly_fill(&hull, with_alpha(col, 0.16));
+            poly_lines(&hull, (z * 0.06).max(1.5), with_alpha(col, 0.95));
+            poly_lines(&regular(sc, r * 0.5, 4, -t * 0.9), (z * 0.04).max(1.0), mix(col, WHITE, 0.5));
+            draw_circle(sc.x, sc.y, r * 0.16, mix(col, WHITE, 0.7));
+            let left = k.left as f32 / RELIC_SHARDS as f32;
+            arc(sc, r * 1.45, -PI / 2.0, -PI / 2.0 + TAU * left, (z * 0.05).max(1.5), with_alpha(col, 0.7));
+        });
+
         // Mining beams (continuous while a dronoid digs).
         for d in &world.dronoids {
             if let Doing::Mine { tx, ty } = d.doing {
@@ -458,12 +501,24 @@ impl WorldView {
             poly_lines(&regular(sc, r * 0.42, 3, t * 0.8 + f.id as f32), (z * 0.04).max(1.0), mix(pc, WHITE, 0.3));
             draw_circle(sc.x, sc.y, r * 0.13, mix(pc, WHITE, 0.6));
             if f.enabled && f.timer > 0 {
-                let prog = 1.0 - f.timer as f32 / SPAWN_TICKS as f32;
+                let prog = (1.0 - f.timer as f32 / world.spawn_ticks(f.id) as f32).clamp(0.0, 1.0);
                 arc(sc, r * 1.25, -PI / 2.0, -PI / 2.0 + TAU * prog, (z * 0.04).max(1.0), with_alpha(pc, 0.5));
             }
-            if f.hp < FACTORY_HP {
+            // What relics gave it: one pip a level, a corner a kind.
+            if z >= 8.0 {
+                for b in Bonus::ALL {
+                    let col = bonus_color(b);
+                    let a0 = -PI * 0.75 + b.index() as f32 * PI / 2.0;
+                    for l in 0..world.bonus_level(f.id, b) {
+                        let p = sc + Vec2::from_angle(a0 + (l as f32 - 1.0) * 0.2) * r * 1.42;
+                        draw_poly(p.x, p.y, 4, (z * 0.13).max(2.5), 0.0, col);
+                    }
+                }
+            }
+            let max_hp = world.factory_max_hp(f.id);
+            if f.hp < max_hp {
                 let w = r * 1.8;
-                let frac = f.hp as f32 / FACTORY_HP as f32;
+                let frac = f.hp as f32 / max_hp as f32;
                 draw_rectangle(sc.x - w / 2.0, sc.y + r * 1.4, w, (z * 0.12).max(3.0), with_alpha(BLACK, 0.7));
                 draw_rectangle(sc.x - w / 2.0, sc.y + r * 1.4, w * frac, (z * 0.12).max(3.0), mix(pal::BAD, pal::GOOD, frac));
             }
@@ -621,6 +676,13 @@ pub fn draw_minimap(world: &World, cam: &Cam, r: Rect, sight: &Sight, mouse: Vec
         let (p, t) = (at(c), fade(at(c)));
         if t > 0.0 && sight.explored(c) {
             draw_rectangle(p.x, p.y, 1.2, 1.2, with_alpha(pal::ORE, 0.7 * t));
+        }
+    });
+    world.relics_in(mx - reach, my - reach, mx + reach, my + reach, |k| {
+        let c = fpv(k.x, k.y);
+        let (p, t) = (at(c), fade(at(c)));
+        if t > 0.0 && sight.explored(c) {
+            draw_poly(p.x, p.y, 4, 3.2, 0.0, with_alpha(bonus_color(k.bonus), t));
         }
     });
     for d in world.dronoids.iter().filter(|d| sight.shows(d.owner, fpv(d.x, d.y))) {

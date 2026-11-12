@@ -37,6 +37,18 @@ pub fn player_color(id: u8) -> Color {
     Color::from_hex(PLAYER_COLORS[id as usize % PLAYER_COLORS.len()])
 }
 
+/// One colour per kind of bonus, on the relics and wherever a factory
+/// shows what it has.
+pub fn bonus_color(b: dronoids::rules::Bonus) -> Color {
+    use dronoids::rules::Bonus;
+    Color::from_hex(match b {
+        Bonus::Forge => 0xff8a1f,
+        Bonus::Refinery => 0x5cff8a,
+        Bonus::Bulwark => 0x4d9dff,
+        Bonus::Arsenal => 0xff3860,
+    })
+}
+
 pub fn with_alpha(c: Color, a: f32) -> Color {
     Color::new(c.r, c.g, c.b, a)
 }

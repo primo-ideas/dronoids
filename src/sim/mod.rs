@@ -69,7 +69,19 @@ impl OreSpot {
     }
 }
 
-/// A generated deposit that has been mined: all that is ever stored of it.
+/// A relic as it stands now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RelicSpot {
+    pub id: u64,
+    pub x: i32,
+    pub y: i32,
+    pub bonus: Bonus,
+    /// Shards left in it.
+    pub left: i32,
+}
+
+/// A generated deposit (or relic) that has been mined: all that is ever
+/// stored of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Worn {
     pub left: i32,
@@ -180,6 +192,9 @@ pub enum Event {
     PlayerJoined { player: u8 },
     PlayerEliminated { player: u8 },
     OreGrown { x: i32, y: i32 },
+    /// A shard of a relic went to `factory`; `level` is the level it just
+    /// reached, if it did.
+    Shard { owner: u8, factory: u32, x: i32, y: i32, tx: i32, ty: i32, bonus: Bonus, level: Option<i32>, depleted: bool },
     QuestDone { player: u8, quest: u8, reward: i32 },
 }
 
@@ -224,6 +239,11 @@ pub struct World {
     /// Generated deposits that have been mined (nothing else is stored).
     #[serde(default)]
     pub worn: BTreeMap<u64, Worn>,
+    /// Shards each factory received, by kind of bonus (`Bonus::index`).
+    /// Beside the factories rather than in them: the layout of a factory
+    /// is that of the oldest saves (`compat`).
+    #[serde(default)]
+    pub boosts: BTreeMap<u32, [u16; 4]>,
     pub players: Vec<Player>,
     pub factories: Vec<Factory>,
     // The name in saves written before the rename.
@@ -260,6 +280,7 @@ impl World {
             rocks: vec![],
             ores: vec![],
             worn: BTreeMap::new(),
+            boosts: BTreeMap::new(),
             players: vec![],
             factories: vec![],
             dronoids: vec![],
@@ -480,6 +501,42 @@ impl World {
         });
     }
 
+    /// Every relic with shards left and centred in the rectangle. One that
+    /// a factory was built over (before relics existed) is out of reach.
+    pub fn relics_in(&self, x0: i32, y0: i32, x1: i32, y1: i32, mut f: impl FnMut(RelicSpot)) {
+        self.terrain.each_relic(x0, y0, x1, y1, |r| {
+            let left = self.worn.get(&r.id).map_or(RELIC_SHARDS, |w| w.left);
+            let gap = (RELIC_RADIUS + FACTORY_RADIUS) as i64;
+            if left > 0 && !self.factories.iter().any(|k| dist2(k.x - r.x, k.y - r.y) < gap * gap) {
+                f(RelicSpot { id: r.id, x: r.x, y: r.y, bonus: Bonus::of(r.kind), left });
+            }
+        });
+    }
+
+    pub fn relics_near(&self, x: i32, y: i32, reach: i32, f: impl FnMut(RelicSpot)) {
+        self.relics_in(x - reach, y - reach, x + reach, y + reach, f);
+    }
+
+    /// How many levels of `bonus` a factory has.
+    pub fn bonus_level(&self, factory: u32, bonus: Bonus) -> i32 {
+        self.boosts.get(&factory).map_or(0, |b| (b[bonus.index()] as i32 / RELIC_SHARDS).min(BONUS_MAX_LEVEL))
+    }
+
+    /// Shards a factory holds towards its next level of `bonus`.
+    pub fn bonus_shards(&self, factory: u32, bonus: Bonus) -> i32 {
+        self.boosts.get(&factory).map_or(0, |b| b[bonus.index()] as i32)
+    }
+
+    /// A factory's hull when whole.
+    pub fn factory_max_hp(&self, factory: u32) -> i32 {
+        FACTORY_HP + BULWARK_HP * self.bonus_level(factory, Bonus::Bulwark)
+    }
+
+    /// Ticks between two dronoids of a factory.
+    pub fn spawn_ticks(&self, factory: u32) -> i32 {
+        SPAWN_TICKS * (100 - FORGE_PERCENT * self.bonus_level(factory, Bonus::Forge)) / 100
+    }
+
     fn rocks_near(&self, x: i32, y: i32, reach: i32, f: impl FnMut(u64, &Rock)) {
         self.rocks_in(x - reach, y - reach, x + reach, y + reach, f);
     }
@@ -510,6 +567,7 @@ impl World {
             return true;
         }
         self.ores_near(to.0, to.1, r + 2 * FP, |o| hit = hit || hits(o.x, o.y, o.radius()));
+        self.relics_near(to.0, to.1, r + RELIC_RADIUS, |k| hit = hit || hits(k.x, k.y, RELIC_RADIUS));
         hit || self.factories.iter().any(|f| f.hp > 0 && hits(f.x, f.y, FACTORY_RADIUS))
     }
 
@@ -541,6 +599,12 @@ impl World {
                 self.rocks_near(x, y, SENSOR_RANGE + MAX_ROCK_R, |id, k| {
                     let (dx, dy) = (k.x - x, k.y - y);
                     consider(Target { dx, dy, gap: gap_between(dx, dy, DRONOID_RADIUS, k.r), id }, SENSOR_RANGE);
+                });
+            }
+            thing::RELIC => {
+                self.relics_near(x, y, SENSOR_RANGE + RELIC_RADIUS, |k| {
+                    let (dx, dy) = (k.x - x, k.y - y);
+                    consider(Target { dx, dy, gap: gap_between(dx, dy, DRONOID_RADIUS, RELIC_RADIUS), id: k.id }, SENSOR_RANGE);
                 });
             }
             thing::ALLY | thing::ENEMY => {
@@ -580,6 +644,11 @@ impl World {
             thing::WALL => {
                 let mut n = 0;
                 self.rocks_near(x, y, SENSOR_RANGE + MAX_ROCK_R, |_, k| n += within(k.x - x, k.y - y, k.r, SENSOR_RANGE) as i32);
+                n
+            }
+            thing::RELIC => {
+                let mut n = 0;
+                self.relics_near(x, y, SENSOR_RANGE + RELIC_RADIUS, |k| n += within(k.x - x, k.y - y, RELIC_RADIUS, SENSOR_RANGE) as i32);
                 n
             }
             thing::ALLY | thing::ENEMY => {
@@ -622,6 +691,11 @@ impl World {
         self.ores_near(px, py, 2 * FP, |o| ore = ore || touches(o.x, o.y, o.radius()));
         if ore {
             return thing::ORE;
+        }
+        let mut relic = false;
+        self.relics_near(px, py, 2 * FP, |k| relic = relic || touches(k.x, k.y, RELIC_RADIUS));
+        if relic {
+            return thing::RELIC;
         }
         let mut near = vec![];
         self.dronoid_grid.query(px, py, 2 * FP, &mut near);
@@ -720,7 +794,13 @@ impl World {
             h.add(o.id as i64 * 977 + o.amount as i64);
         }
         for (id, w) in &self.worn {
-            h.add(*id as i64 * 977 + w.left as i64);
+            h.add((*id as i64).wrapping_mul(977).wrapping_add(w.left as i64));
+        }
+        for (id, b) in &self.boosts {
+            h.add(*id as i64);
+            for s in b {
+                h.add(*s as i64);
+            }
         }
         h.0
     }
@@ -879,6 +959,9 @@ impl World {
             if let Some(d) = spot.filter(|_| w.left <= 0) {
                 self.events.push(Event::OreGrown { x: d.x, y: d.y });
             }
+            if let Some(r) = self.terrain.relic(id).filter(|_| w.left <= 0) {
+                self.events.push(Event::OreGrown { x: r.x, y: r.y });
+            }
         }
     }
 
@@ -1031,7 +1114,12 @@ impl World {
             self.advance(di);
         }
         self.dronoids.retain(|d| d.hp > 0);
-        self.factories.retain(|f| f.hp > 0);
+        if self.factories.iter().any(|f| f.hp <= 0) {
+            self.factories.retain(|f| f.hp > 0);
+            // A factory's bonuses go with it.
+            let factories = &self.factories;
+            self.boosts.retain(|id, _| factories.binary_search_by_key(id, |f| f.id).is_ok());
+        }
         self.ores.retain(|o| o.amount > 0);
         // Fog of war: dronoids map what they pass by, for their owner.
         for i in 0..self.dronoids.len() {
@@ -1056,8 +1144,10 @@ impl World {
         }
         let repair = self.tick.is_multiple_of(FACTORY_REPAIR_TICKS);
         for fi in 0..self.factories.len() {
+            let fid = self.factories[fi].id;
+            let (max_hp, wait) = (self.factory_max_hp(fid), self.spawn_ticks(fid));
             let f = &mut self.factories[fi];
-            if repair && f.hp > 0 && f.hp < FACTORY_HP {
+            if repair && f.hp > 0 && f.hp < max_hp {
                 f.hp += 1;
             }
             if f.timer > 0 {
@@ -1082,11 +1172,11 @@ impl World {
 
             let id = self.new_id();
             let f = &mut self.factories[fi];
-            if repair && f.hp > 0 && f.hp < FACTORY_HP {
+            if repair && f.hp > 0 && f.hp < max_hp {
                 f.hp += 1;
             }
             // A new factory gets its first dronoids out quickly.
-            f.timer = if f.spawned < 2 { SPAWN_TICKS / 4 } else { SPAWN_TICKS };
+            f.timer = if f.spawned < 2 { SPAWN_TICKS / 4 } else { wait };
             f.spawned += 1;
             let prog = f.prog;
             self.players[owner].minerals -= DRONOID_COST;
@@ -1182,6 +1272,22 @@ impl World {
                 true
             }
             Action::Mine => {
+                // A relic within reach, and no crystal nearer: a shard of
+                // it, for the dronoid's factory.
+                let ore_gap = self.nearest(x, y, owner, id, thing::ORE).map_or(i32::MAX, |t| t.gap);
+                if let Some(t) = self.nearest(x, y, owner, id, thing::RELIC).filter(|t| t.gap < REACH && t.gap <= ore_gap)
+                    && let Some(shard) = self.take_shard(self.dronoids[di].factory, t.id)
+                {
+                    let (tx, ty) = (x + t.dx, y + t.dy);
+                    face(self, tx, ty);
+                    let d = &mut self.dronoids[di];
+                    d.doing = Doing::Mine { tx, ty };
+                    d.busy = MINE_TICKS;
+                    let factory = d.factory;
+                    let (bonus, level, depleted) = shard;
+                    self.events.push(Event::Shard { owner, factory, x, y, tx, ty, bonus, level, depleted });
+                    return true;
+                }
                 if self.dronoids[di].cargo >= CARGO_CAP {
                     return false;
                 }
@@ -1208,13 +1314,15 @@ impl World {
                     return false;
                 };
                 let (tx, ty) = (x + t.dx, y + t.dy);
-                self.players[owner as usize].minerals += cargo;
+                // A refinery makes more of what is unloaded there.
+                let refined = cargo * self.bonus_level(t.id as u32, Bonus::Refinery) / REFINERY_PER;
+                self.players[owner as usize].minerals += cargo + refined;
                 face(self, tx, ty);
                 let d = &mut self.dronoids[di];
                 d.cargo = 0;
                 d.doing = Doing::Drop { tx, ty };
                 d.busy = DROP_TICKS;
-                self.events.push(Event::Drop { owner, x, y, tx, ty, amount: cargo });
+                self.events.push(Event::Drop { owner, x, y, tx, ty, amount: cargo + refined });
                 true
             }
             Action::Attack => {
@@ -1228,11 +1336,12 @@ impl World {
                 let base = self
                     .nearest(x, y, owner, id, thing::EBASE)
                     .filter(|t| t.gap <= ATTACK_RANGE && self.factory(t.id as u32).is_some_and(|f| !self.shielded(f.owner)));
+                let damage = ATTACK_DAMAGE + ARSENAL_DAMAGE * self.bonus_level(self.dronoids[di].factory, Bonus::Arsenal);
                 let (tx, ty) = match (dronoid, base) {
                     (Some(t), b) if b.is_none_or(|b| t.gap <= b.gap) => {
                         let ti = self.dronoid_index(t.id as u32).unwrap();
                         let victim = &mut self.dronoids[ti];
-                        victim.hp -= ATTACK_DAMAGE;
+                        victim.hp -= damage;
                         let (vx, vy, vo, dead) = (victim.x, victim.y, victim.owner, victim.hp <= 0);
                         if dead {
                             self.players[owner as usize].kills += 1;
@@ -1243,7 +1352,7 @@ impl World {
                     (_, Some(b)) => {
                         let fi = self.factory_index(b.id as u32).unwrap();
                         let f = &mut self.factories[fi];
-                        f.hp -= ATTACK_DAMAGE;
+                        f.hp -= damage;
                         let (fx, fy, fo, dead) = (f.x, f.y, f.owner, f.hp <= 0);
                         if dead {
                             self.events.push(Event::FactoryDestroyed { owner: fo, x: fx, y: fy });
@@ -1260,6 +1369,31 @@ impl World {
                 true
             }
         }
+    }
+
+    /// One shard of a relic, for `factory`. Returns what it improves, the
+    /// level the factory reached if it just did, and whether that was the
+    /// relic's last shard; `None` if the factory is gone or cannot take
+    /// more of that kind (the relic is then left as it is).
+    fn take_shard(&mut self, factory: u32, relic: u64) -> Option<(Bonus, Option<i32>, bool)> {
+        let bonus = Bonus::of(self.terrain.relic(relic)?.kind);
+        let fi = self.factory_index(factory)?;
+        let before = self.bonus_level(factory, bonus);
+        if self.bonus_shards(factory, bonus) >= RELIC_SHARDS * BONUS_MAX_LEVEL {
+            return None;
+        }
+        self.boosts.entry(factory).or_default()[bonus.index()] += 1;
+        let until = self.tick + RELIC_REGROW_TICKS;
+        let worn = self.worn.entry(relic).or_insert(Worn { left: RELIC_SHARDS, until });
+        worn.left -= 1;
+        worn.until = until;
+        let depleted = worn.left <= 0;
+        let level = Some(self.bonus_level(factory, bonus)).filter(|l| *l > before);
+        if level.is_some() && bonus == Bonus::Bulwark {
+            // The new plating comes whole.
+            self.factories[fi].hp += BULWARK_HP;
+        }
+        Some((bonus, level, depleted))
     }
 
     /// One crystal less in a deposit. Returns how many are left.
@@ -1816,5 +1950,157 @@ mod better_programs {
         }
         println!("miner: {a}  miner+: {b}");
         assert!(b > a, "miner+ {b} should beat miner {a}");
+    }
+}
+
+#[cfg(test)]
+mod relic_tests {
+    use super::tests::land;
+    use super::*;
+
+    /// One player, landed, running `program`, with its first dronoids out.
+    fn colony(program: &str) -> World {
+        let mut w = World::new(7);
+        let p = programs::builtin(program).unwrap();
+        w.step(&[(0, Command::Join { name: "a".into(), bot: false })]);
+        land(&mut w, 0, p.source);
+        for _ in 0..80 {
+            w.step(&[]);
+        }
+        assert!(!w.dronoids.is_empty());
+        w
+    }
+
+    fn nearest_relic(w: &World) -> RelicSpot {
+        let (hx, hy) = w.players[0].home;
+        let mut best: Option<RelicSpot> = None;
+        w.relics_near(hx, hy, 600 * FP, |r| {
+            if best.is_none_or(|b| dist2(r.x - hx, r.y - hy) < dist2(b.x - hx, b.y - hy)) {
+                best = Some(r);
+            }
+        });
+        best.expect("a relic within a few hundred units")
+    }
+
+    #[test]
+    fn prospectors_mine_a_relic_for_their_factory() {
+        let mut w = colony("prospector");
+        let relic = nearest_relic(&w);
+        let (hx, hy) = w.players[0].home;
+        assert!(dist2(relic.x - hx, relic.y - hy) > (40 * FP as i64).pow(2), "relics are not handed out at the door");
+        assert_eq!(relic.left, RELIC_SHARDS);
+        // It is a body like any other.
+        assert!(w.blocked((relic.x + 3 * FP, relic.y), (relic.x + FP, relic.y), DRONOID_RADIUS));
+        assert!(w.can_place_factory(0, relic.x, relic.y).is_err());
+
+        let fid = w.factories[0].id;
+        let d = &mut w.dronoids[0];
+        (d.x, d.y, d.doing, d.busy) = (relic.x + 5 * FP, relic.y, Doing::Idle, 1);
+        d.vm.reset();
+        w.dronoids.truncate(1);
+        let mut levels = vec![];
+        for _ in 0..(RELIC_SHARDS as usize + 4) * MINE_TICKS as usize + 80 {
+            w.step(&[]);
+            levels.extend(w.events.iter().filter_map(|e| match e {
+                Event::Shard { factory, bonus, level: Some(l), depleted, .. } => Some((*factory, *bonus, *l, *depleted)),
+                _ => None,
+            }));
+        }
+        assert_eq!(levels, vec![(fid, relic.bonus, 1, true)]);
+        assert_eq!(w.bonus_level(fid, relic.bonus), 1);
+        assert_eq!(w.bonus_shards(fid, relic.bonus), RELIC_SHARDS);
+        let mut left = 0;
+        w.relics_near(relic.x, relic.y, FP, |_| left += 1);
+        assert_eq!(left, 0, "mined out");
+        assert!(!w.blocked((relic.x + 3 * FP, relic.y), (relic.x + FP, relic.y), DRONOID_RADIUS));
+        assert!(w.dronoids.iter().all(|d| d.cargo == 0), "shards are not cargo");
+
+        // Snapshots and saves carry the bonuses and the worn relic.
+        let copy = World::from_bytes(&w.to_bytes()).unwrap();
+        assert_eq!(copy.state_hash(), w.state_hash());
+        let saved = World::from_save(&w.to_save()).unwrap();
+        assert_eq!(saved.bonus_level(fid, relic.bonus), 1);
+        assert_eq!(saved.state_hash(), w.state_hash());
+
+        // A day later it is whole again.
+        w.tick = w.worn[&relic.id].until.next_multiple_of(REGROW_TICKS);
+        w.step(&[]);
+        let mut back = None;
+        w.relics_near(relic.x, relic.y, FP, |r| back = Some(r.left));
+        assert_eq!(back, Some(RELIC_SHARDS));
+    }
+
+    #[test]
+    fn a_factory_takes_three_levels_of_a_kind_and_no_more() {
+        let mut w = colony("miner");
+        let relic = nearest_relic(&w);
+        let fid = w.factories[0].id;
+        let full = (RELIC_SHARDS * BONUS_MAX_LEVEL) as u16;
+        w.boosts.entry(fid).or_default()[relic.bonus.index()] = full - 1;
+        assert_eq!(w.bonus_level(fid, relic.bonus), BONUS_MAX_LEVEL - 1);
+        assert_eq!(w.take_shard(fid, relic.id), Some((relic.bonus, Some(BONUS_MAX_LEVEL), false)));
+        assert_eq!(w.take_shard(fid, relic.id), None, "nothing more to gain");
+        assert_eq!(w.worn[&relic.id].left, RELIC_SHARDS - 1, "and the relic is left to others");
+        assert_eq!(w.take_shard(fid + 1000, relic.id), None, "no factory, no shard");
+    }
+
+    #[test]
+    fn each_bonus_does_what_it_says() {
+        let mut w = colony("miner");
+        let fid = w.factories[0].id;
+        assert_eq!((w.spawn_ticks(fid), w.factory_max_hp(fid)), (SPAWN_TICKS, FACTORY_HP));
+        w.boosts.insert(fid, [(RELIC_SHARDS * 2) as u16; 4]);
+        assert_eq!(w.spawn_ticks(fid), SPAWN_TICKS * 60 / 100);
+        assert_eq!(w.factory_max_hp(fid), FACTORY_HP + 2 * BULWARK_HP);
+
+        // Refinery: a full hold unloaded there is worth two more crystals.
+        w.step(&[(0, Command::SetQuota { factory: fid, quota: 0 })]);
+        w.dronoids.truncate(1);
+        let (fx, fy) = (w.factories[0].x, w.factories[0].y);
+        let d = &mut w.dronoids[0];
+        (d.x, d.y, d.cargo, d.doing, d.busy) = (fx + FACTORY_RADIUS + DRONOID_RADIUS + FP / 2, fy, CARGO_CAP, Doing::Idle, 1);
+        d.vm.reset();
+        let before = w.players[0].minerals;
+        for _ in 0..3 {
+            w.step(&[]);
+        }
+        assert_eq!(w.dronoids[0].cargo, 0);
+        assert_eq!(w.players[0].minerals, before + CARGO_CAP + 2);
+
+        // Bulwark: the hull mends up to its new size.
+        w.factories[0].hp = FACTORY_HP + 2 * BULWARK_HP - 1;
+        w.tick = w.tick.next_multiple_of(FACTORY_REPAIR_TICKS);
+        w.step(&[]);
+        assert_eq!(w.factories[0].hp, FACTORY_HP + 2 * BULWARK_HP);
+
+        // A factory's bonuses go with it.
+        w.factories[0].hp = 0;
+        w.step(&[]);
+        assert!(w.boosts.is_empty());
+    }
+
+    #[test]
+    fn an_arsenal_makes_its_dronoids_hit_harder() {
+        let mut w = World::new(7);
+        let hunter = programs::builtin("hunter").unwrap();
+        for (i, name) in ["a", "b"].iter().enumerate() {
+            w.step(&[(0, Command::Join { name: name.to_string(), bot: false })]);
+            land(&mut w, i as u8, hunter.source);
+        }
+        for _ in 0..80 {
+            w.step(&[]);
+        }
+        for p in &mut w.players {
+            p.shield_until = 0;
+        }
+        let fid = w.factories.iter().find(|f| f.owner == 0).unwrap().id;
+        w.boosts.insert(fid, [0, 0, 0, RELIC_SHARDS as u16]);
+        let shooter = w.dronoids.iter().position(|d| d.owner == 0).unwrap();
+        let victim = w.dronoids.iter().position(|d| d.owner == 1).unwrap();
+        let (x, y) = (w.dronoids[shooter].x, w.dronoids[shooter].y);
+        (w.dronoids[victim].x, w.dronoids[victim].y) = (x + 2 * FP, y);
+        w.index_dronoids();
+        assert!(w.start(shooter, Action::Attack, 0));
+        assert_eq!(w.dronoids[victim].hp, DRONOID_HP - ATTACK_DAMAGE - ARSENAL_DAMAGE);
     }
 }

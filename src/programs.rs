@@ -202,13 +202,51 @@ watch:
     JMP guard
 "#,
     },
+    Builtin {
+        name: "prospector",
+        summary: "Looks for relics and mines them: each shard improves its factory.",
+        source: r#"; PROSPECTOR -- looks for relics. Heads off in a
+; straight line; with a relic in sight, goes to it and
+; mines it: every shard improves this dronoid's factory.
+; Brings no crystal home.
+; Flaw: wanders at random, and comes back to a relic
+; its factory has no more use for.
+
+    RAND d, 360          ; d = course
+loop:
+    DIST a, RELIC
+    JEQ a, NONE, ahead   ; no relic in sight
+    JLE a, 1, dig        ; within reach
+    SCAN b, RELIC
+    MOVE b
+    JNZ ok, loop
+    JMP turn             ; blocked on the way
+ahead:
+    MOVE d
+    JNZ ok, loop
+turn:
+    RAND d, 360          ; a new course
+    MOVE d
+    JMP loop
+
+dig:
+    MINE
+    JNZ ok, loop
+    RAND d, 360          ; nothing more to take here: move on
+    MOVE d
+    MOVE d
+    MOVE d
+    MOVE d
+    JMP ahead
+"#,
+    },
 ];
 
 /// Template for a brand-new program.
 pub const TEMPLATE: &str = r#"; New program.
 ; Registers: a b c d (and ok, set to 1/0 by the last action)
 ; Angles in degrees: N=0 E=90 S=180 W=270
-; Things: ORE ALLY ENEMY BASE EBASE WALL EMPTY
+; Things: ORE RELIC ALLY ENEMY BASE EBASE WALL EMPTY
 ; F1: full help
 
 start:

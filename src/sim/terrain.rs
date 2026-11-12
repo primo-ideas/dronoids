@@ -46,6 +46,23 @@ pub struct Deposit {
     pub amount: i32,
 }
 
+/// Relics have ids from here on.
+pub const RELIC: u64 = 1 << 56;
+/// One chunk in this many holds a relic.
+const RELIC_ONE_IN: u64 = 5;
+/// No relic this close to a starting place: they are worth an expedition.
+const RELIC_FROM_SITE: i32 = 50 * FP;
+
+/// A relic as generated, before anyone mines it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Relic {
+    pub id: u64,
+    pub x: i32,
+    pub y: i32,
+    /// Which bonus it gives (`rules::Bonus::of`).
+    pub kind: u8,
+}
+
 type Cached<T> = RefCell<HashMap<(i32, i32), Arc<Vec<T>>>>;
 
 #[derive(Default)]
@@ -55,6 +72,7 @@ pub struct Terrain {
     core: i32,
     rocks: Cached<Rock>,
     deposits: Cached<Deposit>,
+    relics: Cached<Relic>,
 }
 
 fn mix(mut z: u64) -> u64 {
@@ -268,6 +286,68 @@ impl Terrain {
         made
     }
 
+    // ----- relics -----------------------------------------------------------
+
+    /// At most one relic in a chunk, on open ground, away from the
+    /// starting places.
+    fn make_relics(&self, cx: i32, cy: i32) -> Vec<Relic> {
+        let h = hash(self.seed, 41, cx, cy);
+        if self.in_core(cx, cy) || self.site_in_chunk(cx, cy).is_some() || !h.is_multiple_of(RELIC_ONE_IN) {
+            return vec![];
+        }
+        let deposits = self.deposits_at(cx, cy);
+        let side = (CHUNK - 2 * FIELD_MARGIN) as u64;
+        for k in 0..8u64 {
+            let roll = hash(self.seed, 42 + k, cx, cy);
+            let x = cx * CHUNK + FIELD_MARGIN + (roll % side) as i32;
+            let y = cy * CHUNK + FIELD_MARGIN + ((roll >> 24) % side) as i32;
+            if x.abs() > WORLD_EXTENT - CHUNK || y.abs() > WORLD_EXTENT - CHUNK || self.near_site(x, y, RELIC_FROM_SITE) {
+                continue;
+            }
+            let apart = |ox: i32, oy: i32, gap: i32| dist2(ox - x, oy - y) >= gap as i64 * gap as i64;
+            let mut clear = deposits.iter().all(|d| apart(d.x, d.y, ore_radius(d.amount) + RELIC_RADIUS + FP));
+            for b in cy - 1..=cy + 1 {
+                for a in cx - 1..=cx + 1 {
+                    clear = clear && self.rocks_at(a, b).iter().all(|r| apart(r.x, r.y, r.r + RELIC_RADIUS + FP));
+                }
+            }
+            if clear {
+                let id = RELIC | (cx as u16 as u64) << 32 | (cy as u16 as u64) << 16;
+                return vec![Relic { id, x, y, kind: ((h >> 8) % 4) as u8 }];
+            }
+        }
+        vec![]
+    }
+
+    fn relics_at(&self, cx: i32, cy: i32) -> Arc<Vec<Relic>> {
+        if let Some(r) = self.relics.borrow().get(&(cx, cy)) {
+            return r.clone();
+        }
+        let made = Arc::new(self.make_relics(cx, cy));
+        let mut map = self.relics.borrow_mut();
+        if map.len() >= MAX_CACHED {
+            map.clear();
+        }
+        map.insert((cx, cy), made.clone());
+        made
+    }
+
+    /// Every relic centred in the rectangle, as generated.
+    pub fn each_relic(&self, x0: i32, y0: i32, x1: i32, y1: i32, mut f: impl FnMut(&Relic)) {
+        for (cx, cy) in Terrain::chunks(x0, y0, x1, y1) {
+            for r in self.relics_at(cx, cy).iter().filter(|r| r.x >= x0 && r.x <= x1 && r.y >= y0 && r.y <= y1) {
+                f(r);
+            }
+        }
+    }
+
+    /// A relic by its id, as generated.
+    pub fn relic(&self, id: u64) -> Option<Relic> {
+        let key = id.checked_sub(RELIC)?;
+        let (cx, cy) = ((key >> 32) as u16 as i16 as i32, (key >> 16) as u16 as i16 as i32);
+        self.relics_at(cx, cy).first().copied().filter(|r| r.id == id)
+    }
+
     // ----- what the world asks ----------------------------------------------
 
     fn chunks(x0: i32, y0: i32, x1: i32, y1: i32) -> impl Iterator<Item = (i32, i32)> {
@@ -296,6 +376,9 @@ impl Terrain {
 
     /// A deposit by its id, as generated.
     pub fn deposit(&self, id: u64) -> Option<Deposit> {
+        if id >= RELIC {
+            return None;
+        }
         let key = id.checked_sub(NATURAL)?;
         let (cx, cy, i) = ((key >> 32) as u16 as i16 as i32, (key >> 16) as u16 as i16 as i32, (key & 0xFFFF) as usize);
         self.deposits_at(cx, cy).get(i).copied()
@@ -425,6 +508,39 @@ mod tests {
             }
         }
         assert!(seen.len() > 100, "{} deposits", seen.len());
+    }
+
+    #[test]
+    fn relics_are_rare_far_from_starts_on_open_ground_and_found_by_id() {
+        let t = Terrain::new(11, 0);
+        let rocks = all_rocks(&t);
+        let (mut n, mut kinds) = (0, [0; 4]);
+        for cy in -5..=5 {
+            for cx in -5..=5 {
+                let here = t.relics_at(cx, cy);
+                assert!(here.len() <= 1);
+                for r in here.iter() {
+                    n += 1;
+                    kinds[r.kind as usize] += 1;
+                    assert_eq!(t.relic(r.id), Some(*r));
+                    assert_eq!(t.deposit(r.id), None, "a relic is not a deposit");
+                    assert!((r.x.div_euclid(CHUNK), r.y.div_euclid(CHUNK)) == (cx, cy));
+                    assert!(!t.near_site(r.x, r.y, RELIC_FROM_SITE));
+                    for k in &rocks {
+                        let gap = (k.r + RELIC_RADIUS) as i64;
+                        assert!(dist2(k.x - r.x, k.y - r.y) >= gap * gap);
+                    }
+                    for d in t.deposits_at(cx, cy).iter() {
+                        let gap = (ore_radius(d.amount) + RELIC_RADIUS) as i64;
+                        assert!(dist2(d.x - r.x, d.y - r.y) >= gap * gap);
+                    }
+                }
+            }
+        }
+        // 121 chunks: about one in five, less those by a starting place.
+        assert!((8..=40).contains(&n), "{n} relics");
+        assert!(kinds.iter().all(|k| *k > 0), "{kinds:?}");
+        assert_eq!(t.relic(RELIC | 3 << 32 | 0xFFFF), None);
     }
 
     #[test]

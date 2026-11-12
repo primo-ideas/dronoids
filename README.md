@@ -48,6 +48,15 @@ A recent stable Rust (edition 2024). Dependencies: `macroquad` (rendering), `ser
   ones let them roam): settling far from them means growing in
   peace.
 - A factory takes 300 points of damage, and slowly mends itself (a point every 5 s).
+- **Relics**: rare remains (about one square of 64 units in five, never within 50
+  units of a starting place), each of 12 shards. A dronoid that `MINE`s one sends the
+  shard to its own factory; 12 shards of a kind raise that factory one level of that
+  kind, up to 3: **Forge** (the wait between two dronoids 20 % shorter a level),
+  **Refinery** (one more crystal a level for every 5 unloaded there), **Bulwark**
+  (150 more hull a level), **Arsenal** (its dronoids' shots do 1 more damage a
+  level). A factory's bonuses go with it when it is destroyed; a relic mined out is
+  whole again a day later. The built-in `prospector` looks for them, naively; the
+  miners ignore them.
 - Your nickname is protected by a secret token kept by your browser (or `./save/` on
   the desktop).
 - **Offline training**: a private sector with AIs, pause and speed up to x8.
@@ -79,7 +88,8 @@ The screen stays clean on purpose: your crystals at the top left (and the newcom
 shield while it lasts), speed, help and menu at the top right, a dock at the bottom,
 and one short line: the current tool, or else the next first step, how far along it
 is, how to go about it and what it earns. Beside the crystals, the size of the colony;
-a factory's panel says when its next dronoid comes, or why none does; a warning tells
+a factory's panel says when its next dronoid comes, or why none does, and what
+relics gave it; pointing at a relic says what it is; a warning tells
 of a raid on a factory, which may be off screen. A unit's panel only shows its health
 once it has been hit; map and colonies open
 on demand. The editor, the language help and the dialogs are opaque, and the last two
@@ -109,11 +119,12 @@ start:
 
 - Registers `a b c d`, plus `ok` (1 if the last action succeeded).
 - Angles in degrees, clockwise: `N=0 E=90 S=180 W=270`, `NONE=-1`.
-  Things: `EMPTY WALL ORE ALLY ENEMY BASE EBASE`, `FULL` = the hold's capacity.
+  Things: `EMPTY WALL ORE ALLY ENEMY BASE EBASE RELIC`, `FULL` = the hold's capacity.
 - **Data** `SET ADD SUB MUL DIV MOD RAND INC DEC ANGLE` · **Jumps** `JMP JZ JNZ
   JEQ JNE JLT JGT JLE JGE CALL RET` · **Sensors** `SCAN DIST DX DY COUNT LOOK CARGO
   HP POSX POSY PEEK POKE` · **Actions** `MOVE angle`, `MINE`, `DROP`, `ATTACK`, `WAIT`.
-- `MINE`/`DROP` when `DIST ≤ 1`, `ATTACK` when `DIST ≤ 2`. Sensors reach 12 units,
+- `MINE`/`DROP` when `DIST ≤ 1`, `ATTACK` when `DIST ≤ 2`. `MINE` takes a shard of a
+  relic within reach when no crystal is nearer. Sensors reach 12 units,
   enemy factories 40, your own anywhere. 16 cells of hive memory per factory.
 
 [examples/miner_plus.dasm](examples/miner_plus.dasm) looks ahead (`LOOK`) and sets off

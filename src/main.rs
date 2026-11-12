@@ -56,7 +56,8 @@ fn window_conf() -> Conf {
 /// `--offline [easy|normal|hard]`, `--ais N`, `--seed N`, `--ticks N`
 /// (fast-forward), `--land` (place the first factory), `--zoom Z`,
 /// `--editor`, `--debug-dronoid`, `--help-screen`, `--build`, `--map`,
-/// `--players`, `--join URL`, `--name NICKNAME`,
+/// `--players`, `--join URL`, `--name NICKNAME`, `--bonuses` (the first
+/// factory gets some), `--relic` (the same, looking at the nearest relic),
 /// `--screenshot out.png [--after SECS | --frames N]`,
 /// `--size W,H` (the window's size), `--click X,Y@FRAME` (a left click at that pixel on that frame; may be
 /// given several times).
@@ -75,6 +76,8 @@ struct Args {
     map: bool,
     players: bool,
     land: bool,
+    bonuses: bool,
+    relic: bool,
     ticks: u64,
     zoom: Option<f32>,
     join: Option<String>,
@@ -130,6 +133,8 @@ fn parse_args() -> Args {
                     "--map" => a.map = true,
                     "--players" => a.players = true,
                     "--land" => a.land = true,
+                    "--bonuses" => a.bonuses = true,
+                    "--relic" => a.relic = true,
                     _ => {}
                 }
             }
@@ -163,6 +168,9 @@ async fn main() {
         g.fast_forward(args.ticks);
         if let Some(z) = args.zoom {
             g.set_zoom(z);
+        }
+        if args.bonuses || args.relic {
+            g.demo_relics(args.relic);
         }
         if args.editor {
             g.open_program_by_name(&lib, "miner");

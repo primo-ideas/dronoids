@@ -37,6 +37,7 @@ pub mod thing {
     pub const ENEMY: i32 = 4;
     pub const BASE: i32 = 5;
     pub const EBASE: i32 = 6;
+    pub const RELIC: i32 = 7;
 }
 
 pub const CONSTANTS: &[(&str, i32)] = &[
@@ -52,6 +53,7 @@ pub const CONSTANTS: &[(&str, i32)] = &[
     ("ENEMY", thing::ENEMY),
     ("BASE", thing::BASE),
     ("EBASE", thing::EBASE),
+    ("RELIC", thing::RELIC),
     ("FULL", CARGO_CAP),
 ];
 
@@ -235,7 +237,7 @@ pub const MNEMONICS: &[Mnemonic] = &[
     mn!("PEEK", [R, V], Sense, "PEEK r, i", "r = hive memory[i]"),
     mn!("POKE", [V, V], Sense, "POKE i, v", "hive memory[i] = v"),
     mn!("MOVE", [V], Action, "MOVE angle", "moves one step in that direction"),
-    mn!("MINE", [], Action, "MINE", "mines 1 crystal from the deposit within reach"),
+    mn!("MINE", [], Action, "MINE", "mines 1 crystal from the deposit within reach, or 1 shard of a relic"),
     mn!("DROP", [], Action, "DROP", "unloads the hold into an allied factory within reach"),
     mn!("ATTACK", [], Action, "ATTACK", "fires at the nearest enemy within range"),
     mn!("WAIT", [], Action, "WAIT", "waits a moment"),
