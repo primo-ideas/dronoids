@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::sim::Command;
 
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 pub const DEFAULT_PORT: u16 = 8082;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -363,7 +363,7 @@ mod tests {
         };
         let mut server = server.join().unwrap();
         client.send(&ClientMsg::Hello { version: PROTOCOL_VERSION, name: "x\ny".into(), token: "t".into() });
-        server.send(&ServerMsg::Frame { tick: 3, cmds: vec![(1, Command::ToggleFactory { factory: 9 })] });
+        server.send(&ServerMsg::Frame { tick: 3, cmds: vec![(1, Command::ToggleLine { line: 9 })] });
         let mut got = (false, false);
         for _ in 0..300 {
             if let Some(NetEvent::Msg(ClientMsg::Hello { name, .. })) = server.poll_one() {

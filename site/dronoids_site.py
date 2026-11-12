@@ -1,20 +1,28 @@
 #!/usr/bin/env python3
-"""Dronoids' account service: sign-in with Google, Discord, GitHub or Twitch,
-one nickname per account, and the ticket that tells the world server who is
-playing.
+"""Dronoids' account service: accounts made of a nickname and a password,
+and the ticket that tells the world server who is playing. An account is
+needed to play in the shared sector.
+
+Signing in with Google, Discord, GitHub or Twitch is written too, and only
+offered once a provider's keys are configured (none are yet).
 
 It only needs Python's standard library. It listens on the loopback, behind
 the web server, under `<site>/api/`:
 
     GET  api/me              who is signed in, the ticket, the providers on offer
-    GET  api/login/<p>       off to the provider (or links it to the account)
+    POST api/register        create an account: nickname and password
+    POST api/signin          sign in with them
+    POST api/password        change the password
+    POST api/guest           does this browser's guest token hold that nickname?
+    GET  api/login/<p>       off to a provider (or links it to the account)
     GET  api/callback/<p>    back from the provider
-    POST api/nickname        choose the nickname, once
+    POST api/nickname        choose the nickname, once (accounts made at a provider)
     POST api/logout
     POST api/delete          delete the account
 
-What is kept: the nickname, and for each provider the opaque id it gives for
-the person. No e-mail address, no name, no access token.
+What is kept: the nickname, a salted hash of the password (scrypt), and for
+each provider the opaque id it gives for the person. No e-mail address, no
+name, no access token.
 
     python3 dronoids_site.py --config config.json
 
@@ -43,6 +51,9 @@ SESSION_COOKIE = "dronoids_session"
 STATE_COOKIE = "dronoids_oauth"
 # In the world server's list of names: held by an account (see src/ticket.rs).
 OWNED = "site"
+PASSWORD_MIN, PASSWORD_MAX = 8, 128
+# Failed sign-ins: so many per nickname, and per address, then a wait.
+TRIES, TRIES_WINDOW = 8, 15 * 60
 
 # Standard OAuth 2 "authorization code" providers. `id` is where the person's
 # id is in the answer of the `user` endpoint. Only the least is asked for.
@@ -105,6 +116,34 @@ def clean_nickname(raw):
     return name, None
 
 
+def hash_password(password, salt=None):
+    """`scrypt$n$r$p$salt$hash`: what is stored, never the password."""
+    salt = salt or secrets.token_bytes(16)
+    n, r, p = 2**14, 8, 1
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=n, r=r, p=p, maxmem=64 * 1024 * 1024, dklen=32)
+    return f"scrypt${n}${r}${p}${salt.hex()}${digest.hex()}"
+
+
+def check_password(password, stored):
+    try:
+        kind, n, r, p, salt, digest = stored.split("$")
+        if kind != "scrypt":
+            return False
+        found = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=int(n), r=int(r), p=int(p), maxmem=64 * 1024 * 1024, dklen=32)
+    except (AttributeError, ValueError):
+        return False
+    return hmac.compare_digest(found.hex(), digest)
+
+
+def clean_password(raw):
+    """The password, or why it cannot be one."""
+    if not isinstance(raw, str):
+        return None, "missing password"
+    if not PASSWORD_MIN <= len(raw) <= PASSWORD_MAX:
+        return None, f"a password has {PASSWORD_MIN} to {PASSWORD_MAX} characters"
+    return raw, None
+
+
 class Refused(Exception):
     def __init__(self, status, message):
         super().__init__(message)
@@ -141,6 +180,8 @@ class Site:
         # Never on a real site: anyone could sign in as anyone.
         self.dev = bool(config.get("dev_login")) and base.hostname in ("localhost", "127.0.0.1")
         self.lock = threading.Lock()
+        # Failed sign-ins, by nickname and by address: when they happened.
+        self.failures = {}
         self.db = sqlite3.connect(config["database"], check_same_thread=False)
         if os.path.isfile(config["database"]):
             os.chmod(config["database"], 0o600)
@@ -151,7 +192,8 @@ class Site:
                 id INTEGER PRIMARY KEY,
                 nickname TEXT,
                 nickname_key TEXT UNIQUE,
-                created INTEGER NOT NULL
+                created INTEGER NOT NULL,
+                password TEXT
             );
             CREATE TABLE IF NOT EXISTS identities (
                 provider TEXT NOT NULL,
@@ -167,9 +209,13 @@ class Site:
             """
         )
         # Named in French before the site was translated into English.
-        if "pseudo" in [column[1] for column in self.db.execute("PRAGMA table_info(accounts)")]:
+        columns = [column[1] for column in self.db.execute("PRAGMA table_info(accounts)")]
+        if "pseudo" in columns:
             self.db.execute("ALTER TABLE accounts RENAME COLUMN pseudo TO nickname")
             self.db.execute("ALTER TABLE accounts RENAME COLUMN pseudo_key TO nickname_key")
+        # Accounts were only made at a provider before passwords came.
+        if "password" not in columns:
+            self.db.execute("ALTER TABLE accounts ADD COLUMN password TEXT")
         self.db.commit()
 
     # ----- sessions -----------------------------------------------------------
@@ -216,11 +262,13 @@ class Site:
         if account is None:
             return {"providers": self.offered(), "account": None}
         with self.lock:
-            row = self.db.execute("SELECT nickname FROM accounts WHERE id = ?", (account,)).fetchone()
+            row = self.db.execute("SELECT nickname, password IS NOT NULL FROM accounts WHERE id = ?", (account,)).fetchone()
             linked = [r[0] for r in self.db.execute("SELECT provider FROM identities WHERE account = ? ORDER BY provider", (account,))]
-        nickname = row[0] if row else None
+        if row is None:
+            return {"providers": self.offered(), "account": None}
+        nickname, password = row[0], bool(row[1])
         ticket = sign_ticket(self.secret, nickname, int(time.time()) + TICKET_DAYS * 86400) if nickname else None
-        return {"providers": self.offered(), "account": {"nickname": nickname, "linked": linked, "ticket": ticket}}
+        return {"providers": self.offered(), "account": {"nickname": nickname, "password": password, "linked": linked, "ticket": ticket}}
 
     def sign_in(self, provider, subject, current):
         """The account behind an identity: an existing one, the one signed in
@@ -248,11 +296,19 @@ class Site:
         except (OSError, ValueError):
             return {}
 
-    def set_nickname(self, account, raw, guest_token):
+    def guest_owns(self, nickname, guest_token):
+        """Does this guest token hold that nickname in the game?"""
+        if not isinstance(nickname, str) or not isinstance(guest_token, str):
+            return False
+        token = self.guest_names().get(nickname)
+        return isinstance(token, str) and token != OWNED and hmac.compare_digest(token.encode(), guest_token.encode())
+
+    def free_nickname(self, raw, guest_token):
+        """The nickname as it will be kept, if it may be taken."""
         name, why = clean_nickname(raw)
         if name is None:
             raise Refused(400, why)
-        # A name someone plays under as a guest only goes to whoever holds
+        # A name someone played under as a guest only goes to whoever holds
         # its token: their colony comes along with it.
         for taken, token in self.guest_names().items():
             if taken.casefold() != name.casefold():
@@ -260,6 +316,77 @@ class Site:
             mine = taken == name and token != OWNED and isinstance(guest_token, str)
             if not (mine and hmac.compare_digest(token.encode(), guest_token.encode())):
                 raise Refused(409, "this nickname is taken")
+        return name
+
+    def register(self, raw_nickname, raw_password, guest_token):
+        """A new account, under its nickname, with its password."""
+        name = self.free_nickname(raw_nickname, guest_token)
+        password, why = clean_password(raw_password)
+        if password is None:
+            raise Refused(400, why)
+        stored = hash_password(password)
+        with self.lock:
+            try:
+                account = self.db.execute(
+                    "INSERT INTO accounts (nickname, nickname_key, created, password) VALUES (?, ?, ?, ?)",
+                    (name, name.casefold(), int(time.time()), stored),
+                ).lastrowid
+                self.db.commit()
+            except sqlite3.IntegrityError:
+                self.db.rollback()
+                raise Refused(409, "this nickname is taken") from None
+        return account
+
+    def too_many_tries(self, keys):
+        now = time.time()
+        with self.lock:
+            for key in keys:
+                recent = [t for t in self.failures.get(key, []) if t > now - TRIES_WINDOW]
+                self.failures[key] = recent
+                if len(recent) >= TRIES:
+                    return True
+        return False
+
+    def note_failure(self, keys):
+        with self.lock:
+            for key in keys:
+                self.failures.setdefault(key, []).append(time.time())
+            if len(self.failures) > 10000:
+                self.failures.clear()
+
+    def sign_in_with_password(self, raw_nickname, raw_password, address):
+        """The account whose nickname and password these are."""
+        if not isinstance(raw_nickname, str) or not isinstance(raw_password, str):
+            raise Refused(400, "nickname and password, please")
+        key = " ".join(raw_nickname.split()).casefold()
+        keys = ["nickname:" + key, "address:" + (address or "")]
+        if self.too_many_tries(keys):
+            raise Refused(429, "too many attempts: wait a few minutes")
+        with self.lock:
+            row = self.db.execute("SELECT id, password FROM accounts WHERE nickname_key = ?", (key,)).fetchone()
+        # The same work whether or not the nickname exists.
+        stored = row[1] if row and row[1] else hash_password("never-matches", b"0" * 16)
+        if not check_password(raw_password, stored) or not (row and row[1]):
+            self.note_failure(keys)
+            raise Refused(401, "wrong nickname or password")
+        return row[0]
+
+    def change_password(self, account, current, new):
+        password, why = clean_password(new)
+        if password is None:
+            raise Refused(400, why)
+        with self.lock:
+            row = self.db.execute("SELECT password FROM accounts WHERE id = ?", (account,)).fetchone()
+        if row is None:
+            raise Refused(401, "session expired")
+        if row[0] is not None and not (isinstance(current, str) and check_password(current, row[0])):
+            raise Refused(403, "the current password is not that one")
+        with self.lock:
+            self.db.execute("UPDATE accounts SET password = ? WHERE id = ?", (hash_password(password), account))
+            self.db.commit()
+
+    def set_nickname(self, account, raw, guest_token):
+        name = self.free_nickname(raw, guest_token)
         with self.lock:
             row = self.db.execute("SELECT nickname FROM accounts WHERE id = ?", (account,)).fetchone()
             if row is None:
@@ -481,11 +608,26 @@ class Handler(BaseHTTPRequestHandler):
                 raise Refused(400, "unreadable request")
             token = self.cookie(SESSION_COOKIE)
             account = self.site.account_of(token)
-            if route == "api/logout":
+            # Behind the web server, the visitor's address is the last it adds.
+            address = (self.headers.get("X-Forwarded-For") or self.client_address[0]).split(",")[-1].strip()
+            if route in ("api/register", "api/signin"):
+                if route == "api/register":
+                    account = self.site.register(body.get("nickname"), body.get("password"), body.get("guest_token"))
+                else:
+                    account = self.site.sign_in_with_password(body.get("nickname"), body.get("password"), address)
+                self.site.close_session(token)
+                session = self.set_cookie(SESSION_COOKIE, self.site.open_session(account), SESSION_DAYS * 86400)
+                self.json(200, self.site.describe(account), [session])
+            elif route == "api/guest":
+                self.json(200, {"known": self.site.guest_owns(body.get("nickname"), body.get("guest_token"))})
+            elif route == "api/logout":
                 self.site.close_session(token)
                 self.json(200, self.site.describe(None), [self.set_cookie(SESSION_COOKIE, "", 0)])
-            elif route in ("api/nickname", "api/delete") and account is None:
+            elif route in ("api/nickname", "api/delete", "api/password") and account is None:
                 raise Refused(401, "session expired")
+            elif route == "api/password":
+                self.site.change_password(account, body.get("current"), body.get("password"))
+                self.json(200, self.site.describe(account))
             elif route == "api/nickname":
                 self.site.set_nickname(account, body.get("nickname"), body.get("guest_token"))
                 self.json(200, self.site.describe(account))
@@ -515,7 +657,7 @@ def main():
         config = json.load(f)
     server = serve(config)
     site = server.RequestHandlerClass.site
-    names = ", ".join(p["label"] for p in site.offered()) or "none (see docs/deploy.md)"
+    names = ", ".join(["nickname and password"] + [p["label"] for p in site.offered()])
     print(f"Dronoids accounts on http://{server.server_address[0]}:{server.server_address[1]}{site.path}/api/ — sign-in with: {names}", flush=True)
     try:
         server.serve_forever()

@@ -59,7 +59,7 @@ pub struct Relic {
     pub id: u64,
     pub x: i32,
     pub y: i32,
-    /// Which bonus it gives (`rules::Bonus::of`).
+    /// Which perk it gives (`rules::Perk::of`).
     pub kind: u8,
 }
 
@@ -313,7 +313,7 @@ impl Terrain {
             }
             if clear {
                 let id = RELIC | (cx as u16 as u64) << 32 | (cy as u16 as u64) << 16;
-                return vec![Relic { id, x, y, kind: ((h >> 8) % 4) as u8 }];
+                return vec![Relic { id, x, y, kind: ((h >> 8) % crate::rules::PERKS as u64) as u8 }];
             }
         }
         vec![]
@@ -514,7 +514,7 @@ mod tests {
     fn relics_are_rare_far_from_starts_on_open_ground_and_found_by_id() {
         let t = Terrain::new(11, 0);
         let rocks = all_rocks(&t);
-        let (mut n, mut kinds) = (0, [0; 4]);
+        let (mut n, mut kinds) = (0, [0; crate::rules::PERKS]);
         for cy in -5..=5 {
             for cx in -5..=5 {
                 let here = t.relics_at(cx, cy);

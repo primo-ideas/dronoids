@@ -34,15 +34,17 @@ fn main() {
         Some("hard") => Level::Hard,
         _ => Level::Normal,
     };
-    let site_secret = get("--site-secret").and_then(|path| match std::fs::read_to_string(&path) {
-        Ok(s) if s.trim().len() >= 16 => Some(s.trim().as_bytes().to_vec()),
+    // With the site, only its accounts play: a secret that cannot be read
+    // must not open the sector to everyone.
+    let site_secret = get("--site-secret").map(|path| match std::fs::read_to_string(&path) {
+        Ok(s) if s.trim().len() >= 16 => s.trim().as_bytes().to_vec(),
         Ok(_) => {
-            eprintln!("site secret too short in {path}: the site's accounts will be refused");
-            None
+            eprintln!("site secret too short in {path}");
+            std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("unreadable site secret ({path}: {e}): the site's accounts will be refused");
-            None
+            eprintln!("unreadable site secret ({path}: {e})");
+            std::process::exit(1);
         }
     });
     let cfg = ServerConfig {

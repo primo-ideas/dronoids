@@ -54,10 +54,10 @@ fn window_conf() -> Conf {
 
 /// Command-line switches, mostly for quick testing:
 /// `--offline [easy|normal|hard]`, `--ais N`, `--seed N`, `--ticks N`
-/// (fast-forward), `--land` (place the first factory), `--zoom Z`,
-/// `--editor`, `--debug-dronoid`, `--help-screen`, `--build`, `--map`,
-/// `--players`, `--join URL`, `--name NICKNAME`, `--bonuses` (the first
-/// factory gets some), `--relic` (the same, looking at the nearest relic),
+/// (fast-forward), `--land` (land the base), `--zoom Z`,
+/// `--editor`, `--debug-dronoid`, `--help-screen`, `--map`,
+/// `--players`, `--join URL`, `--name NICKNAME`, `--perks` (the base gets
+/// some), `--relic` (the same, looking at the nearest relic),
 /// `--screenshot out.png [--after SECS | --frames N]`,
 /// `--size W,H` (the window's size), `--click X,Y@FRAME` (a left click at that pixel on that frame; may be
 /// given several times).
@@ -72,11 +72,10 @@ struct Args {
     editor: bool,
     debug_dronoid: bool,
     help: bool,
-    build: bool,
     map: bool,
     players: bool,
     land: bool,
-    bonuses: bool,
+    perks: bool,
     relic: bool,
     ticks: u64,
     zoom: Option<f32>,
@@ -129,11 +128,10 @@ fn parse_args() -> Args {
                     "--editor" => a.editor = true,
                     "--debug-dronoid" => a.debug_dronoid = true,
                     "--help-screen" => a.help = true,
-                    "--build" => a.build = true,
                     "--map" => a.map = true,
                     "--players" => a.players = true,
                     "--land" => a.land = true,
-                    "--bonuses" => a.bonuses = true,
+                    "--perks" => a.perks = true,
                     "--relic" => a.relic = true,
                     _ => {}
                 }
@@ -169,7 +167,7 @@ async fn main() {
         if let Some(z) = args.zoom {
             g.set_zoom(z);
         }
-        if args.bonuses || args.relic {
+        if args.perks || args.relic {
             g.demo_relics(args.relic);
         }
         if args.editor {
@@ -178,7 +176,7 @@ async fn main() {
         if args.debug_dronoid {
             g.debug_first_dronoid();
         }
-        g.set_overlays(args.help, args.build, args.map, args.players);
+        g.set_overlays(args.help, args.map, args.players);
         App::Game(Box::new(g))
     } else {
         let mut m = Menu::new(settings.clone());
@@ -207,7 +205,7 @@ async fn main() {
                     if let Some(z) = args.zoom {
                         g.set_zoom(z);
                     }
-                    g.set_overlays(false, false, args.map, args.players);
+                    g.set_overlays(false, args.map, args.players);
                     next = Some(App::Game(Box::new(g)));
                 }
             },

@@ -141,10 +141,10 @@ impl Menu {
         // A slow drift over one of the colonies.
         let t = self.view.time * 0.015;
         let size = fp(self.demo.size);
-        let focus = self.demo.factories.first().map(|f| vec2(fp(f.x), fp(f.y))).unwrap_or(Vec2::splat(size / 2.0));
+        let focus = self.demo.bases.first().map(|b| vec2(fp(b.x), fp(b.y))).unwrap_or(Vec2::splat(size / 2.0));
         let center = focus + vec2(40.0 * t.sin(), 25.0 * (t * 0.7).cos());
         let cam = Cam { center, zoom: 11.0, shake: Vec2::ZERO };
-        let hl = Highlight { factory: None, dronoid: None, ghost: None, build_range_for: None, target: None, landing: None, me: 0 };
+        let hl = Highlight { base: None, dronoid: None, ghost: None, target: None, landing: None, me: 0 };
         self.view.draw(&self.demo, &cam, self.acc.clamp(0.0, 1.0), &hl, &Sight::all());
         draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.01, 0.012, 0.03, 0.62));
         let ty = sh * 0.16;
@@ -172,15 +172,23 @@ impl Menu {
         let x = sw / 2.0 - w / 2.0;
         let mut y = (sh * 0.40).max(250.0);
         // Behind the form and the two lines under it, whichever is wider.
-        let tips = ["You arrive with nothing but enough to build a factory.", "Your colony keeps working when you leave."];
+        let tips = ["You land a base, and almost nothing else.", "Your colony keeps working when you leave."];
         let tip_size = gfx::fit_size(tips[0], 12.0, sw - 32.0);
         let bw = (w + 48.0).max(gfx::text_width(tips[0], tip_size) + 32.0).min(sw - 8.0);
         draw_rectangle(sw / 2.0 - bw / 2.0, y - 34.0, bw, 172.0, with_alpha(pal::PANEL, 0.8));
 
+        // Served by the site, the shared sector wants an account.
+        let signed_out = self.account.is_none() && platform::accounts_required();
         let enter = match &self.account {
             Some((nickname, _)) => {
                 gfx::text("account", x, y - 18.0, 12.0, pal::DIM);
                 gfx::text(nickname, x + 2.0, y + 7.0, 20.0, pal::ACCENT);
+                false
+            }
+            None if signed_out => {
+                gfx::text("account", x, y - 18.0, 12.0, pal::DIM);
+                let line = "An account is needed to enter the sector.";
+                gfx::text(line, x + 2.0, y + 10.0, gfx::fit_size(line, 14.0, w), pal::TEXT);
                 false
             }
             None => {
@@ -189,7 +197,12 @@ impl Menu {
             }
         };
         y += 48.0;
-        if ui.button_primary(Rect::new(x, y, w, 42.0), "Enter the sector", pal::ACCENT) || enter {
+        if signed_out {
+            if ui.button_primary(Rect::new(x, y, w, 42.0), "Sign in to play", pal::ACCENT) {
+                self.remember();
+                platform::open_site();
+            }
+        } else if ui.button_primary(Rect::new(x, y, w, 42.0), "Enter the sector", pal::ACCENT) || enter {
             self.connect(None);
             return MenuOut::Stay;
         }

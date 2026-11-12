@@ -44,15 +44,15 @@ pub enum Driver {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Sel {
     None,
-    Factory(u32),
+    Base(u32),
     Dronoid(u32),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tool {
     None,
-    Build,
-    Target(u32),
+    /// Pick the point the base's hunters head for.
+    Target,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -68,6 +68,7 @@ pub enum Outcome {
 
 enum Act {
     Issue(Command),
+    /// A program, and the production line it is for, if any.
     OpenProgram(String, Option<u32>),
     OpenDebug(u32),
     Select(Sel),
@@ -77,6 +78,7 @@ enum Act {
     ToggleHelp,
     ToggleMap,
     TogglePlayers,
+    /// The list of programs to give a production line.
     ToggleProgramMenu(u32),
     CloseEditor,
     Apply,
@@ -122,16 +124,17 @@ pub struct Game {
     editor: Editor,
     edit_name: TextField,
     edit_target: EditTarget,
-    edit_factory: Option<u32>,
+    /// The production line whose program is in the editor.
+    edit_line: Option<u32>,
     debug_prog: u32,
     help_open: bool,
     map_open: bool,
     players_open: bool,
+    /// The production line whose list of programs is open.
     program_menu: Option<u32>,
     toasts: Vec<Toast>,
-    /// My factories and their health added up, to notice a raid, and when
-    /// the last warning was given.
-    holdings: (usize, i32),
+    /// My base's hull, to notice a raid, and when the last warning was given.
+    hull: Option<i32>,
     warned_at: f64,
     follow: bool,
     over_dismissed: bool,
@@ -150,32 +153,32 @@ pub struct Game {
 impl Game {
     fn new(world: World, me: u8, driver: Driver, lib: &Library) -> Game {
         let home = world.players.get(me as usize).map(|p| fpv(p.home.0, p.home.1)).unwrap_or(Vec2::splat(fp(world.size) / 2.0));
-        let first = world.factories.iter().find(|f| f.owner == me);
-        let center = first.map(|f| fpv(f.x, f.y)).unwrap_or(home);
-        let start = first.map(|f| f.id);
+        let base = world.base_of(me);
+        let center = base.map(|b| fpv(b.x, b.y)).unwrap_or(home);
+        let start = base.map(|b| b.id);
         let sight = Sight::of(&world, me, 0.0, Rect::new(center.x - 300.0, center.y - 300.0, 600.0, 600.0));
         let mut g = Game {
             world,
             me,
             driver,
-            cam: Cam { center, zoom: 24.0, shake: Vec2::ZERO },
+            cam: Cam { center, zoom: 20.0, shake: Vec2::ZERO },
             speed: 1.0,
             acc: 0.0,
             view: WorldView::default(),
-            sel: start.map(Sel::Factory).unwrap_or(Sel::None),
+            sel: start.map(Sel::Base).unwrap_or(Sel::None),
             tool: Tool::None,
             editor_open: false,
             editor: Editor::new(),
             edit_name: TextField::new("", 24, library::name_char_ok),
             edit_target: EditTarget::Program,
-            edit_factory: None,
+            edit_line: None,
             debug_prog: u32::MAX,
             help_open: false,
             map_open: false,
             players_open: false,
             program_menu: None,
             toasts: vec![],
-            holdings: (0, 0),
+            hull: None,
             warned_at: -60.0,
             follow: false,
             over_dismissed: false,
@@ -187,13 +190,22 @@ impl Game {
             sight,
             fog: Fog::new(),
         };
-        // A returning player's factory runs their own version of "miner".
-        if let (Some(fid), Some(src)) = (start, lib.source_or_builtin("miner"))
-            && g.world.factory(fid).is_some_and(|f| {
-                g.world.programs[f.prog as usize].name == "miner" && g.world.programs[f.prog as usize].source != src
-            })
-        {
-            g.issue(Command::SetProgram { factory: fid, name: "miner".into(), source: src });
+        // A returning player's lines run their own version of "miner".
+        if let Some(src) = lib.source_or_builtin("miner") {
+            let stale: Vec<u32> = g
+                .world
+                .base_of(me)
+                .map(|b| {
+                    b.lines
+                        .iter()
+                        .filter(|l| g.world.programs[l.prog as usize].name == "miner" && g.world.programs[l.prog as usize].source != src)
+                        .map(|l| l.id)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for line in stale {
+                g.issue(Command::SetProgram { line, name: "miner".into(), source: src.clone() });
+            }
         }
         g
     }
@@ -262,7 +274,8 @@ impl Game {
                 e,
                 Event::PlayerJoined { .. }
                     | Event::PlayerEliminated { .. }
-                    | Event::FactoryDestroyed { .. }
+                    | Event::BaseDestroyed { .. }
+                    | Event::Expanded { .. }
                     | Event::QuestDone { .. }
                     | Event::Shard { level: Some(_), .. }
             )
@@ -364,12 +377,15 @@ impl Game {
                 Event::PlayerEliminated { player } if player == self.me => {
                     self.toast("Your colony is gone.", pal::BAD);
                 }
-                Event::FactoryDestroyed { owner, .. } if owner == self.me => {
-                    self.toast("One of your factories was destroyed", pal::BAD);
+                Event::BaseDestroyed { owner, .. } if owner == self.me => {
+                    self.toast("Your base has fallen", pal::BAD);
                 }
-                Event::Shard { owner, bonus, level: Some(level), .. } if owner == self.me => {
-                    let text = format!("{} level {level}: a factory {}", bonus.name(), bonus.effect(level));
-                    self.toast(text, gfx::bonus_color(bonus));
+                Event::Expanded { owner, capacity } if owner == self.me => {
+                    self.toast(format!("Hangar enlarged: room for {capacity} dronoids"), pal::GOOD);
+                }
+                Event::Shard { owner, perk, level: Some(level), .. } if owner == self.me => {
+                    let text = format!("{} level {level}: {}", perk.name(), perk.effect(level));
+                    self.toast(text, gfx::perk_color(perk));
                 }
                 Event::QuestDone { player, quest, reward } if player == self.me => {
                     let title = QUESTS.get(quest as usize).map_or("", |q| q.title);
@@ -397,11 +413,11 @@ impl Game {
         }
         self.toasts.retain(|t| t.t < 4.0);
         self.validate_selection();
-        self.watch_factories();
+        self.watch_base();
         if was_landing && !self.landing() {
-            // First factory down: select it.
-            if let Some(f) = self.world.factories.iter().find(|f| f.owner == self.me) {
-                self.sel = Sel::Factory(f.id);
+            // The base has landed: select it.
+            if let Some(b) = self.world.base_of(self.me) {
+                self.sel = Sel::Base(b.id);
                 self.tool = Tool::None;
             }
         }
@@ -495,22 +511,24 @@ impl Game {
         out
     }
 
-    /// Say so when one of our factories is being hit (now and then, not
-    /// with every shot): the fight may well be off screen.
-    fn watch_factories(&mut self) {
-        let mine = self.world.factories.iter().filter(|f| f.owner == self.me);
-        let now = mine.fold((0usize, 0i32), |(n, hp), f| (n + 1, hp + f.hp));
-        let before = std::mem::replace(&mut self.holdings, now);
-        if now.0 == before.0 && now.1 < before.1 && get_time() - self.warned_at > 20.0 {
+    /// Say so when our base is being hit (now and then, not with every
+    /// shot): the fight may well be off screen.
+    fn watch_base(&mut self) {
+        let now = self.world.base_of(self.me).map(|b| b.hp);
+        let before = std::mem::replace(&mut self.hull, now);
+        if let (Some(now), Some(before)) = (now, before)
+            && now < before
+            && get_time() - self.warned_at > 20.0
+        {
             self.warned_at = get_time();
-            self.toast("One of your factories is under attack", pal::BAD);
+            self.toast("Your base is under attack", pal::BAD);
         }
     }
 
     fn validate_selection(&mut self) {
         // Someone else's unit that slips into the fog is no longer selected.
         let lost = match self.sel {
-            Sel::Factory(id) => self.world.factory(id).is_some_and(|f| !self.sight.shows(f.owner, fpv(f.x, f.y))),
+            Sel::Base(id) => self.world.base(id).is_some_and(|b| !self.sight.shows(b.owner, fpv(b.x, b.y))),
             Sel::Dronoid(id) => self.world.dronoid(id).is_some_and(|d| !self.sight.shows(d.owner, fpv(d.x, d.y))),
             Sel::None => false,
         };
@@ -518,21 +536,18 @@ impl Game {
             self.sel = Sel::None;
         }
         match self.sel {
-            Sel::Factory(id) if self.world.factory(id).is_none() => self.sel = Sel::None,
+            Sel::Base(id) if self.world.base(id).is_none() => self.sel = Sel::None,
             Sel::Dronoid(id) if self.world.dronoid(id).is_none() => {
                 self.sel = Sel::None;
                 self.follow = false;
             }
             _ => {}
         }
-        if let Some(fid) = self.program_menu
-            && self.sel != Sel::Factory(fid)
-        {
+        let my_base = self.world.base_of(self.me).map(|b| b.id);
+        if self.program_menu.is_some() && (my_base.is_none() || self.sel != Sel::Base(my_base.unwrap_or(0))) {
             self.program_menu = None;
         }
-        if let Tool::Target(fid) = self.tool
-            && self.world.factory(fid).is_none()
-        {
+        if self.tool == Tool::Target && my_base.is_none() {
             self.tool = Tool::None;
         }
     }
@@ -542,24 +557,19 @@ impl Game {
         ((w.x * FP as f32) as i32, (w.y * FP as f32) as i32)
     }
 
-    fn building(&self) -> bool {
-        self.tool == Tool::Build || self.landing()
-    }
-
     fn highlight(&self, ui: &Ui) -> Highlight {
-        let ghost = if self.building() && !ui.over_ui() && !self.editor_open {
+        let ghost = if self.landing() && !ui.over_ui() && !self.editor_open {
             let (x, y) = self.mouse_fp(ui);
-            Some((fpv(x, y), self.world.can_place_factory(self.me, x, y).is_ok()))
+            Some((fpv(x, y), self.world.can_land(self.me, x, y).is_ok()))
         } else {
             None
         };
+        let mine = self.world.base_of(self.me);
         let target = match (self.tool, self.sel) {
-            (Tool::Target(_), _) if !ui.over_ui() => Some(self.cam.s2w(ui.mouse)),
-            (_, Sel::Factory(id)) => self
-                .world
-                .factory(id)
-                .filter(|f| f.owner == self.me && f.mem[2] == 1)
-                .map(|f| vec2(f.mem[0] as f32 + 0.5, f.mem[1] as f32 + 0.5)),
+            (Tool::Target, _) if !ui.over_ui() => Some(self.cam.s2w(ui.mouse)),
+            (_, Sel::Base(id)) => mine
+                .filter(|b| b.id == id && b.mem[2] == 1)
+                .map(|b| vec2(b.mem[0] as f32 + 0.5, b.mem[1] as f32 + 0.5)),
             _ => None,
         };
         let landing = self.landing().then(|| {
@@ -567,10 +577,9 @@ impl Game {
             fpv(h.0, h.1)
         });
         Highlight {
-            factory: if let Sel::Factory(id) = self.sel { Some(id) } else { None },
+            base: if let Sel::Base(id) = self.sel { Some(id) } else { None },
             dronoid: if let Sel::Dronoid(id) = self.sel { Some(id) } else { None },
             ghost,
-            build_range_for: (self.tool == Tool::Build && !self.landing()).then_some(self.me),
             target,
             landing,
             me: self.me,
@@ -580,7 +589,7 @@ impl Game {
     fn act(&mut self, a: Act, lib: &mut Library) -> Option<Outcome> {
         match a {
             Act::Issue(c) => self.issue(c),
-            Act::OpenProgram(name, factory) => self.open_program(lib, &name, factory),
+            Act::OpenProgram(name, line) => self.open_program(lib, &name, line),
             Act::OpenDebug(id) => self.open_debug(id),
             Act::Select(s) => {
                 self.sel = s;
@@ -606,8 +615,8 @@ impl Game {
             Act::ToggleHelp => self.help_open = !self.help_open,
             Act::ToggleMap => self.map_open = !self.map_open,
             Act::TogglePlayers => self.players_open = !self.players_open,
-            Act::ToggleProgramMenu(fid) => {
-                self.program_menu = if self.program_menu == Some(fid) { None } else { Some(fid) };
+            Act::ToggleProgramMenu(line) => {
+                self.program_menu = if self.program_menu == Some(line) { None } else { Some(line) };
             }
             Act::CloseEditor => {
                 self.editor_open = false;
@@ -624,7 +633,7 @@ impl Game {
                 let src = self.editor.text();
                 match lib.save(&name, &src) {
                     Ok(n) => {
-                        self.open_program(lib, &n, self.edit_factory);
+                        self.open_program(lib, &n, self.edit_line);
                         self.toast(format!("Copy created: {n}"), pal::GOOD);
                     }
                     Err(e) => self.toast(e, pal::BAD),
@@ -642,7 +651,7 @@ impl Game {
                 if self.editor.dirty {
                     self.toast("Unapplied changes discarded", pal::WARN);
                 }
-                self.open_program(lib, &name, self.edit_factory);
+                self.open_program(lib, &name, self.edit_line);
             }
             Act::CenterOn(p) => {
                 self.cam.center = p + self.focus_shift();
@@ -664,22 +673,32 @@ impl Game {
 
     // ----- editor ---------------------------------------------------------
 
-    fn open_program(&mut self, lib: &Library, name: &str, factory: Option<u32>) {
+    /// The program running on one of my production lines.
+    fn line_program(&self, line: u32) -> Option<u32> {
+        self.world.base_of(self.me).and_then(|b| b.line(line)).map(|l| l.prog)
+    }
+
+    /// Which of my base's lines this is, counting from 1.
+    fn line_number(&self, line: u32) -> Option<usize> {
+        self.world.base_of(self.me).and_then(|b| b.lines.iter().position(|l| l.id == line)).map(|i| i + 1)
+    }
+
+    fn open_program(&mut self, lib: &Library, name: &str, line: Option<u32>) {
         let src = lib
             .source_or_builtin(name)
-            .or_else(|| factory.and_then(|f| self.world.factory(f)).map(|f| self.world.programs[f.prog as usize].source.clone()))
+            .or_else(|| line.and_then(|l| self.line_program(l)).map(|p| self.world.programs[p as usize].source.clone()))
             .unwrap_or_else(|| programs::TEMPLATE.to_string());
         self.editor.set_text(&src);
         self.editor.read_only = false;
         self.editor.exec_line = None;
         self.edit_name.text = name.to_string();
         self.edit_target = EditTarget::Program;
-        self.edit_factory = factory;
+        self.edit_line = line;
         self.editor_open = true;
         self.editor.focused = true;
         self.tool = Tool::None;
-        // The factory whose program this is stays in view beside the editor.
-        if let Some(p) = factory.and_then(|f| self.world.factory(f)).map(|f| fpv(f.x, f.y))
+        // The base whose line this is stays in view beside the editor.
+        if let Some(p) = line.and(self.world.base_of(self.me)).map(|b| fpv(b.x, b.y))
             && !ui::compact()
             && self.cam.w2s(p).x > Game::editor_left() - 40.0
         {
@@ -689,13 +708,13 @@ impl Game {
 
     fn open_debug(&mut self, id: u32) {
         let Some(d) = self.world.dronoid(id) else { return };
-        let (prog, factory) = (d.prog, d.factory);
+        let (prog, line) = (d.prog, d.line);
         self.editor.set_text(&self.world.programs[prog as usize].source);
         self.editor.read_only = true;
         self.edit_name.text = self.world.program_name(prog).to_string();
         self.debug_prog = prog;
         self.edit_target = EditTarget::Debug(id);
-        self.edit_factory = Some(factory);
+        self.edit_line = Some(line);
         self.editor_open = true;
         self.editor.focused = false;
         self.sel = Sel::Dronoid(id);
@@ -719,13 +738,12 @@ impl Game {
             Ok(_) => {
                 self.issue(Command::UpdateProgram { name: name.clone(), source: src.clone() });
                 let mut extra = String::new();
-                if let Some(fid) = self.edit_factory
-                    && let Some(f) = self.world.factory(fid)
-                    && f.owner == self.me
-                    && self.world.program_name(f.prog) != name
+                if let Some(line) = self.edit_line
+                    && let Some(prog) = self.line_program(line)
+                    && self.world.program_name(prog) != name
                 {
-                    self.issue(Command::SetProgram { factory: fid, name: name.clone(), source: src });
-                    extra = format!(", factory #{fid}");
+                    self.issue(Command::SetProgram { line, name: name.clone(), source: src });
+                    extra = format!(", line {}", self.line_number(line).unwrap_or(0));
                 }
                 self.editor.dirty = false;
                 self.toast(format!("{name} applied{extra}"), pal::GOOD);
@@ -736,8 +754,9 @@ impl Game {
         }
     }
 
+    /// How many of my production lines run a program of this name.
     fn users_of(&self, name: &str) -> usize {
-        self.world.factories.iter().filter(|f| f.owner == self.me && self.world.program_name(f.prog) == name).count()
+        self.world.base_of(self.me).map_or(0, |b| b.lines.iter().filter(|l| self.world.program_name(l.prog) == name).count())
     }
 
     /// Where the editor's window starts, on a screen wide enough to keep
@@ -785,9 +804,9 @@ impl Game {
         }
         let users = self.users_of(&self.edit_name.text);
         if users > 0 {
-            vec![(format!("Apply updates {users} factor{}", if users == 1 { "y" } else { "ies" }), pal::DIM)]
-        } else if self.edit_factory.is_some() {
-            vec![("Apply gives this program to the factory".into(), pal::DIM)]
+            vec![(format!("Apply updates {users} production line{}", if users == 1 { "" } else { "s" }), pal::DIM)]
+        } else if let Some(n) = self.edit_line.and_then(|l| self.line_number(l)) {
+            vec![(format!("Apply gives this program to line {n}"), pal::DIM)]
         } else {
             vec![]
         }
@@ -903,7 +922,7 @@ impl Game {
                 let runs = format!("runs {}", self.edit_name.text);
                 gfx::text(&runs, tx, h.y + 10.0, gfx::fit_size(&runs, 13.0, close.x - tx - 8.0), pal::DIM);
                 if ui.button_ex(Rect::new(h2.x, h2.y, 136.0, h2.h), "Edit the code", false, true, pal::GOOD) {
-                    acts.push(Act::OpenProgram(self.edit_name.text.clone(), self.edit_factory));
+                    acts.push(Act::OpenProgram(self.edit_name.text.clone(), self.edit_line));
                 }
                 if !self.is_online() && ui.button_ex(Rect::new(h2.x + 142.0, h2.y, 110.0, h2.h), "Step by step", false, true, pal::WARN) {
                     acts.push(Act::Step);
@@ -957,7 +976,7 @@ impl Game {
             }
             bx -= 128.0;
             if ui.button_ex(Rect::new(bx, h.y, 122.0, bh), "Edit the code", false, true, pal::GOOD) {
-                acts.push(Act::OpenProgram(self.edit_name.text.clone(), self.edit_factory));
+                acts.push(Act::OpenProgram(self.edit_name.text.clone(), self.edit_line));
             }
             if !self.is_online() {
                 bx -= 128.0;
@@ -1094,12 +1113,12 @@ impl Game {
         y += 10.0;
         gfx::text("hive memory", x, y, 11.0, pal::FAINT);
         y += 16.0;
-        if let Some(f) = self.world.factory(d.factory) {
+        if let Some(b) = self.world.base_of(d.owner) {
             let cw = (col_w - 20.0) / 4.0;
             for i in 0..HIVE_MEM {
                 let cx = x + (i % 4) as f32 * cw;
                 let cy = y + (i / 4) as f32 * cell_h;
-                let v = f.mem[i];
+                let v = b.mem[i];
                 gfx::text(&format!("{v}"), cx + 2.0, cy + 2.0, 12.0, if v != 0 { pal::TEXT } else { pal::FAINT });
             }
             y += HIVE_MEM.div_ceil(4) as f32 * cell_h + 6.0;
@@ -1126,12 +1145,12 @@ impl Game {
             lx += gfx::text_width(s, 12.0) + 12.0;
         };
         // The size of the colony, once there is one (not on a small screen).
-        let (factories, dronoids) = (self.world.factory_count(self.me), self.world.dronoid_count(self.me));
-        if !ui::compact() && factories + dronoids > 0 {
-            let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
-            note(&plural(factories, "factory", "factories"), pal::DIM);
-            let full = dronoids >= MAX_DRONOIDS_PER_PLAYER;
-            let crowd = if full { format!("{dronoids} dronoids (the most a colony can run)") } else { plural(dronoids, "dronoid", "dronoids") };
+        if !ui::compact()
+            && let Some(b) = self.world.base_of(self.me)
+        {
+            let dronoids = self.world.dronoid_count(self.me);
+            let full = dronoids >= b.capacity as usize;
+            let crowd = format!("{dronoids}/{} dronoids{}", b.capacity, if full { " · hangar full" } else { "" });
             note(&crowd, if full { pal::WARN } else { pal::DIM });
         }
         if self.world.shielded(self.me) {
@@ -1179,9 +1198,8 @@ impl Game {
         let pulse = with_alpha(pal::TEXT, 0.75 + 0.25 * (get_time() as f32 * 2.0).sin());
         let say = |mouse: &str, finger: &str| -> Vec<(String, Color)> { vec![((if ui.touch { finger } else { mouse }).to_string(), pulse)] };
         let parts: Vec<(String, Color)> = match self.tool {
-            Tool::Build => say("Click near your units", "Tap near your units"),
-            Tool::Target(_) => say("Click the target", "Tap the target"),
-            Tool::None if self.landing() => say("Click a free spot for your factory", "Tap a free spot for your factory"),
+            Tool::Target => say("Click the target", "Tap the target"),
+            Tool::None if self.landing() => say("Click a free spot to land your base", "Tap a free spot to land your base"),
             Tool::None => {
                 let Some(i) = quests::current(&self.world, self.me) else { return 48.0 };
                 let (done, goal) = quests::progress(&self.world, self.me, i);
@@ -1213,14 +1231,15 @@ impl Game {
     fn dock(&self, ui: &mut Ui, acts: &mut Vec<Act>) {
         let Some(me) = self.world.players.get(self.me as usize) else { return };
         let compact = ui::compact();
-        let can = me.minerals >= FACTORY_COST && me.alive && !self.landing();
+        let can_grow = self.world.base_of(self.me).is_some_and(|b| (b.capacity as usize) < MAX_DRONOIDS_PER_PLAYER);
+        let can = me.minerals >= EXPAND_COST && me.alive && can_grow;
         let items: [(String, bool, bool, Color, Act); 5] = [
             (
-                if compact { format!("Factory {FACTORY_COST}") } else { format!("Factory · {FACTORY_COST}") },
-                self.tool == Tool::Build,
-                can || self.tool == Tool::Build,
+                if compact { format!("Expand {EXPAND_COST}") } else { format!("Expand · {EXPAND_COST}") },
+                false,
+                can,
                 pal::GOOD,
-                Act::Tool(Tool::Build),
+                Act::Issue(Command::Expand),
             ),
             (
                 (if compact { "Code" } else { "Programs" }).into(),
@@ -1246,16 +1265,18 @@ impl Game {
         let y = screen_height() - h - if compact { 8.0 } else { 12.0 };
         let tips = [
             if self.landing() {
-                "Land your first factory before building more".to_string()
+                "Land your base first".to_string()
+            } else if !can_grow {
+                "The hangar is as large as it gets".to_string()
             } else if can {
-                "Place a new factory near your units (B); Shift+click places several".to_string()
+                format!("Enlarge the hangar: room for {EXPAND_SLOTS} more dronoids (X)")
             } else {
-                format!("A factory costs {FACTORY_COST} crystals: {} to go", (FACTORY_COST - me.minerals).max(0))
+                format!("{EXPAND_SLOTS} more dronoids in the hangar for {EXPAND_COST} crystals: {} to go", (EXPAND_COST - me.minerals).max(0))
             },
             "Read, write and apply programs (P)".into(),
             "The space you have explored (M); click it to look there".into(),
-            "Who lives in the sector: factories · dronoids (L)".into(),
-            "Back to your first factory (H); Tab goes from factory to factory".into(),
+            "Who lives in the sector, and how many dronoids (L)".into(),
+            "Back to your base (H)".into(),
         ];
         for (((label, active, enabled, color, act), w), tip) in items.into_iter().zip(widths).zip(tips) {
             let r = Rect::new(x, y, w, h);
@@ -1277,9 +1298,9 @@ impl Game {
             .world
             .players
             .iter()
-            .map(|p| (p.id, self.world.factory_count(p.id), self.world.dronoid_count(p.id), p.alive))
+            .map(|p| (p.id, self.world.base_of(p.id).map_or(0, |b| b.capacity as usize), self.world.dronoid_count(p.id), p.alive))
             .collect();
-        rows.sort_by_key(|r| (!r.3, std::cmp::Reverse(r.1 * 20 + r.2), r.0));
+        rows.sort_by_key(|r| (!r.3, std::cmp::Reverse(r.2 * 1000 + r.1), r.0));
         let shown = rows.len().min(14);
         let r = if ui::compact() {
             Rect::new(8.0, top, (screen_width() - 16.0).min(260.0), 30.0 + shown as f32 * 19.0)
@@ -1292,7 +1313,7 @@ impl Game {
             Driver::Offline { .. } => "Training".into(),
         };
         // What the two numbers on each row count.
-        let cols = "factories · dronoids";
+        let cols = "dronoids / hangar";
         let cw = gfx::text_width(cols, 11.0);
         gfx::text(cols, r.x + r.w - 10.0 - cw, r.y + 8.0, 11.0, pal::DIM);
         gfx::text(&title, r.x + 10.0, r.y + 7.0, gfx::fit_size(&title, 12.0, r.w - 30.0 - cw), pal::DIM);
@@ -1313,29 +1334,34 @@ impl Game {
             if online.contains(id) && *id != self.me {
                 draw_circle(r.x + 30.0 + gfx::text_width(&p.name, 13.0) + 4.0, y + 7.0, 2.5, pal::GOOD);
             }
-            let info = if *alive { format!("{f} · {d}") } else { "—".into() };
+            let info = if *alive { format!("{d} / {f}") } else { "—".into() };
             gfx::text(&info, r.x + r.w - 10.0 - gfx::text_width(&info, 12.0), y + 1.0, 12.0, pal::DIM);
         }
     }
 
     fn home(&self) -> Vec2 {
         self.world
-            .factories
-            .iter()
-            .find(|f| f.owner == self.me)
-            .map(|f| fpv(f.x, f.y))
+            .base_of(self.me)
+            .map(|b| fpv(b.x, b.y))
             .or_else(|| self.world.players.get(self.me as usize).map(|p| fpv(p.home.0, p.home.1)))
             .unwrap_or(self.cam.center)
     }
 
+    /// The first line's program, when my base is selected.
     fn default_program_name(&self) -> String {
-        if let Sel::Factory(id) = self.sel
-            && let Some(f) = self.world.factory(id)
-            && f.owner == self.me
+        if let Sel::Base(id) = self.sel
+            && let Some(b) = self.world.base_of(self.me).filter(|b| b.id == id)
+            && let Some(l) = b.lines.first()
         {
-            return self.world.program_name(f.prog).to_string();
+            return self.world.program_name(l.prog).to_string();
         }
         "miner".into()
+    }
+
+    /// The first production line of my base, with its program's name.
+    fn first_line(&self) -> Option<(u32, String)> {
+        let l = self.world.base_of(self.me)?.lines.first()?;
+        Some((l.id, self.world.program_name(l.prog).to_string()))
     }
 
     /// Top right; on a small screen, along the bottom above the dock, and
@@ -1343,9 +1369,8 @@ impl Game {
     fn selection_panel(&self, ui: &mut Ui, lib: &Library, top: f32, acts: &mut Vec<Act>) -> Option<f32> {
         let h = match self.sel {
             Sel::None => return None,
-            Sel::Factory(id) => match self.world.factory(id) {
-                // One more row once relics gave it something.
-                Some(f) if f.owner == self.me => 112.0 + if self.world.boosts.contains_key(&f.id) { 34.0 } else { 0.0 },
+            Sel::Base(id) => match self.world.base(id) {
+                Some(b) if b.owner == self.me => Game::base_panel_height(b),
                 Some(_) => 44.0,
                 None => return None,
             },
@@ -1357,7 +1382,7 @@ impl Game {
         };
         let compact = ui::compact();
         let (sw, sh) = (screen_width(), screen_height());
-        let w = if compact { (sw - 16.0).min(420.0) } else { 290.0 };
+        let w = if compact { (sw - 16.0).min(420.0) } else { 310.0 };
         let x = if compact { (sw - w) / 2.0 } else { sw - w - 12.0 };
         let y = if compact { sh - 54.0 - h } else { top };
         self.selection_body(ui, lib, acts, Rect::new(x, y, w, h));
@@ -1369,7 +1394,6 @@ impl Game {
     /// the target's clear button only when there is a target.
     fn selection_body(&self, ui: &mut Ui, lib: &Library, acts: &mut Vec<Act>, r: Rect) {
         let (x, y, w) = (r.x, r.y, r.w);
-        let compact = ui::compact();
         let health = |hp: i32, max: i32| {
             if hp < max {
                 let k = hp as f32 / max as f32;
@@ -1383,102 +1407,15 @@ impl Game {
         };
         match self.sel {
             Sel::None => {}
-            Sel::Factory(id) => {
-                let Some(f) = self.world.factory(id) else { return };
+            Sel::Base(id) => {
+                let Some(b) = self.world.base(id) else { return };
                 ui.panel(r);
-                let max_hp = self.world.factory_max_hp(id);
-                health(f.hp, max_hp);
-                let pname = self.world.program_name(f.prog);
-                if f.owner != self.me {
-                    theirs(f.owner, "factory");
+                health(b.hp, b.max_hp());
+                if b.owner != self.me {
+                    theirs(b.owner, "base");
                     return;
                 }
-                gfx::text("factory", x + 12.0, y + 12.0, 12.0, pal::DIM);
-                let nx = x + 12.0 + gfx::text_width("factory ", 12.0);
-                gfx::text(pname, nx, y + 10.0, gfx::fit_size(pname, 15.0, w * 0.42), pal::ACCENT);
-                let n = self.world.dronoids_of_factory(id);
-                if !f.enabled {
-                    if ui.button_ex(Rect::new(x + w - 102.0, y + 6.0, 90.0, 24.0), "Resume", false, true, pal::WARN) {
-                        acts.push(Act::Issue(Command::ToggleFactory { factory: id }));
-                    }
-                } else {
-                    // What the factory is up to: the next dronoid, or why none comes.
-                    let me = &self.world.players[self.me as usize];
-                    let (what, col) = if n >= f.quota as usize {
-                        ("full".to_string(), pal::DIM)
-                    } else if self.world.dronoid_count(self.me) >= MAX_DRONOIDS_PER_PLAYER {
-                        ("colony at its limit".to_string(), pal::WARN)
-                    } else if me.minerals < DRONOID_COST {
-                        (format!("needs {DRONOID_COST} crystals"), pal::WARN)
-                    } else {
-                        let secs = (f.timer as f32 / TICKS_PER_SEC).ceil() as i32;
-                        (format!("next dronoid {secs} s"), pal::DIM)
-                    };
-                    gfx::text(&what, x + w - 12.0 - gfx::text_width(&what, 12.0), y + 12.0, 12.0, col);
-                }
-                if f.hp < max_hp && ui.hover(Rect::new(x, y + 26.0, w, 12.0)) {
-                    ui.tooltip(&format!("{} / {max_hp}: a damaged factory slowly mends itself", f.hp));
-                }
-                let mut cy = y + 40.0;
-                if ui.button_ex(Rect::new(x + 12.0, cy, 128.0, 28.0), "Program", false, true, pal::GOOD) {
-                    acts.push(Act::OpenProgram(pname.to_string(), Some(id)));
-                }
-                if ui.button_ex(Rect::new(x + 146.0, cy, 132.0, 28.0), "Change…", self.program_menu == Some(id), true, pal::ACCENT) {
-                    acts.push(Act::ToggleProgramMenu(id));
-                }
-                cy += 36.0;
-                let count = format!("dronoids {n}/{}", f.quota);
-                gfx::text(&count, x + 12.0, cy + 7.0, gfx::fit_size(&count, 13.0, 96.0), pal::DIM);
-                if ui.button(Rect::new(x + 112.0, cy, 28.0, 26.0), "−") && f.quota > 0 {
-                    acts.push(Act::Issue(Command::SetQuota { factory: id, quota: f.quota - 1 }));
-                }
-                if ui.button(Rect::new(x + 144.0, cy, 28.0, 26.0), "+") && f.quota < MAX_QUOTA {
-                    acts.push(Act::Issue(Command::SetQuota { factory: id, quota: f.quota + 1 }));
-                }
-                let aim = Rect::new(x + 180.0, cy, 70.0, 26.0);
-                if ui.button_ex(aim, "Target", self.tool == Tool::Target(id), true, pal::PINK) {
-                    acts.push(Act::Tool(Tool::Target(id)));
-                }
-                if ui.hover(aim) {
-                    ui.tooltip("Writes X, Y to the factory's memory 0 and 1 (2 = 1): hunter heads there");
-                }
-                if f.mem[2] != 0 && ui.button_ex(Rect::new(x + 254.0, cy, 24.0, 26.0), "×", false, true, pal::PINK) {
-                    acts.push(Act::Issue(Command::SetMemory { factory: id, index: 2, value: 0 }));
-                }
-                if self.world.boosts.contains_key(&id) {
-                    self.bonus_row(ui, id, Rect::new(x + 12.0, cy + 34.0, w - 24.0, 26.0));
-                }
-
-                if self.program_menu == Some(id) {
-                    // Beside the panel, or above it in two columns on a small screen.
-                    let n = lib.entries.len().min(14);
-                    let (cols, rh) = if compact { (2, 32.0) } else { (1, 26.0) };
-                    let rows = n.div_ceil(cols);
-                    let ph = 10.0 + rows as f32 * rh;
-                    let pr = if compact { Rect::new(x, y - ph - 6.0, w, ph) } else { Rect::new(x - 172.0, y + 40.0, 164.0, ph) };
-                    ui.panel(pr);
-                    let cw = (pr.w - 10.0 - 6.0 * (cols - 1) as f32) / cols as f32;
-                    for (i, e) in lib.entries.iter().take(n).enumerate() {
-                        let (col, row) = ((i % cols) as f32, (i / cols) as f32);
-                        let rr = Rect::new(pr.x + 5.0 + col * (cw + 6.0), pr.y + 5.0 + row * rh, cw, rh - 2.0);
-                        if ui.button_ex(rr, &e.name, e.name == pname, true, pal::ACCENT) {
-                            match vm::assemble(&e.name, &e.source) {
-                                Ok(_) => acts.push(Act::Issue(Command::SetProgram {
-                                    factory: id,
-                                    name: e.name.clone(),
-                                    source: e.source.clone(),
-                                })),
-                                Err(_) => acts.push(Act::OpenProgram(e.name.clone(), Some(id))),
-                            }
-                            acts.push(Act::ToggleProgramMenu(id));
-                        }
-                        if ui.hover(rr)
-                            && let Some(b) = programs::builtin(&e.name)
-                        {
-                            ui.tooltip(b.summary);
-                        }
-                    }
-                }
+                self.base_body(ui, lib, acts, r, b);
             }
             Sel::Dronoid(id) => {
                 let Some(d) = self.world.dronoid(id) else { return };
@@ -1504,30 +1441,175 @@ impl Game {
         }
     }
 
-    /// What relics gave a factory: one cell a kind, its name over a bar of
+    /// Rows of my base's panel, top to bottom.
+    const BASE_HEAD: f32 = 74.0;
+    const LINE_ROW: f32 = 32.0;
+    const PERK_ROW: f32 = 36.0;
+
+    fn base_panel_height(b: &dronoids::sim::Base) -> f32 {
+        let perks = if b.has_perks() { Game::PERK_ROW } else { 0.0 };
+        let more = if b.lines.len() < MAX_LINES { 20.0 } else { 4.0 };
+        Game::BASE_HEAD + b.lines.len() as f32 * Game::LINE_ROW + perks + more
+    }
+
+    /// My base: its hangar, the target of its hunters, then one row per
+    /// production line (program, dronoids out of its quota, code, pause),
+    /// and what relics gave it.
+    fn base_body(&self, ui: &mut Ui, lib: &Library, acts: &mut Vec<Act>, r: Rect, b: &dronoids::sim::Base) {
+        let (x, y, w) = (r.x, r.y, r.w);
+        let compact = ui::compact();
+        let me = &self.world.players[self.me as usize];
+        let out = self.world.dronoid_count(self.me);
+        gfx::text("base", x + 12.0, y + 10.0, 15.0, pal::ACCENT);
+        let hangar = format!("{out}/{} dronoids", b.capacity);
+        let full = out >= b.capacity as usize;
+        gfx::text(&hangar, x + w - 12.0 - gfx::text_width(&hangar, 12.0), y + 12.0, 12.0, if full { pal::WARN } else { pal::DIM });
+        if b.hp < b.max_hp() && ui.hover(Rect::new(x, y + 26.0, w, 12.0)) {
+            ui.tooltip(&format!("{} / {}: a damaged base slowly mends itself", b.hp, b.max_hp()));
+        }
+
+        let cy = y + 40.0;
+        let room = (b.capacity as usize) < MAX_DRONOIDS_PER_PLAYER;
+        let expand = Rect::new(x + 12.0, cy, 128.0, 26.0);
+        if ui.button_ex(expand, &format!("Expand · {EXPAND_COST}"), false, room && me.minerals >= EXPAND_COST, pal::GOOD) {
+            acts.push(Act::Issue(Command::Expand));
+        }
+        if ui.hover(expand) {
+            ui.tooltip(&format!("{EXPAND_SLOTS} more dronoids in the hangar, for {EXPAND_COST} crystals"));
+        }
+        let aim = Rect::new(x + 146.0, cy, 70.0, 26.0);
+        if ui.button_ex(aim, "Target", self.tool == Tool::Target, true, pal::PINK) {
+            acts.push(Act::Tool(Tool::Target));
+        }
+        if ui.hover(aim) {
+            ui.tooltip("Writes X, Y to the base's memory 0 and 1 (2 = 1): hunter heads there");
+        }
+        if b.mem[2] != 0 && ui.button_ex(Rect::new(x + 220.0, cy, 24.0, 26.0), "×", false, true, pal::PINK) {
+            acts.push(Act::Issue(Command::SetMemory { index: 2, value: 0 }));
+        }
+
+        let wait = b.spawn_ticks();
+        let mut ly = y + Game::BASE_HEAD;
+        let mut menu_at = None;
+        for (i, l) in b.lines.iter().enumerate() {
+            let row = Rect::new(x + 8.0, ly, w - 16.0, Game::LINE_ROW - 4.0);
+            let pname = self.world.program_name(l.prog);
+            let n = self.world.dronoids_of_line(l.id);
+            // From the right: pause, code, +, −, the count; the program takes the rest.
+            let bh = row.h;
+            let pause = Rect::new(row.x + row.w - 28.0, row.y, 28.0, bh);
+            let code = Rect::new(pause.x - 50.0, row.y, 46.0, bh);
+            let plus = Rect::new(code.x - 28.0, row.y, 24.0, bh);
+            let minus = Rect::new(plus.x - 26.0, row.y, 24.0, bh);
+            let count = format!("{n}/{}", l.quota);
+            let cw = gfx::text_width("00/00", 12.0) + 6.0;
+            let name = Rect::new(row.x + 18.0, row.y, minus.x - cw - row.x - 22.0, bh);
+            let col = if l.enabled { pal::ACCENT } else { pal::DIM };
+            gfx::text(&format!("{}", i + 1), row.x + 2.0, row.y + 7.0, 13.0, with_alpha(col, 0.8));
+            let open = self.program_menu == Some(l.id);
+            if ui.button_ex(name, pname, open, true, if l.enabled { pal::ACCENT } else { pal::WARN }) {
+                acts.push(Act::ToggleProgramMenu(l.id));
+            }
+            if open {
+                menu_at = Some((l.id, pname.to_string(), ly));
+            }
+            gfx::text(&count, minus.x - cw, row.y + 7.0, gfx::fit_size(&count, 12.0, cw - 4.0), pal::DIM);
+            if ui.button(minus, "−") && l.quota > 0 {
+                acts.push(Act::Issue(Command::SetQuota { line: l.id, quota: l.quota - 1 }));
+            }
+            if ui.button(plus, "+") && l.quota < MAX_QUOTA {
+                acts.push(Act::Issue(Command::SetQuota { line: l.id, quota: l.quota + 1 }));
+            }
+            if ui.button_ex(code, "Code", false, true, pal::GOOD) {
+                acts.push(Act::OpenProgram(pname.to_string(), Some(l.id)));
+            }
+            if ui.button_ex(pause, if l.enabled { "II" } else { ">" }, !l.enabled, true, pal::WARN) {
+                acts.push(Act::Issue(Command::ToggleLine { line: l.id }));
+            }
+            // What the line is up to: the next dronoid, or why none comes.
+            let (why, frac) = if !l.enabled {
+                ("paused".to_string(), 0.0)
+            } else if n >= l.quota as usize {
+                ("full: its quota is reached".to_string(), 1.0)
+            } else if out >= b.capacity as usize {
+                ("the hangar is full: Expand".to_string(), 1.0)
+            } else if me.minerals < DRONOID_COST {
+                (format!("needs {DRONOID_COST} crystals"), 0.0)
+            } else {
+                let secs = (l.timer as f32 / TICKS_PER_SEC).ceil() as i32;
+                (format!("next dronoid in {secs} s"), 1.0 - l.timer as f32 / wait as f32)
+            };
+            draw_rectangle(name.x, row.y + bh + 1.0, name.w * frac.clamp(0.0, 1.0), 2.0, with_alpha(col, 0.45));
+            if ui.hover(name) {
+                ui.tooltip(&format!("line {}: {pname} · {why} · {}", i + 1, if open { "pick a program" } else { "click to change its program" }));
+            } else if ui.hover(Rect::new(minus.x - cw, row.y, cw, bh)) {
+                ui.tooltip(&format!("{n} dronoids out of the {} this line may keep", l.quota));
+            } else if ui.hover(pause) {
+                ui.tooltip(if l.enabled { "Pause this line" } else { "Resume this line" });
+            }
+            ly += Game::LINE_ROW;
+        }
+        if b.has_perks() {
+            self.perk_row(ui, b, Rect::new(x + 12.0, ly + 4.0, w - 24.0, 26.0));
+            ly += Game::PERK_ROW;
+        }
+        if b.lines.len() < MAX_LINES {
+            let more = format!("Assembly relics add production lines ({}/{MAX_LINES})", b.lines.len());
+            gfx::text(&more, x + 12.0, ly + 2.0, gfx::fit_size(&more, 11.0, w - 24.0), pal::FAINT);
+        }
+
+        if let Some((line, pname, ry)) = menu_at {
+            // Beside the panel, or above it in two columns on a small screen.
+            let n = lib.entries.len().min(14);
+            let (cols, rh) = if compact { (2, 32.0) } else { (1, 26.0) };
+            let rows = n.div_ceil(cols);
+            let ph = 10.0 + rows as f32 * rh;
+            let pr = if compact { Rect::new(x, y - ph - 6.0, w, ph) } else { Rect::new(x - 172.0, ry, 164.0, ph) };
+            ui.panel(pr);
+            let cw = (pr.w - 10.0 - 6.0 * (cols - 1) as f32) / cols as f32;
+            for (i, e) in lib.entries.iter().take(n).enumerate() {
+                let (col, row) = ((i % cols) as f32, (i / cols) as f32);
+                let rr = Rect::new(pr.x + 5.0 + col * (cw + 6.0), pr.y + 5.0 + row * rh, cw, rh - 2.0);
+                if ui.button_ex(rr, &e.name, e.name == pname, true, pal::ACCENT) {
+                    match vm::assemble(&e.name, &e.source) {
+                        Ok(_) => acts.push(Act::Issue(Command::SetProgram { line, name: e.name.clone(), source: e.source.clone() })),
+                        Err(_) => acts.push(Act::OpenProgram(e.name.clone(), Some(line))),
+                    }
+                    acts.push(Act::ToggleProgramMenu(line));
+                }
+                if ui.hover(rr)
+                    && let Some(b) = programs::builtin(&e.name)
+                {
+                    ui.tooltip(b.summary);
+                }
+            }
+        }
+    }
+
+    /// What relics gave the base: one cell a perk, its name over a bar of
     /// three levels, the one under way filling up shard by shard.
-    fn bonus_row(&self, ui: &mut Ui, factory: u32, r: Rect) {
-        let cell = r.w / Bonus::ALL.len() as f32;
-        for b in Bonus::ALL {
-            let cr = Rect::new(r.x + b.index() as f32 * cell, r.y, cell - 6.0, r.h);
-            let (shards, level) = (self.world.bonus_shards(factory, b), self.world.bonus_level(factory, b));
-            let col = if shards > 0 { gfx::bonus_color(b) } else { pal::FAINT };
-            gfx::text(b.name(), cr.x, cr.y, gfx::fit_size(b.name(), 11.0, cr.w), if shards > 0 { mix(col, WHITE, 0.3) } else { pal::DIM });
-            let seg = (cr.w - 4.0) / BONUS_MAX_LEVEL as f32;
-            for l in 0..BONUS_MAX_LEVEL {
+    fn perk_row(&self, ui: &mut Ui, b: &dronoids::sim::Base, r: Rect) {
+        let cell = r.w / PERKS as f32;
+        for p in Perk::ALL {
+            let cr = Rect::new(r.x + p.index() as f32 * cell, r.y, cell - 6.0, r.h);
+            let (shards, level) = (b.shards(p), b.level(p));
+            let col = if shards > 0 { gfx::perk_color(p) } else { pal::FAINT };
+            gfx::text(p.name(), cr.x, cr.y, gfx::fit_size(p.name(), 11.0, cr.w), if shards > 0 { mix(col, WHITE, 0.3) } else { pal::DIM });
+            let seg = (cr.w - 4.0) / PERK_MAX_LEVEL as f32;
+            for l in 0..PERK_MAX_LEVEL {
                 let fill = ((shards - l * RELIC_SHARDS) as f32 / RELIC_SHARDS as f32).clamp(0.0, 1.0);
                 let sx = cr.x + l as f32 * (seg + 2.0);
                 draw_rectangle(sx, cr.y + 17.0, seg, 4.0, with_alpha(pal::FAINT, 0.7));
                 draw_rectangle(sx, cr.y + 17.0, seg * fill, 4.0, with_alpha(col, if fill >= 1.0 { 1.0 } else { 0.55 }));
             }
             if ui.hover(cr) {
-                let next = if level >= BONUS_MAX_LEVEL {
+                let next = if level >= PERK_MAX_LEVEL {
                     "as high as it goes".to_string()
                 } else {
                     format!("{}/{RELIC_SHARDS} shards to level {}", shards - level * RELIC_SHARDS, level + 1)
                 };
-                let now = if level > 0 { format!("level {level}, {}", b.effect(level)) } else { format!("a level {}", b.effect(1)) };
-                ui.tooltip(&format!("{}: {now} · {next}", b.name()));
+                let now = if level > 0 { format!("level {level}, {}", p.effect(level)) } else { format!("a level: {}", p.effect(1)) };
+                ui.tooltip(&format!("{}: {now} · {next}", p.name()));
             }
         }
     }
@@ -1547,11 +1629,11 @@ impl Game {
 
     fn relic_text(k: &dronoids::sim::RelicSpot) -> String {
         format!(
-            "{} relic, {} shard{} left · MINE it: the factory of the dronoid that does {} (prospector looks for them)",
-            k.bonus.name(),
+            "{} relic, {} shard{} left · MINE it, {RELIC_SHARDS} shards a level: {} (prospector looks for them)",
+            k.perk.name(),
             k.left,
             if k.left == 1 { "" } else { "s" },
-            k.bonus.effect(1)
+            k.perk.effect(1)
         )
     }
 
@@ -1733,23 +1815,20 @@ impl Game {
             ui.pressed = false;
         }
         let (mx, my) = self.mouse_fp(ui);
-        if self.building() {
-            match self.world.can_place_factory(self.me, mx, my) {
+        if self.landing() {
+            match self.world.can_land(self.me, mx, my) {
                 Ok(()) => {
-                    let name = self.default_program_name();
+                    let name = "miner".to_string();
                     let source = lib.source_or_builtin(&name).unwrap_or_else(|| programs::TEMPLATE.into());
-                    acts.push(Act::Issue(Command::PlaceFactory { x: mx, y: my, name, source }));
-                    if !ui.shift {
-                        self.tool = Tool::None;
-                    }
+                    acts.push(Act::Issue(Command::Land { x: mx, y: my, name, source }));
                 }
                 Err(why) => self.toast(format!("Not here: {why}"), pal::WARN),
             }
             return;
         }
-        if let Tool::Target(fid) = self.tool {
+        if self.tool == Tool::Target {
             for (i, v) in [(0u8, mx.div_euclid(FP)), (1, my.div_euclid(FP)), (2, 1)] {
-                acts.push(Act::Issue(Command::SetMemory { factory: fid, index: i, value: v }));
+                acts.push(Act::Issue(Command::SetMemory { index: i, value: v }));
             }
             self.tool = Tool::None;
             return;
@@ -1764,31 +1843,32 @@ impl Game {
             .filter_map(|d| WorldView::dronoid_pos(&self.world, d.id, alpha).map(|p| (d.id, p.distance(wp))))
             .filter(|(id, dist)| *dist < pick && self.world.dronoid(*id).is_some_and(|d| self.sight.shows(d.owner, fpv(d.x, d.y))))
             .min_by(|a, b| a.1.total_cmp(&b.1));
-        let factory = self
+        let base = self
             .world
-            .factories
+            .bases
             .iter()
-            .map(|f| (f.id, fpv(f.x, f.y).distance(wp)))
-            .filter(|(id, d)| *d < fp(FACTORY_RADIUS) + 0.4 && self.world.factory(*id).is_some_and(|f| self.sight.shows(f.owner, fpv(f.x, f.y))))
+            .map(|b| (b.id, fpv(b.x, b.y).distance(wp)))
+            .filter(|(id, d)| *d < fp(BASE_RADIUS) + 0.4 && self.world.base(*id).is_some_and(|b| self.sight.shows(b.owner, fpv(b.x, b.y))))
             .min_by(|a, b| a.1.total_cmp(&b.1));
-        let sel = match (dronoid, factory) {
-            (_, Some((id, _))) if dronoid.is_none_or(|d| d.1 > 0.5) => Sel::Factory(id),
+        let sel = match (dronoid, base) {
+            (_, Some((id, _))) if dronoid.is_none_or(|d| d.1 > 0.5) => Sel::Base(id),
             (Some((id, _)), _) => Sel::Dronoid(id),
             _ => Sel::None,
         };
         if ui.double_click
             && sel == self.sel
-            && let Sel::Factory(id) = sel
-            && let Some(f) = self.world.factory(id).filter(|f| f.owner == self.me)
+            && let Sel::Base(id) = sel
+            && self.world.base_of(self.me).is_some_and(|b| b.id == id)
+            && let Some((line, name)) = self.first_line()
         {
-            acts.push(Act::OpenProgram(self.world.program_name(f.prog).to_string(), Some(id)));
+            acts.push(Act::OpenProgram(name, Some(line)));
         }
         // A finger has no hover: tapping a relic says what it is.
         if ui.touch
             && sel == Sel::None
             && let Some(k) = self.relic_at(wp)
         {
-            self.toast(Game::relic_text(&k), gfx::bonus_color(k.bonus));
+            self.toast(Game::relic_text(&k), gfx::perk_color(k.perk));
         }
         acts.push(Act::Select(sel));
     }
@@ -1827,8 +1907,8 @@ impl Game {
         if is_key_pressed(KeyCode::N) {
             acts.push(Act::Step);
         }
-        if is_key_pressed(KeyCode::B) && !self.landing() {
-            acts.push(Act::Tool(Tool::Build));
+        if is_key_pressed(KeyCode::X) && !self.landing() {
+            acts.push(Act::Issue(Command::Expand));
         }
         if is_key_pressed(KeyCode::M) {
             acts.push(Act::ToggleMap);
@@ -1836,11 +1916,8 @@ impl Game {
         if is_key_pressed(KeyCode::L) {
             acts.push(Act::TogglePlayers);
         }
-        if is_key_pressed(KeyCode::T)
-            && let Sel::Factory(id) = self.sel
-            && self.world.factory(id).is_some_and(|f| f.owner == self.me)
-        {
-            acts.push(Act::Tool(Tool::Target(id)));
+        if is_key_pressed(KeyCode::T) && self.world.base_of(self.me).is_some() {
+            acts.push(Act::Tool(Tool::Target));
         }
         if is_key_pressed(KeyCode::P) {
             let name = self.default_program_name();
@@ -1848,9 +1925,11 @@ impl Game {
         }
         if is_key_pressed(KeyCode::E) {
             match self.sel {
-                Sel::Factory(id) => {
-                    if let Some(f) = self.world.factory(id).filter(|f| f.owner == self.me) {
-                        acts.push(Act::OpenProgram(self.world.program_name(f.prog).to_string(), Some(id)));
+                Sel::Base(id) => {
+                    if self.world.base_of(self.me).is_some_and(|b| b.id == id)
+                        && let Some((line, name)) = self.first_line()
+                    {
+                        acts.push(Act::OpenProgram(name, Some(line)));
                     }
                 }
                 Sel::Dronoid(id) => {
@@ -1864,18 +1943,11 @@ impl Game {
         if is_key_pressed(KeyCode::H) || is_key_pressed(KeyCode::Home) {
             acts.push(Act::CenterOn(self.home()));
         }
-        if is_key_pressed(KeyCode::Tab) {
-            let mine: Vec<u32> = self.world.factories.iter().filter(|f| f.owner == self.me).map(|f| f.id).collect();
-            if !mine.is_empty() {
-                let next = match self.sel {
-                    Sel::Factory(id) => mine.iter().position(|f| *f == id).map(|i| (i + 1) % mine.len()).unwrap_or(0),
-                    _ => 0,
-                };
-                let id = mine[next];
-                let f = self.world.factory(id).unwrap();
-                acts.push(Act::Select(Sel::Factory(id)));
-                acts.push(Act::CenterOn(fpv(f.x, f.y)));
-            }
+        if is_key_pressed(KeyCode::Tab)
+            && let Some(b) = self.world.base_of(self.me)
+        {
+            acts.push(Act::Select(Sel::Base(b.id)));
+            acts.push(Act::CenterOn(fpv(b.x, b.y)));
         }
     }
 }
@@ -1905,28 +1977,25 @@ impl Game {
                 let (dx, dy) = dronoids::geo::dir_vec(a, r * 3 * FP);
                 (hx + dx, hy + dy)
             })
-            .find(|p| self.world.can_place_factory(self.me, p.0, p.1).is_ok())
+            .find(|p| self.world.can_land(self.me, p.0, p.1).is_ok())
         {
-            self.issue(Command::PlaceFactory { x: p.0, y: p.1, name: m.name.into(), source: m.source.into() });
+            self.issue(Command::Land { x: p.0, y: p.1, name: m.name.into(), source: m.source.into() });
             self.fast_forward(1);
             self.cam.center = fpv(p.0, p.1);
-            self.sel = self.world.factories.iter().find(|f| f.owner == self.me).map(|f| Sel::Factory(f.id)).unwrap_or(Sel::None);
+            self.sel = self.world.base_of(self.me).map(|b| Sel::Base(b.id)).unwrap_or(Sel::None);
         }
     }
 
     pub fn open_program_by_name(&mut self, lib: &Library, name: &str) {
-        let fid = self.world.factories.iter().find(|f| f.owner == self.me).map(|f| f.id);
-        self.sel = fid.map(Sel::Factory).unwrap_or(Sel::None);
-        self.open_program(lib, name, fid);
+        self.sel = self.world.base_of(self.me).map(|b| Sel::Base(b.id)).unwrap_or(Sel::None);
+        let line = self.first_line().map(|l| l.0);
+        self.open_program(lib, name, line);
     }
 
-    pub fn set_overlays(&mut self, help: bool, build: bool, map: bool, players: bool) {
+    pub fn set_overlays(&mut self, help: bool, map: bool, players: bool) {
         self.help_open = help;
         self.map_open = map;
         self.players_open = players;
-        if build {
-            self.tool = Tool::Build;
-        }
     }
 
     pub fn debug_first_dronoid(&mut self) {
@@ -1935,13 +2004,12 @@ impl Game {
         }
     }
 
-    /// Screenshots of relics: the first factory gets some of each bonus,
-    /// and with `look` a dronoid is put beside the nearest relic, with the
-    /// camera on it.
+    /// Screenshots of perks: the base gets some of each, and with `look` a
+    /// dronoid is put beside the nearest relic, with the camera on it.
     pub fn demo_relics(&mut self, look: bool) {
-        let Some(f) = self.world.factories.iter().find(|f| f.owner == self.me) else { return };
-        let (fid, fx, fy) = (f.id, f.x, f.y);
-        self.world.boosts.insert(fid, [14, 30, 5, 0]);
+        let Some(bi) = self.world.bases.iter().position(|b| b.owner == self.me) else { return };
+        let (fx, fy) = (self.world.bases[bi].x, self.world.bases[bi].y);
+        self.world.bases[bi].perks = [14, 25, 30, 5, 0];
         if !look {
             return;
         }
@@ -2100,29 +2168,30 @@ fn help_sections(touch: bool) -> Vec<(&'static str, Vec<String>)> {
         ]),
         ("ranges", lines(&[
             "MINE / DROP: DIST ≤ 1     ATTACK: DIST ≤ 2",
-            "one MOVE = 1 unit; asteroids, crystals and factories block",
+            "one MOVE = 1 unit; asteroids, crystals and bases block",
         ])),
         ("hive memory", vec![
-            format!("{HIVE_MEM} cells shared by a factory's dronoids (PEEK / POKE)"),
+            format!("{HIVE_MEM} cells shared by all the base's dronoids (PEEK / POKE)"),
             "Target writes 0 = X, 1 = Y, 2 = 1".into(),
         ]),
         ("relics · far from the starting places", vec![
             format!("MINE within reach of a RELIC takes 1 of its {RELIC_SHARDS} shards"),
-            format!("{RELIC_SHARDS} shards of a kind: one level for the miner's factory (up to {BONUS_MAX_LEVEL})"),
-            "Forge: faster builds · Refinery: more per unload".into(),
-            "Bulwark: more hull · Arsenal: harder hits".into(),
+            format!("{RELIC_SHARDS} shards of a kind: a level of that perk for the base (up to {PERK_MAX_LEVEL})"),
+            "Forge: faster lines · Assembly: one more line".into(),
+            "Refinery: more per unload · Bulwark: more hull".into(),
+            "Arsenal: harder hits".into(),
         ]),
     ];
     if touch {
         out.push(("by touch", lines(&[
             "one finger sliding: move the map; two fingers: zoom",
-            "tap: pick a factory or a dronoid; twice on a factory: its program",
+            "tap: pick the base or a dronoid; twice on the base: its first line's program",
             "editor: slide to scroll, tap to place the cursor and type",
         ])));
     } else {
         out.push(("shortcuts", lines(&[
-            "B factory · T target · E program/debugger · P programs",
-            "M map · L colonies · H base · Tab next factory",
+            "X expand · T target · E program/debugger · P programs",
+            "M map · L colonies · H or Tab base",
             "ZQSD/WASD/arrows, right-drag: camera; wheel: zoom",
             "editor: Ctrl+S apply, Ctrl+Z/Y, Ctrl+D, Tab",
         ])));

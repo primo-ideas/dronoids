@@ -186,6 +186,20 @@ input {
 }
 input:focus { outline: none; border-color: var(--accent); }
 
+[hidden] { display: none !important; }
+
+.tabs { display: flex; gap: 6px; margin: 22px 0 6px; }
+.tabs .tab { padding: 8px 16px; border-radius: 4px 4px 0 0; color: var(--dim); background: transparent; }
+.tabs .tab[aria-selected="true"] { color: var(--text); border-color: var(--accent); background: rgba(95, 216, 255, 0.1); }
+.stack { display: flex; flex-direction: column; align-items: stretch; max-width: 420px; }
+.stack label { margin-top: 14px; }
+.stack input { flex: none; width: 100%; box-sizing: border-box; }
+.stack .note { margin: 6px 0 0; font-size: 13px; }
+.stack button { align-self: flex-start; margin-top: 18px; }
+.hint { color: var(--dim); opacity: 0.8; }
+.settings { margin-top: 28px; color: var(--dim); }
+.settings summary { cursor: pointer; font-size: 14px; }
+
 .error {
     padding: 10px 14px;
     border: 1px solid rgba(255, 107, 107, 0.4);

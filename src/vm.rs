@@ -3,7 +3,7 @@
 //! A deliberately small, playful assembly (in the spirit of Human Resource
 //! Machine). Each dronoid owns four registers `a b c d`, a read-only `ok` flag
 //! set by the last action, a tiny call stack and a private RNG. Each
-//! factory owns 16 cells of "hive memory" shared by the dronoids it spawned.
+//! base owns 16 cells of "hive memory" shared by all its dronoids.
 //!
 //! Directions are compass angles in degrees: 0 = north, 90 = east...
 //!
@@ -238,7 +238,7 @@ pub const MNEMONICS: &[Mnemonic] = &[
     mn!("POKE", [V, V], Sense, "POKE i, v", "hive memory[i] = v"),
     mn!("MOVE", [V], Action, "MOVE angle", "moves one step in that direction"),
     mn!("MINE", [], Action, "MINE", "mines 1 crystal from the deposit within reach, or 1 shard of a relic"),
-    mn!("DROP", [], Action, "DROP", "unloads the hold into an allied factory within reach"),
+    mn!("DROP", [], Action, "DROP", "unloads the hold into your base within reach"),
     mn!("ATTACK", [], Action, "ATTACK", "fires at the nearest enemy within range"),
     mn!("WAIT", [], Action, "WAIT", "waits a moment"),
 ];

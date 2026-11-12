@@ -5,14 +5,42 @@
 //! their default value. Before that, saves were bincode, whose layout is
 //! positional: the structures as they were then are kept here, and a file
 //! is only accepted by a layout that reads it to the last byte.
+//!
+//! Until protocol 9, a colony was a set of factories, each building its own
+//! dronoids with its own program and its own relic bonuses. Those saves
+//! come back with one base per colony (`found_bases`).
+
+use std::collections::BTreeMap;
 
 use bincode::Options;
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use super::{Dronoid, Factory, Ore, Player, ProgEntry, World};
+use super::{Base, Dronoid, Line, Ore, Player, ProgEntry, World};
 use crate::rng::Rng;
-use crate::rules::{ARRIVAL_SCAN, VISION_DRONOID, VISION_FACTORY};
+use crate::rules::*;
+
+/// How far a factory saw (protocol 9 and earlier).
+const VISION_FACTORY: i32 = 18 * FP;
+
+/// A factory, as saved until protocol 9.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct Factory {
+    pub id: u32,
+    pub owner: u8,
+    pub x: i32,
+    pub y: i32,
+    pub hp: i32,
+    pub prog: u32,
+    pub timer: i32,
+    pub enabled: bool,
+    pub mem: [i32; HIVE_MEM],
+    pub spawned: u32,
+    pub quota: u8,
+}
+
+/// The four bonuses a relic gave a factory, in the order they were saved.
+const OLD_BONUSES: [Perk; 4] = [Perk::Forge, Perk::Refinery, Perk::Bulwark, Perk::Arsenal];
 
 /// Player as saved by protocol 3 (before the fog of war).
 #[derive(Deserialize)]
@@ -75,30 +103,113 @@ pub(super) fn from_bincode(bytes: &[u8]) -> Result<(World, u32), String> {
         Err(e) => e,
     };
     if let Ok(old) = strict::<WorldOld<PlayerV4>>(bytes) {
-        return Ok((upgrade(old, PlayerV4::into_player), 4));
+        let (mut w, factories) = upgrade(old, PlayerV4::into_player);
+        found_bases(&mut w, factories, &BTreeMap::new());
+        return Ok((w, 4));
     }
     if let Ok(old) = strict::<WorldOld<PlayerV3>>(bytes) {
-        let mut w = upgrade(old, PlayerV3::into_player);
+        let (mut w, factories) = upgrade(old, PlayerV3::into_player);
         // Nothing was mapped yet: start from what each colony sees today.
         let homes = w.players.iter().filter(|p| p.alive).map(|p| (p.id, p.home.0, p.home.1, ARRIVAL_SCAN));
-        let factories = w.factories.iter().map(|f| (f.owner, f.x, f.y, VISION_FACTORY));
+        let seen = factories.iter().map(|f| (f.owner, f.x, f.y, VISION_FACTORY));
         let dronoids = w.dronoids.iter().map(|d| (d.owner, d.x, d.y, VISION_DRONOID));
-        let units: Vec<(u8, i32, i32, i32)> = homes.chain(factories).chain(dronoids).collect();
+        let units: Vec<(u8, i32, i32, i32)> = homes.chain(seen).chain(dronoids).collect();
         for (owner, x, y, r) in units {
             w.reveal(owner, x, y, r);
         }
+        found_bases(&mut w, factories, &BTreeMap::new());
         return Ok((w, 3));
     }
     Err(current)
 }
 
-fn upgrade<P>(old: WorldOld<P>, player: impl Fn(P) -> Player) -> World {
+/// A JSON save (protocol 5 onwards), brought up to date (caches not
+/// rebuilt). Until protocol 9 it held factories and their bonuses.
+pub(super) fn from_json(bytes: &[u8]) -> Result<World, String> {
+    let mut value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    let fields = value.as_object_mut().ok_or("not a sector")?;
+    let factories = fields.remove("factories");
+    let boosts = fields.remove("boosts");
+    let mut w: World = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    if let Some(factories) = factories {
+        let factories: Vec<Factory> = serde_json::from_value(factories).map_err(|e| e.to_string())?;
+        let boosts: BTreeMap<u32, [u16; 4]> = match boosts {
+            Some(b) => serde_json::from_value(b).map_err(|e| e.to_string())?,
+            None => BTreeMap::new(),
+        };
+        found_bases(&mut w, factories, &boosts);
+    }
+    Ok(w)
+}
+
+/// Each colony's factories become one base, where its oldest factory
+/// stood: one production line per factory (as many as a base can run),
+/// with the factory's id, program, quota and state, so that its dronoids
+/// carry on as they were; the bonuses of all its factories, added up, as
+/// perks; a hangar as large as their quotas together. Dronoids of a
+/// factory that got no line of its own join the line running their
+/// program, or the first one. A colony left with no factory but dronoids
+/// loses them, and lands anew.
+pub(super) fn found_bases(w: &mut World, mut factories: Vec<Factory>, boosts: &BTreeMap<u32, [u16; 4]>) {
+    factories.retain(|f| f.hp > 0);
+    factories.sort_by_key(|f| f.id);
+    let full = (RELIC_SHARDS * PERK_MAX_LEVEL) as u16;
+    // Factory id -> line id.
+    let mut moved: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut first_line: BTreeMap<u8, u32> = BTreeMap::new();
+    for owner in 0..w.players.len() as u8 {
+        let mine: Vec<&Factory> = factories.iter().filter(|f| f.owner == owner).collect();
+        let Some(first) = mine.first() else { continue };
+        let mut perks = [0u16; PERKS];
+        for b in mine.iter().filter_map(|f| boosts.get(&f.id)) {
+            for (kind, shards) in b.iter().enumerate() {
+                let p = &mut perks[OLD_BONUSES[kind].index()];
+                *p = p.saturating_add(*shards).min(full);
+            }
+        }
+        let lines: Vec<Line> = mine
+            .iter()
+            .take(MAX_LINES)
+            .map(|f| Line { id: f.id, prog: f.prog, timer: f.timer, enabled: f.enabled, spawned: f.spawned, quota: f.quota })
+            .collect();
+        for f in &mine {
+            let line = lines.iter().find(|l| l.id == f.id).or_else(|| lines.iter().find(|l| l.prog == f.prog)).unwrap_or(&lines[0]);
+            moved.insert(f.id, line.id);
+        }
+        first_line.insert(owner, lines[0].id);
+        let quotas: u32 = mine.iter().map(|f| f.quota as u32).sum();
+        let capacity = quotas.clamp(BASE_CAPACITY as u32, MAX_DRONOIDS_PER_PLAYER as u32) as u16;
+        let id = w.new_id();
+        let mut base = Base {
+            id,
+            owner,
+            x: first.x,
+            y: first.y,
+            hp: 0,
+            capacity,
+            mem: first.mem,
+            lines,
+            perks,
+            spawned: mine.iter().map(|f| f.spawned).sum(),
+        };
+        base.hp = base.max_hp();
+        w.bases.push(base);
+        let bi = w.bases.len() - 1;
+        w.add_lines(bi);
+    }
+    w.bases.sort_by_key(|b| b.id);
+    w.dronoids.retain(|d| first_line.contains_key(&d.owner));
+    for d in &mut w.dronoids {
+        d.line = moved.get(&d.line).copied().unwrap_or(first_line[&d.owner]);
+    }
+}
+
+fn upgrade<P>(old: WorldOld<P>, player: impl Fn(P) -> Player) -> (World, Vec<Factory>) {
     let mut w = World::new(old.seed);
     w.size = old.size;
     w.tick = old.tick;
     w.ores = old.ores;
     w.players = old.players.into_iter().map(player).collect();
-    w.factories = old.factories;
     w.dronoids = old.dronoids;
     w.programs = old.programs;
     w.next_id = old.next_id;
@@ -106,7 +217,7 @@ fn upgrade<P>(old: WorldOld<P>, player: impl Fn(P) -> Player) -> World {
     w.ore_target = old.ore_target;
     // The map comes from the seed and the saved size, as for any snapshot.
     w.rocks.clear();
-    w
+    (w, old.factories)
 }
 
 impl PlayerV3 {
@@ -158,7 +269,6 @@ mod tests {
     use super::*;
     use crate::programs;
     use crate::sim::tests::land;
-    use crate::sim::Command;
 
     #[derive(Serialize)]
     struct PlayerOut<'a> {
@@ -196,6 +306,30 @@ mod tests {
         ore_target: u32,
     }
 
+    /// The factories a colony of the time would have had: one per line of
+    /// today's bases, the first where the base is, the others around it.
+    fn factories_of(w: &World) -> Vec<Factory> {
+        let mut out = vec![];
+        for b in &w.bases {
+            for (i, l) in b.lines.iter().enumerate() {
+                out.push(Factory {
+                    id: l.id,
+                    owner: b.owner,
+                    x: b.x + i as i32 * 6 * FP,
+                    y: b.y,
+                    hp: 300,
+                    prog: l.prog,
+                    timer: l.timer,
+                    enabled: l.enabled,
+                    mem: b.mem,
+                    spawned: l.spawned,
+                    quota: l.quota,
+                });
+            }
+        }
+        out
+    }
+
     /// A player's explored map as it used to be stored.
     fn old_bits(w: &World, p: &Player) -> Vec<u64> {
         let n = (w.size + crate::rules::FOG_CELL - 1) / crate::rules::FOG_CELL;
@@ -213,6 +347,7 @@ mod tests {
 
     /// What a protocol-3 or protocol-4 server would have written for this world.
     fn as_old(w: &World, version: u32) -> Vec<u8> {
+        let factories = factories_of(w);
         let bits: Vec<Vec<u64>> = w.players.iter().map(|p| old_bits(w, p)).collect();
         let players = w
             .players
@@ -238,7 +373,7 @@ mod tests {
             tick: w.tick,
             ores: &w.ores,
             players,
-            factories: &w.factories,
+            factories: &factories,
             dronoids: &w.dronoids,
             programs: &w.programs,
             next_id: w.next_id,
@@ -285,8 +420,16 @@ mod tests {
     fn same_sector(a: &World, b: &World) {
         assert_eq!((a.tick, a.seed, a.size), (b.tick, b.seed, b.size));
         assert_eq!(a.ores, b.ores);
-        assert_eq!(a.factories.len(), b.factories.len());
+        assert_eq!(a.bases.len(), b.bases.len());
         assert_eq!(a.dronoids.len(), b.dronoids.len());
+        for (x, y) in a.bases.iter().zip(&b.bases) {
+            assert_eq!((x.owner, x.x, x.y), (y.owner, y.x, y.y));
+            let lines = |b: &Base| b.lines.iter().map(|l| (l.id, l.prog, l.quota)).collect::<Vec<_>>();
+            assert_eq!(lines(x), lines(y), "each factory became a line");
+        }
+        for (d, e) in a.dronoids.iter().zip(&b.dronoids) {
+            assert_eq!((d.id, d.line, d.prog, d.x, d.y), (e.id, e.line, e.prog, e.x, e.y));
+        }
         assert_eq!(a.rocks, b.rocks, "the map comes back from the seed");
         for (p, q) in a.players.iter().zip(&b.players) {
             assert_eq!((&p.name, p.minerals, p.alive, p.bot, p.mined), (&q.name, q.minerals, q.alive, q.bot, q.mined));
@@ -318,34 +461,75 @@ mod tests {
         let (old, version) = read(&as_old(&w, 3));
         assert_eq!(version, 3);
         same_sector(&w, &old);
-        let f = old.factories.iter().find(|f| f.owner == 1).unwrap();
-        assert!(old.explored(1, f.x, f.y));
-        assert!(!old.explored(0, f.x, f.y), "nobody learns where the others are");
+        let b = old.base_of(1).unwrap();
+        assert!(old.explored(1, b.x, b.y));
+        assert!(!old.explored(0, b.x, b.y), "nobody learns where the others are");
         let d = old.dronoids.iter().find(|d| d.owner == 0).unwrap();
         assert!(old.explored(0, d.x, d.y));
     }
 
     #[test]
-    fn upgraded_saves_play_on_like_the_original() {
+    fn upgraded_saves_play_on() {
         let w = lived_in();
         for version in [3, 4] {
             let (mut old, _) = read(&as_old(&w, version));
-            let mut now = World::from_bytes(&w.to_bytes()).unwrap();
-            // Objectives and maps start over; everything else is identical.
-            for p in &mut now.players {
-                p.quests = 0;
-                p.flags = 0;
-                p.explored = old.players[p.id as usize].explored.clone();
-            }
-            let join = [(0, Command::Join { name: "cleo".into(), bot: false })];
-            now.step(&join);
-            old.step(&join);
-            for _ in 0..200 {
-                now.step(&[]);
+            for _ in 0..400 {
                 old.step(&[]);
             }
-            assert_eq!(now.state_hash(), old.state_hash(), "protocol {version}");
+            assert!(old.players.iter().filter(|p| !p.bot).all(|p| p.alive), "protocol {version}");
+            let copy = World::from_bytes(&old.to_bytes()).unwrap();
+            assert_eq!(copy.state_hash(), old.state_hash());
         }
+    }
+
+    /// A JSON save of protocol 9: factories, and the bonuses relics gave them.
+    #[test]
+    fn factories_and_their_bonuses_become_a_base_and_its_perks() {
+        let mut w = lived_in();
+        let mut factories = factories_of(&w);
+        // Ana had five factories, more than a base runs lines, one of them
+        // a scout factory; a destroyed one is left out.
+        let ana: Vec<u32> = factories.iter().filter(|f| f.owner == 0).map(|f| f.id).collect();
+        let scout = w.intern_program("scout", programs::builtin("scout").unwrap().source).unwrap();
+        for (i, prog) in [w.bases[0].lines[0].prog, scout, scout, w.bases[0].lines[0].prog].into_iter().enumerate() {
+            let mut f = factories[0].clone();
+            f.id = 9000 + i as u32;
+            f.x += (i as i32 + 2) * 6 * FP;
+            f.prog = prog;
+            factories.push(f);
+        }
+        let mut gone = factories[0].clone();
+        gone.id = 9100;
+        gone.hp = 0;
+        factories.push(gone);
+        // A dronoid of the fifth factory (whose program is the first's).
+        let d = w.dronoids.iter_mut().find(|d| d.owner == 0).unwrap();
+        d.line = 9003;
+        let moved = d.id;
+        let mut json: serde_json::Value = serde_json::from_slice(&w.to_save()).unwrap();
+        let fields = json.as_object_mut().unwrap();
+        fields.remove("bases");
+        fields.insert("factories".into(), serde_json::to_value(&factories).unwrap());
+        // Forge, Refinery, Bulwark, Arsenal, on two of Ana's factories.
+        let boosts: BTreeMap<u32, [u16; 4]> = [(ana[0], [12, 0, 30, 1]), (9001, [12, 5, 30, 0])].into();
+        fields.insert("boosts".into(), serde_json::to_value(&boosts).unwrap());
+
+        let back = World::from_save(&serde_json::to_vec(&json).unwrap()).unwrap();
+        assert_eq!(back.bases.len(), 2, "one base per colony that had a factory");
+        let b = back.base_of(0).unwrap();
+        assert_eq!((b.x, b.y), (factories[0].x, factories[0].y), "where the oldest factory stood");
+        assert_eq!(b.lines.len(), MAX_LINES);
+        assert_eq!(b.lines.iter().map(|l| l.id).collect::<Vec<_>>(), vec![ana[0], ana[1], 9000, 9001, 9002]);
+        assert_eq!(back.dronoid(moved).unwrap().line, ana[0], "with the line running its program");
+        assert_eq!(b.level(Perk::Forge), 2);
+        assert_eq!((b.shards(Perk::Refinery), b.shards(Perk::Bulwark), b.shards(Perk::Arsenal)), (5, 36, 1));
+        assert_eq!(b.level(Perk::Assembly), 0);
+        assert_eq!(b.hp, b.max_hp());
+        assert!(b.capacity >= 6 * DEFAULT_QUOTA as u16);
+        assert!(back.dronoids.iter().all(|d| back.base_of(d.owner).and_then(|b| b.line(d.line)).is_some()));
+        // And it is saved as a base from then on.
+        let again = World::from_save(&back.to_save()).unwrap();
+        assert_eq!(again.state_hash(), back.state_hash());
     }
 
     #[test]

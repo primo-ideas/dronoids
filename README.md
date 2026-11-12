@@ -3,10 +3,12 @@
 [![CI](https://github.com/primo-ideas/dronoids/actions/workflows/ci.yml/badge.svg)](https://github.com/primo-ideas/dronoids/actions/workflows/ci.yml)
 
 A shared, persistent space sector, seen from above, geometric and neon.
-You arrive **with nothing** but what it takes to build a factory. The factory builds
+You arrive **with nothing** but a big central **base**. Its production lines build
 **dronoids**, which follow to the letter a **program** written in a small, playful
 assembly language, **DASM**. The programs provided are naive on purpose: the game is
-writing better ones. Your colony keeps working when you leave.
+writing better ones. Relics out in the sector give the base **perks**. Your colony
+keeps working when you leave. An account (a nickname and a password) is needed to play
+in the shared sector.
 
 **Play: <https://primo-ideas.xyz/dronoids/>**
 
@@ -29,49 +31,60 @@ A recent stable Rust (edition 2024). Dependencies: `macroquad` (rendering), `ser
   for a dronoid), generated as it is discovered: asteroid belts, empty or crowded
   regions, crystal fields that **grow back** a few hours after they run out, and AI
   colonies living their own lives.
-- **Arrival**: 170 crystals, nothing else. You choose where to place your first factory
-  (away from the other colonies). A **shield** protects newcomers for 10 minutes from
-  the moment they land: they can neither be attacked nor attack.
-  A new factory turns out its first two dronoids quickly.
-- **First steps**: five objectives, one after the other (land, mine 100 crystals,
-  apply a program of your own, map the surroundings, found a second factory), each
-  with a small reward in crystals. They are part of the world: progress follows the
-  player from one session and one device to the next.
-- **Fog of war**: you only see around your factories (18 units) and your dronoids
+- **Arrival**: a base and 40 crystals, nothing else. You choose where your base
+  lands (away from the other colonies); the landing is free. A **shield** protects
+  newcomers for 10 minutes from the moment they land: they can neither be attacked nor
+  attack.
+- **The base**: one per colony, large (6 units across), 3000 points of hull, mending
+  itself slowly (a point a second). When it falls, the colony is gone with all its
+  dronoids, and the player lands anew.
+- **Production lines**: a base starts with two. Each line has its **own program**
+  and its **own quota**, and builds in parallel with the others: a dronoid every 30 s
+  (the first one of a line comes quickly), for 10 crystals. A line can be paused.
+  Giving a line another program reprograms its dronoids too.
+- **The hangar**: all lines together hold at most the hangar's room, 12 dronoids at
+  first. **Expand** (150 crystals) makes room for 6 more, up to 150.
+- **First steps**: six objectives, one after the other (land, mine 100 crystals,
+  apply a program of your own, map the surroundings, enlarge the hangar, bring home a
+  relic shard), each with a small reward in crystals. They are part of the world:
+  progress follows the player from one session and one device to the next.
+- **Fog of war**: you only see around your base (24 units) and your dronoids
   (12). Space explored already stays in memory, veiled (asteroids and crystals, but no
   foreign unit); the unknown stays black. The explored map belongs to each player and
   persists: your dronoids keep mapping while you are away. (Every client replays the
   whole world: the fog is a choice of display, not a protection.)
 - **A slow pace**: 4 ticks a second; a step takes 1 s, mining a crystal 2 s, and a
-  factory then turns out a dronoid every 30 s.
+  production line turns out a dronoid every 30 s.
 - The AIs only raid around their own home, and keep idle hunters there (the hardest
   ones let them roam): settling far from them means growing in
   peace.
-- A factory takes 300 points of damage, and slowly mends itself (a point every 5 s).
-- **Relics**: rare remains (about one square of 64 units in five, never within 50
-  units of a starting place), each of 12 shards. A dronoid that `MINE`s one sends the
-  shard to its own factory; 12 shards of a kind raise that factory one level of that
-  kind, up to 3: **Forge** (the wait between two dronoids 20 % shorter a level),
-  **Refinery** (one more crystal a level for every 5 unloaded there), **Bulwark**
-  (150 more hull a level), **Arsenal** (its dronoids' shots do 1 more damage a
-  level). A factory's bonuses go with it when it is destroyed; a relic mined out is
-  whole again a day later. The built-in `prospector` looks for them, naively; the
-  miners ignore them.
-- Your nickname is protected by a secret token kept by your browser (or `./save/` on
-  the desktop).
+- **Perks, from relics**: rare remains (about one square of 64 units in five, never
+  within 50 units of a starting place), each of 12 shards, of five kinds. A dronoid
+  that `MINE`s one sends the shard to its base; 12 shards of a kind raise the base one
+  level of that perk, up to 3: **Forge** (every line waits 20 % less a level between
+  two dronoids), **Assembly** (one more production line a level, running what the
+  first one runs: up to five lines), **Refinery** (one more crystal a level for every
+  5 unloaded), **Bulwark** (1000 more hull a level), **Arsenal** (its dronoids' shots
+  do 1 more damage a level). A base's perks go with it when it falls; a relic mined
+  out is whole again a day later. The built-in `prospector` looks for them, naively;
+  the miners ignore them.
+- **Accounts**: the shared sector only lets in players signed in on the site, with a
+  nickname and a password. A sector of one's own (a server started without the site)
+  lets anyone in, the nickname then protected by a secret token kept by the browser
+  (or `./save/` on the desktop).
 - **Offline training**: a private sector with AIs, pause and speed up to x8.
 
 ## Controls
 
 | Key | Effect |
 | --- | --- |
-| Left click | select; double-click a factory for its program |
+| Left click | land the base; select; double-click the base for its first line's program |
 | Right drag, wheel | move the camera, zoom |
 | ZQSD / WASD / arrows | move the camera |
-| `B` | new factory (Shift+click to place several) |
-| `E` / `P` | the factory's program, the dronoid's debugger / all programs |
-| `T` | set the factory's target (read by `hunter`) |
-| `M`, `L`, `H`, `Tab` | map, colonies, back to base, next factory |
+| `X` | expand the hangar (150 crystals) |
+| `E` / `P` | the first line's program, the dronoid's debugger / all programs |
+| `T` | set the base's target (read by `hunter`) |
+| `M`, `L`, `H` or `Tab` | map, colonies, back to the base |
 | `F1` | language help |
 | Offline | `Space` pause, `1`-`4` speed, `N` next tick |
 
@@ -79,7 +92,7 @@ On a phone or a tablet:
 
 | Gesture | Effect |
 | --- | --- |
-| Tap | select, place a factory or a target; twice on a factory for its program |
+| Tap | select, land the base, place a target; twice on the base for its first line's program |
 | One finger sliding | move the camera (in the editor and the help: scroll) |
 | Two fingers | zoom, and move the camera |
 | Tap a text field or the code | bring up the phone's keyboard |
@@ -87,16 +100,18 @@ On a phone or a tablet:
 The screen stays clean on purpose: your crystals at the top left (and the newcomer's
 shield while it lasts), speed, help and menu at the top right, a dock at the bottom,
 and one short line: the current tool, or else the next first step, how far along it
-is, how to go about it and what it earns. Beside the crystals, the size of the colony;
-a factory's panel says when its next dronoid comes, or why none does, and what
-relics gave it; pointing at a relic says what it is; a warning tells
-of a raid on a factory, which may be off screen. A unit's panel only shows its health
+is, how to go about it and what it earns. Beside the crystals, the dronoids out of
+the hangar's room; the base's panel has one row per production line (its program,
+its dronoids out of its quota, its code, a pause; pointing at it says when its next
+dronoid comes, or why none does), Expand, the target, and what relics gave the base;
+pointing at a relic says what it is; a warning tells of a raid on the base, which may
+be off screen. A unit's panel only shows its health
 once it has been hit; map and colonies open
 on demand. The editor, the language help and the dialogs are opaque, and the last two
 dim the game behind them (a click beside the help puts it away); with the editor
-open, the camera keeps the factory or the dronoid being followed in the part of the
+open, the camera keeps the base or the dronoid being followed in the part of the
 map left free beside it. The one button a screen is there for (enter the sector,
-apply a program) is outlined and brighter than the others. Offline, the speed button goes from x1 to x2, x4, x8 then pause. On a
+sign in, apply a program) is outlined and brighter than the others. Offline, the speed button goes from x1 to x2, x4, x8 then pause. On a
 narrow screen (under 700 px wide, a phone held upright), the selection panel moves to
 the bottom above the dock, and the editor and the help take the whole screen.
 
@@ -125,7 +140,8 @@ start:
   HP POSX POSY PEEK POKE` · **Actions** `MOVE angle`, `MINE`, `DROP`, `ATTACK`, `WAIT`.
 - `MINE`/`DROP` when `DIST ≤ 1`, `ATTACK` when `DIST ≤ 2`. `MINE` takes a shard of a
   relic within reach when no crystal is nearer. Sensors reach 12 units,
-  enemy factories 40, your own anywhere. 16 cells of hive memory per factory.
+  enemy bases 40, your own anywhere. 16 cells of hive memory, shared by all the
+  base's dronoids, whatever their line.
 
 [examples/miner_plus.dasm](examples/miner_plus.dasm) looks ahead (`LOOK`) and sets off
 exploring in a straight line: a test checks that over time it mines clearly more than
@@ -154,9 +170,10 @@ the desktop, and in the browser the page's WebSocket, through a small miniquad p
 
 ## The site
 
-The game lives in a small site (`site/`): an introduction, and accounts made with
-Google, Discord, GitHub or Twitch, which keep the nickname and the colony on every
-device. Playing needs no account. See `docs/deploy.md`.
+The game lives in a small site (`site/`): an introduction, and the accounts, made of a
+nickname and a password, which keep the colony on every device. An account is needed
+to play in the shared sector. Signing in with Google, Discord, GitHub or Twitch is
+written and will be offered later. See `docs/deploy.md`.
 
 ## Going online
 
@@ -170,9 +187,10 @@ The library (no graphics, testable):
 
 - `src/vm.rs`: DASM, assembler, interpreter, syntax highlighting.
 - `src/geo.rs`: deterministic integer geometry.
-- `src/sim/`: the world (landing, shield, crystals growing back, each player's
-  explored map), the map, the spatial index, the first steps (`quests.rs`) and
-  reading the saves of earlier versions (`compat.rs`).
+- `src/sim/`: the world (landing, the bases and their production lines, perks,
+  shield, crystals growing back, each player's explored map), the map, the spatial
+  index, the first steps (`quests.rs`) and reading the saves of earlier versions
+  (`compat.rs`, which also turns the factories of saves up to protocol 9 into bases).
 - `src/ai.rs`: the AI colonies, which play through the same commands as a human.
 - `src/server.rs`, `src/net.rs`: the world server, the WebSocket protocol.
 - `src/bin/server.rs`: `dronoids-server`.

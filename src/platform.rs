@@ -96,6 +96,11 @@ mod imp {
         None
     }
 
+    /// The desktop plays on sectors of its own, where guests are welcome.
+    pub fn accounts_required() -> bool {
+        false
+    }
+
     pub fn open_site() {}
 
     pub fn typed() -> String {
@@ -115,6 +120,7 @@ mod imp {
         fn god_keyboard(open: u32);
         fn god_account(ptr: *mut u8, cap: usize) -> i32;
         fn god_open_site();
+        fn god_site_accounts() -> u32;
         fn god_typed_len() -> i32;
         fn god_typed_take(ptr: *mut u8, len: usize);
     }
@@ -169,6 +175,11 @@ mod imp {
         (!nickname.is_empty() && !ticket.is_empty()).then(|| (nickname.to_string(), ticket.to_string()))
     }
 
+    /// Served from the site, the shared sector wants an account.
+    pub fn accounts_required() -> bool {
+        unsafe { god_site_accounts() != 0 }
+    }
+
     /// The site's account page (leaves the game).
     pub fn open_site() {
         unsafe { god_open_site() };
@@ -187,4 +198,4 @@ mod imp {
     }
 }
 
-pub use imp::{account, default_name, default_server, is_web, keyboard, load, open_site, random_u32, store, typed};
+pub use imp::{account, accounts_required, default_name, default_server, is_web, keyboard, load, open_site, random_u32, store, typed};

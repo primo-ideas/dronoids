@@ -9,10 +9,10 @@ prepared once, and then each deployment only replaces the build.
 ```text
 /home/dronoids/dronoids-server              the world server (static Linux binary)
 /home/dronoids/worlds/primo.world           the sector (JSON), saved every 30 s and on shutdown
-/home/dronoids/worlds/primo.accounts.json   nickname -> a guest's secret token, or "site" (held by an account)
+/home/dronoids/worlds/primo.accounts.json   nickname -> "site" (held by an account), or the token of a guest from before accounts
 /home/dronoids/site/dronoids_site.py        the account service (Python, standard library)
-/home/dronoids/site/config.json             its settings, the sign-in keys among them (written once)
-/home/dronoids/site/accounts.db             the accounts (SQLite): nicknames and the services' identifiers
+/home/dronoids/site/config.json             its settings, the sign-in services' keys among them (written once)
+/home/dronoids/site/accounts.db             the accounts (SQLite): nicknames, password hashes, the services' identifiers
 /home/dronoids/site/secret                  shared secret: the site signs the tickets, the server checks them
 /var/www/html/dronoids/                     the site (index.html, site.css, site.js) and the game in play/
 /etc/systemd/system/dronoids.service        user dronoids, port 8082 on the loopback, 6 AI colonies
@@ -48,7 +48,7 @@ reachable.
 ## The sector's save
 
 The world is generated on demand from its seed: the file only holds what the players
-changed (factories, dronoids, explored maps, deposits that have been mined). The
+changed (bases, dronoids, explored maps, deposits that have been mined). The
 768-unit square of the first versions stays at the center of the `primo` sector, as it
 was; all around it, the terrain is computed.
 
@@ -56,7 +56,7 @@ Since protocol 5, `primo.world` is JSON: a later version can add fields (with a
 default value) and read the sector back. The server also reads the bincode saves of
 earlier versions (protocols 3 and 4); it then keeps the original in `primo.old.world`
 before overwriting it in the new format. The players of a protocol-3 sector, from
-before the fog, get a map of what their factories and dronoids see. An unreadable save
+before the fog, get a map of what their factories and dronoids saw. An unreadable save
 is never overwritten: it is set aside (`primo.unreadable-<timestamp>.world`) and the
 server starts from a new sector, which its log says.
 
@@ -67,6 +67,16 @@ untouched copies of them their English wording, with the same instructions line 
 line so that running dronoids carry on, and the AI colonies become `AI <star>`
 instead of `IA <star>`. Players' own programs keep their code. The players' browsers
 do the same with the programs they keep.
+
+Until protocol 9, a colony was a set of factories. Since protocol 10 it is one base
+with production lines, and a sector saved before is converted when it is loaded: each
+colony's base lands where its oldest factory stood; each factory becomes a production
+line with the same id, program, quota and state (five at most: the dronoids of the
+others join the line running their program, or the first one), so that every dronoid
+carries on; the bonuses relics gave its factories, added up, become the base's perks
+(Forge, Refinery, Bulwark and Arsenal keep their meaning, Assembly is new); the
+hangar holds as many dronoids as the factories' quotas together (12 at least). A
+colony that had no factory left loses its dronoids and lands anew.
 
 ## Preparing the machine (once)
 
@@ -83,23 +93,32 @@ virtual hosts, nor TLS, nor the other sites.
 ## The site and the accounts
 
 `https://primo-ideas.xyz/dronoids/` is the site; the game is in `play/`. Its first
-address, `jouer/`, is a page that sends visitors on to `play/`. Playing needs no
-account, as a guest: the nickname is then protected by a token kept in the browser.
-An account is made with Google, Discord, GitHub or Twitch; all that is kept is the
-nickname and the opaque identifier the service gives for the person (no email, no
-name, no access token).
+address, `jouer/`, is a page that sends visitors on to `play/`. **An account is
+needed to play**: a nickname and a password, made on the site. All that is kept is
+the nickname and a salted hash of the password (scrypt): no email, no name. Repeated
+failed sign-ins for a nickname, or from an address, are refused for a quarter of an
+hour.
 
 When signed in, the game's page asks the site (`api/me`) for the nickname and a signed
-ticket, valid for 7 days, which the game shows the world server instead of the guest
-token. The server checks the signature with the shared secret (`--site-secret`),
-without ever asking the site, and the name then belongs to the account: no guest
-token opens it anymore. A guest who creates an account from the same browser keeps
-their nickname and their colony: the site reads their token and checks it against
-`primo.accounts.json`.
+ticket, valid for 7 days, which the game shows the world server. The server checks the
+signature with the shared secret (`--site-secret`), without ever asking the site, and
+refuses anyone without a valid ticket: given that option, it only lets accounts in
+(and does not start if the secret cannot be read). Signed out, the game's title screen
+offers to sign in, which leads to the site and back.
+
+Before accounts were required, people played as guests, their nickname protected by a
+token kept in their browser. A guest who creates an account from that same browser
+keeps their nickname and their colony: the site reads the token and checks it against
+`primo.accounts.json` (and only then suggests that nickname). Nobody else can take a
+guest's nickname.
 
 The database's columns were named in French until the site was translated: the
 service renames them (`pseudo` to `nickname`) the first time it starts on such a
-database.
+database, and adds the `password` column to a database from before passwords.
+
+Signing in with Google, Discord, GitHub or Twitch is written, and will be offered
+later: the site only offers the services whose keys are filled in, and none are yet.
+An account made at a service has no password; it can add one.
 
 ### Turning on sign-in with a service
 
@@ -128,12 +147,19 @@ deployment to the next.
 
 ```bash
 ./deploy/build-web.sh
+cargo build --release --bin dronoids-server
 python site/dronoids_site.py --config site/dev-config.json
-./target/release/dronoids-server --port 8082 --save target/site-dev/primo.world --site-secret target/site-dev/secret
+./target/release/dronoids-server --port 8082 --bind 127.0.0.1 --save target/site-dev/primo.world --site-secret target/site-dev/secret
 ```
 
-then <http://localhost:8083/dronoids/>. Locally only, a "test account" signs in
-without any service. The tests: `python site/test_site.py`.
+(the site first, it writes the shared secret), then <http://localhost:8083/dronoids/>:
+create an account, and the game takes you back to its title screen, signed in. In
+the Claude desktop app, `.claude/launch.json` has both as `site` and `world`.
+Locally only, a "test account" also signs in without any password. The tests:
+`python site/test_site.py`.
+
+A sector of one's own, without the site (`dronoids-server` without
+`--site-secret`, or the desktop client), lets anyone in, as before accounts.
 
 ## Deploying
 

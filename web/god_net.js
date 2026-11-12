@@ -158,8 +158,10 @@
     }
 
     // Who is signed in on the site (nickname and ticket), asked once before the
-    // game starts. Without the site, or signed out, the game plays as a guest.
+    // game starts. Where the site answers, an account is needed to enter the
+    // shared sector; without the site (a sector of one's own), guests play.
     let account = null;
+    let site = false;
     window.dronoidsAccount = function () {
         if (window.location.protocol === "file:") {
             return Promise.resolve();
@@ -167,6 +169,7 @@
         const asked = fetch(siteRoot() + "api/me", { credentials: "same-origin" })
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (me) {
+                site = !!me && Array.isArray(me.providers);
                 const a = me && me.account;
                 if (a && typeof a.nickname === "string" && typeof a.ticket === "string") {
                     account = a.nickname + "\n" + a.ticket;
@@ -259,8 +262,11 @@
             env.god_account = function (ptr, cap) {
                 return account ? writeBytes(encoder.encode(account), ptr, cap) : 0;
             };
+            env.god_site_accounts = function () {
+                return site ? 1 : 0;
+            };
             env.god_open_site = function () {
-                window.location.href = siteRoot() + "#account";
+                window.location.href = siteRoot() + "?from=play#account";
             };
             env.god_random = function () {
                 return window.crypto.getRandomValues(new Uint32Array(1))[0];

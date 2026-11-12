@@ -25,13 +25,13 @@
             <div class="hexes" aria-hidden="true"><span></span><span></span><span></span></div>
             <h1>DRONOIDS</h1>
             <p class="tagline">a huge shared sector · dronoids you program</p>
-            <p class="lead">Place a factory, write a few lines of assembly, and watch your dronoids
+            <p class="lead">Land your base, write a few lines of assembly, and watch your dronoids
                 set off to explore a space that has no edge. Your colony keeps working when you leave.</p>
             <div class="actions">
                 <a class="play" href="play/">Play now</a>
                 <a class="ghost" href="#account" id="hero-account">Create an account</a>
             </div>
-            <p class="note" id="hero-note">You can play without an account too: your nickname then stays tied to this browser.</p>
+            <p class="note" id="hero-note">An account is needed to play: a nickname and a password, nothing more.</p>
         </section>
 
         <section id="game" class="band">
@@ -48,6 +48,11 @@
                         and defend the colony. The programs provided are naive on purpose.</p>
                 </article>
                 <article>
+                    <h3>One base, many lines</h3>
+                    <p>Your base builds the dronoids, each production line with its own program.
+                        Relics far out in the sector give it perks: faster lines, more lines, a thicker hull.</p>
+                </article>
+                <article>
                     <h3>A world that goes on</h3>
                     <p>The sector is shared and persistent: it runs day and night, other colonies settle
                         in it, and yours keep working while you are away.</p>
@@ -61,7 +66,7 @@
                 <p>DASM fits on one page: four registers, sensors, jumps, and actions that
                     take time. A dronoid runs its instructions up to an action, then starts over.</p>
                 <p>The starting program, <code>miner</code>, goes to the nearest crystal, digs it,
-                    then goes home to the factory. Up to you to do better.</p>
+                    then goes home to the base. Up to you to do better.</p>
             </div>
             <pre class="code"><span class="c">; MINER -- the starting program</span>
 <span class="l">start:</span>
@@ -84,11 +89,31 @@
 
             <div id="signed-out" hidden>
                 <p>An account keeps your nickname and your colony, on all your devices.
-                    All that is kept is your nickname and the identifier the chosen service gives us:
-                    no email address, no name.</p>
+                    All it takes is a nickname and a password: no email address, no name.</p>
+                <div class="tabs" role="tablist">
+                    <button type="button" class="tab" id="tab-signin" role="tab">Sign in</button>
+                    <button type="button" class="tab" id="tab-register" role="tab">Create an account</button>
+                </div>
+                <form id="signin" class="stack" hidden>
+                    <label for="signin-nickname">Nickname</label>
+                    <input id="signin-nickname" maxlength="20" autocomplete="username" required>
+                    <label for="signin-password">Password</label>
+                    <input id="signin-password" type="password" maxlength="128" autocomplete="current-password" required>
+                    <button type="submit" class="play">Sign in</button>
+                </form>
+                <form id="register" class="stack" hidden>
+                    <label for="register-nickname">Nickname</label>
+                    <input id="register-nickname" minlength="3" maxlength="20" autocomplete="username" required>
+                    <p class="note">The name the other colonies see you under. It cannot be changed afterwards.</p>
+                    <p class="note" id="guest-note" hidden></p>
+                    <label for="register-password">Password <span class="hint">(8 characters or more)</span></label>
+                    <input id="register-password" type="password" minlength="8" maxlength="128" autocomplete="new-password" required>
+                    <label for="register-again">The same password again</label>
+                    <input id="register-again" type="password" minlength="8" maxlength="128" autocomplete="new-password" required>
+                    <button type="submit" class="play">Create the account</button>
+                </form>
                 <div class="providers" id="providers"></div>
-                <p class="note" id="no-provider" hidden>Signing in with Google, Discord, GitHub or Twitch
-                    opens very soon. Until then, the game stays open to everyone, without an account.</p>
+                <p class="note" id="no-provider" hidden>Signing in with Google, Discord, GitHub or Twitch will come later.</p>
             </div>
 
             <form id="choose" hidden>
@@ -99,7 +124,7 @@
                     <input id="nickname" name="nickname" maxlength="20" minlength="3" autocomplete="nickname" required>
                     <button type="submit" class="play">Confirm</button>
                 </div>
-                <p class="note" id="guest-note" hidden></p>
+                <p class="note" id="choose-note" hidden></p>
             </form>
 
             <div id="signed-in" hidden>
@@ -108,13 +133,26 @@
                     <a class="play" href="play/">Play</a>
                     <button type="button" class="ghost" id="logout">Sign out</button>
                 </div>
-                <div class="linked">
+                <div class="linked" id="linked-box" hidden>
                     <p>Linked services: <span id="linked"></span></p>
                     <div class="providers small" id="more-providers"></div>
                 </div>
+                <details class="settings">
+                    <summary id="password-summary">Change the password</summary>
+                    <form id="password" class="stack">
+                        <div id="current-box">
+                            <label for="password-current">Current password</label>
+                            <input id="password-current" type="password" maxlength="128" autocomplete="current-password">
+                        </div>
+                        <label for="password-new">New password <span class="hint">(8 characters or more)</span></label>
+                        <input id="password-new" type="password" minlength="8" maxlength="128" autocomplete="new-password" required>
+                        <button type="submit">Save</button>
+                        <p class="note" id="password-done" hidden>Saved.</p>
+                    </form>
+                </details>
                 <details class="danger">
                     <summary>Delete the account</summary>
-                    <p>The account, the nickname and the linked services are erased. The colony stays in the sector,
+                    <p>The account and the nickname are erased. The colony stays in the sector,
                         under that name, but nobody will ever be able to take it back.</p>
                     <button type="button" id="delete">Delete for good</button>
                 </details>

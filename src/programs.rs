@@ -13,7 +13,7 @@ pub const BUILTINS: &[Builtin] = &[
         summary: "Goes to the nearest crystal, fills its hold, comes home.",
         source: r#"; MINER -- the starting program.
 ; Goes to the nearest crystal, digs it until its
-; hold is full, then goes home to unload at the factory.
+; hold is full, then goes home to unload at the base.
 ; Flaw: rushes straight ahead and bumps into asteroids.
 
 start:
@@ -103,11 +103,11 @@ unload:
     },
     Builtin {
         name: "hunter",
-        summary: "Hunts enemies down, or else heads for the factory's target.",
+        summary: "Hunts enemies down, or else heads for the base's target.",
         source: r#"; HUNTER -- hunts down enemy dronoids within range,
-; or else attacks the nearest enemy factory
+; or else attacks the nearest enemy base
 ; (spotted up to 40 units away), or else heads for
-; its factory's target: memory 0 = X, 1 = Y, 2 = 1
+; its base's target: memory 0 = X, 1 = Y, 2 = 1
 ; when a target is set. Otherwise, patrols.
 
 hunt:
@@ -169,7 +169,7 @@ dodge:
     Builtin {
         name: "guard",
         summary: "Stays near the base and fires at intruders.",
-        source: r#"; GUARD -- stays near its factory and
+        source: r#"; GUARD -- stays near its base and
 ; fires at any enemy that comes close.
 
 guard:
@@ -204,13 +204,13 @@ watch:
     },
     Builtin {
         name: "prospector",
-        summary: "Looks for relics and mines them: each shard improves its factory.",
+        summary: "Looks for relics and mines them: each shard is a step towards a perk for the base.",
         source: r#"; PROSPECTOR -- looks for relics. Heads off in a
 ; straight line; with a relic in sight, goes to it and
-; mines it: every shard improves this dronoid's factory.
+; mines it: every shard goes to the base's perks.
 ; Brings no crystal home.
 ; Flaw: wanders at random, and comes back to a relic
-; its factory has no more use for.
+; its base has no more use for.
 
     RAND d, 360          ; d = course
 loop:

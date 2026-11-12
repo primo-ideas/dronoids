@@ -4,6 +4,7 @@
 //! sessions and devices. Computer colonies have none.
 
 use super::{Event, World};
+use crate::rules::BASE_CAPACITY;
 
 pub struct Quest {
     pub title: &'static str,
@@ -16,11 +17,12 @@ pub struct Quest {
 }
 
 pub const QUESTS: &[Quest] = &[
-    Quest { title: "Place your first factory", hint: "click a free spot", hint_touch: "tap a free spot", reward: 0 },
+    Quest { title: "Land your base", hint: "click a free spot", hint_touch: "tap a free spot", reward: 0 },
     Quest { title: "Mine 100 crystals", hint: "your dronoids mine on their own", hint_touch: "your dronoids mine on their own", reward: 40 },
     Quest { title: "Apply a program of your own", hint: "Program (E), change a line, Apply", hint_touch: "Program, change a line, Apply", reward: 60 },
-    Quest { title: "Map the surroundings", hint: "Change… to scout: scouts go far", hint_touch: "Change… to scout: scouts go far", reward: 50 },
-    Quest { title: "Found a second factory", hint: "Factory (B), near your units", hint_touch: "Factory, near your units", reward: 80 },
+    Quest { title: "Map the surroundings", hint: "put a line on scout: scouts go far", hint_touch: "put a line on scout: scouts go far", reward: 50 },
+    Quest { title: "Enlarge the hangar", hint: "Expand (X): room for more dronoids", hint_touch: "Expand: room for more dronoids", reward: 80 },
+    Quest { title: "Bring home a relic shard", hint: "put a line on prospector: relics give perks", hint_touch: "put a line on prospector: relics give perks", reward: 60 },
 ];
 
 pub const MINED_GOAL: i64 = 100;
@@ -47,11 +49,12 @@ pub fn current(w: &World, player: u8) -> Option<usize> {
 pub fn progress(w: &World, player: u8, i: usize) -> (i64, i64) {
     let Some(p) = w.players.get(player as usize) else { return (0, 1) };
     match i {
-        0 => (w.factory_count(player).min(1) as i64, 1),
+        0 => (w.base_of(player).is_some() as i64, 1),
         1 => (p.mined.min(MINED_GOAL), MINED_GOAL),
         2 => ((p.flags & FLAG_OWN_PROGRAM != 0) as i64, 1),
         3 => (p.seen.count().min(MAPPED_GOAL), MAPPED_GOAL),
-        4 => (w.factory_count(player).min(2) as i64, 2),
+        4 => (w.base_of(player).is_some_and(|b| b.capacity > BASE_CAPACITY) as i64, 1),
+        5 => (w.base_of(player).is_some_and(|b| b.has_perks()) as i64, 1),
         _ => (0, 1),
     }
 }
@@ -85,7 +88,7 @@ mod tests {
     use super::*;
     use crate::geo::dir_vec;
     use crate::programs;
-    use crate::rules::{FACTORY_COST, FP};
+    use crate::rules::{EXPAND_COST, FP};
     use crate::sim::tests::land;
     use crate::sim::Command;
 
@@ -161,19 +164,13 @@ mod tests {
         }
         assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 3, reward: QUESTS[3].reward });
 
-        let f = w.factories.iter().find(|f| f.owner == me).unwrap();
-        let (fx, fy) = (f.x, f.y);
-        w.players[me as usize].minerals += FACTORY_COST;
-        let spot = (2..12)
-            .flat_map(|r| (0..360).step_by(30).map(move |a| (r, a)))
-            .map(|(r, a)| {
-                let (dx, dy) = dir_vec(a, r * 2 * FP);
-                (fx + dx, fy + dy)
-            })
-            .find(|p| w.can_place_factory(me, p.0, p.1).is_ok())
-            .expect("room for a second factory");
-        w.step(&[(me, Command::PlaceFactory { x: spot.0, y: spot.1, name: "miner".into(), source: miner.source.into() })]);
+        w.players[me as usize].minerals += EXPAND_COST;
+        w.step(&[(me, Command::Expand)]);
         assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 4, reward: QUESTS[4].reward });
+
+        // A shard of a relic, whatever its kind.
+        w.bases.iter_mut().find(|b| b.owner == me).unwrap().perks[0] = 1;
+        assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 5, reward: QUESTS[5].reward });
         assert_eq!(current(&w, me), None);
         idle(&mut w);
         assert_eq!(w.players[bot as usize].quests, 0);
@@ -182,7 +179,7 @@ mod tests {
         let copy = World::from_bytes(&w.to_bytes()).unwrap();
         assert_eq!(copy.players[me as usize].quests, w.players[me as usize].quests);
         let saved = World::from_save(&w.to_save()).unwrap();
-        assert_eq!((saved.players[me as usize].quests, saved.players[me as usize].flags), (0b11111, FLAG_OWN_PROGRAM));
+        assert_eq!((saved.players[me as usize].quests, saved.players[me as usize].flags), (0b111111, FLAG_OWN_PROGRAM));
         assert_eq!(saved.state_hash(), w.state_hash());
     }
 }

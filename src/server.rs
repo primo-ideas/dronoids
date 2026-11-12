@@ -5,10 +5,11 @@
 //! snapshot, then the frames. Clients report hashes; a client that drifts
 //! (or falls behind, like a hidden browser tab) gets a fresh snapshot.
 //!
-//! Names are protected by a secret token the client keeps: the first
-//! connection with a name claims it. A player signed in on the site comes
-//! with a ticket instead (`ticket`), and their name then belongs to their
-//! account: no guest token opens it any more.
+//! A server tied to the site (`--site-secret`) only lets in players signed
+//! in to an account there: they come with a ticket (`ticket`) the site
+//! signed for their nickname. A server of one's own, without the site,
+//! lets anyone in; names are then protected by a secret token the client
+//! keeps, the first connection with a name claiming it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
@@ -45,7 +46,8 @@ pub struct ServerConfig {
     pub level: Level,
     /// Where the world is saved (and loaded from, if it exists).
     pub save: Option<PathBuf>,
-    /// Shared with the site's account service, to check its tickets.
+    /// Shared with the site's account service, to check its tickets. With
+    /// it, an account is needed to play.
     pub site_secret: Option<Vec<u8>>,
 }
 
@@ -200,6 +202,8 @@ impl Server {
                             Some("different game version: reload the page".to_string())
                         } else if signed_in && !ticket_ok {
                             Some("session expired: sign in again on the site".into())
+                        } else if self.cfg.site_secret.is_some() && !ticket_ok {
+                            Some("an account is needed to play here: sign in on the site".into())
                         } else if name.is_empty() || token.len() < 8 {
                             Some("invalid name".into())
                         } else if is_bot || owned_by_other {
@@ -424,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn a_site_account_takes_over_its_name() {
+    fn a_server_tied_to_the_site_wants_an_account() {
         let dir = std::env::temp_dir().join(format!("dronoids-ticket-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let secret = b"shared-secret".to_vec();
@@ -432,34 +436,31 @@ mod tests {
             Server::new(ServerConfig { save: Some(dir.join("t.world")), site_secret: Some(secret.clone()), ..cfg(0) }).unwrap();
         let later = u64::MAX / 2;
         let held = |name: &str| {
-            let bytes = std::fs::read(dir.join("t.accounts.json")).unwrap();
+            let bytes = std::fs::read(dir.join("t.accounts.json")).ok()?;
             serde_json::from_slice::<HashMap<String, String>>(&bytes).unwrap().get(name).cloned()
         };
 
-        // A guest claims a name; the file says so at once.
-        let guest = hello(&mut server, "ana", "guest-token-ana").unwrap();
-        assert_eq!(held("ana").as_deref(), Some("guest-token-ana"));
-        drop(guest);
-        idle(&mut server);
+        // Accounts only: no guest gets in, even under a free name.
+        assert!(hello(&mut server, "ana", "guest-token-ana").err().unwrap().contains("account is needed"));
 
         // Bad tickets: forged, for another name, or expired.
         assert!(hello(&mut server, "ana", "site.9999999999.00ff").err().unwrap().contains("session expired"));
         assert!(hello(&mut server, "ana", &ticket::sign(&secret, "bob", later)).is_err());
         assert!(hello(&mut server, "ana", &ticket::sign(&secret, "ana", 1)).is_err());
-        assert_eq!(held("ana").as_deref(), Some("guest-token-ana"));
+        assert_eq!(held("ana"), None);
 
-        // The account's ticket opens the name, which is then closed to guests.
+        // The account's ticket opens the name, which is then the account's.
         let account = hello(&mut server, "ana", &ticket::sign(&secret, "ana", later)).unwrap();
         assert_eq!(held("ana").as_deref(), Some(ticket::OWNED));
         drop(account);
         idle(&mut server);
-        assert!(hello(&mut server, "ana", "guest-token-ana").err().unwrap().contains("belongs"));
         assert!(hello(&mut server, "ana", ticket::OWNED).is_err());
         assert!(hello(&mut server, "ana", &ticket::sign(&secret, "ana", later + 5)).is_ok());
 
-        // Without a shared secret, no ticket is accepted.
+        // Without a shared secret, no ticket is accepted, and guests play.
         let mut alone = Server::new(cfg(0)).unwrap();
         assert!(hello(&mut alone, "ana", &ticket::sign(&secret, "ana", later)).is_err());
+        assert!(hello(&mut alone, "ana", "guest-token-ana").is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -504,10 +505,10 @@ mod tests {
                             let w = c.world.as_mut().expect("welcome first");
                             assert_eq!(w.tick, tick);
                             w.step(&cmds);
-                            if w.is_landing(c.me) && w.players[c.me as usize].minerals >= crate::rules::FACTORY_COST {
+                            if w.is_landing(c.me) && w.players[c.me as usize].alive {
                                 let (hx, hy) = w.players[c.me as usize].home;
                                 let m = crate::programs::builtin("miner").unwrap();
-                                c.conn.send(&ClientMsg::Cmd(Command::PlaceFactory {
+                                c.conn.send(&ClientMsg::Cmd(Command::Land {
                                     x: hx,
                                     y: hy,
                                     name: m.name.into(),
@@ -535,7 +536,7 @@ mod tests {
         }
         assert_eq!(server.world.players.len(), 4);
         assert_eq!((clients[0].me, clients[1].me), (2, 3));
-        assert!(server.world.factory_count(2) >= 1 && server.world.factory_count(3) >= 1, "both landed");
+        assert!(server.world.base_of(2).is_some() && server.world.base_of(3).is_some(), "both landed");
     }
 
     #[test]

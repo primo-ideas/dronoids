@@ -1,4 +1,4 @@
-//! Draws the world: starfield, asteroids, crystals, factories, dronoids and
+//! Draws the world: starfield, asteroids, crystals, bases, dronoids and
 //! effects. World coordinates are in units (floats here, fixed-point in
 //! the simulation).
 
@@ -12,7 +12,7 @@ use dronoids::sim::fog::FogMap;
 use dronoids::sim::{ore_radius, Doing, Event, World};
 
 use crate::fx::Fx;
-use crate::gfx::{arc, bonus_color, mix, pal, player_color, poly_fill, poly_lines, regular, scale_rgb, with_alpha};
+use crate::gfx::{arc, mix, pal, perk_color, player_color, poly_fill, poly_lines, regular, scale_rgb, with_alpha};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Cam {
@@ -87,8 +87,8 @@ impl Sight {
 
     pub fn of(world: &World, me: u8, alpha: f32, area: Rect) -> Sight {
         let mut sources: Vec<(Vec2, f32)> = vec![];
-        for f in world.factories.iter().filter(|f| f.owner == me) {
-            sources.push((fpv(f.x, f.y), fp(VISION_FACTORY)));
+        for b in world.bases.iter().filter(|b| b.owner == me) {
+            sources.push((fpv(b.x, b.y), fp(VISION_BASE)));
         }
         let a = alpha.clamp(0.0, 1.0);
         for d in world.dronoids.iter().filter(|d| d.owner == me) {
@@ -167,14 +167,13 @@ pub const FOG_UNKNOWN: Color = Color::new(0.025, 0.03, 0.055, 1.0);
 pub const FOG_EXPLORED: Color = Color::new(0.33, 0.37, 0.52, 1.0);
 
 pub struct Highlight {
-    pub factory: Option<u32>,
+    pub base: Option<u32>,
     pub dronoid: Option<u32>,
-    /// Build ghost: world position and validity.
+    /// Landing ghost: world position and validity.
     pub ghost: Option<(Vec2, bool)>,
-    pub build_range_for: Option<u8>,
-    /// Target marker of the selected factory.
+    /// Target marker of the selected base.
     pub target: Option<Vec2>,
-    /// Suggested place for a first factory.
+    /// Suggested place for the base to land.
     pub landing: Option<Vec2>,
     pub me: u8,
 }
@@ -209,9 +208,10 @@ impl WorldView {
             let seen = match *e {
                 Event::Spawn { x, y, .. }
                 | Event::DronoidDestroyed { x, y, .. }
-                | Event::FactoryDestroyed { x, y, .. }
-                | Event::FactoryBuilt { x, y, .. }
+                | Event::BaseDestroyed { x, y, .. }
+                | Event::BaseLanded { x, y, .. }
                 | Event::OreGrown { x, y } => sight.visible(fpv(x, y)),
+                Event::Expanded { owner, .. } => world.base_of(owner).is_some_and(|b| sight.visible(fpv(b.x, b.y))),
                 Event::Mine { tx, ty, .. } | Event::Drop { tx, ty, .. } | Event::Shard { tx, ty, .. } => sight.visible(fpv(tx, ty)),
                 Event::Attack { x, y, tx, ty, .. } => sight.visible(fpv(x, y)) || sight.visible(fpv(tx, ty)),
                 Event::PlayerJoined { player } => {
@@ -235,19 +235,19 @@ impl WorldView {
                         self.fx.burst(fpv(tx, ty), pal::ORE, 14, 3.0, 0.8);
                     }
                 }
-                Event::Shard { factory, x, y, tx, ty, bonus, level, depleted, .. } => {
-                    let c = bonus_color(bonus);
+                Event::Shard { owner, x, y, tx, ty, perk, level, depleted } => {
+                    let c = perk_color(perk);
                     self.fx.beam(fpv(tx, ty), fpv(x, y), mix(c, WHITE, 0.4), 0.1, 0.5);
                     self.fx.dots(fpv(tx, ty), c, 5, 1.6, 0.7);
                     if depleted {
                         self.fx.burst(fpv(tx, ty), c, 24, 3.5, 1.0);
                         self.fx.ring(fpv(tx, ty), c, 3.0, 0.9);
                     }
-                    // The factory it went to lights up when it gains a level.
+                    // The base it went to lights up when it gains a level.
                     if level.is_some()
-                        && let Some(f) = world.factory(factory)
+                        && let Some(b) = world.base_of(owner)
                     {
-                        let at = fpv(f.x, f.y);
+                        let at = fpv(b.x, b.y);
                         self.fx.ring(at, c, 5.0, 1.2);
                         self.fx.ring(at, WHITE, 3.0, 0.8);
                         self.fx.dots(at, c, 30, 3.5, 1.2);
@@ -269,17 +269,24 @@ impl WorldView {
                     self.fx.burst(at, player_color(owner), 16, 4.0, 0.9);
                     self.fx.ring(at, player_color(owner), 1.4, 0.5);
                 }
-                Event::FactoryDestroyed { owner, x, y } => {
+                Event::BaseDestroyed { owner, x, y } => {
                     let at = fpv(x, y);
-                    self.fx.burst(at, player_color(owner), 60, 7.0, 1.4);
-                    self.fx.burst(at, WHITE, 20, 5.0, 0.9);
-                    self.fx.ring(at, player_color(owner), 5.0, 1.2);
-                    self.fx.ring(at, WHITE, 3.0, 0.7);
-                    self.shake = self.shake.max(0.3);
+                    self.fx.burst(at, player_color(owner), 120, 10.0, 1.8);
+                    self.fx.burst(at, WHITE, 40, 7.0, 1.1);
+                    self.fx.ring(at, player_color(owner), 9.0, 1.5);
+                    self.fx.ring(at, WHITE, 5.0, 0.9);
+                    self.shake = self.shake.max(0.5);
                 }
-                Event::FactoryBuilt { owner, x, y } => {
-                    self.fx.ring(fpv(x, y), player_color(owner), 3.5, 0.9);
-                    self.fx.dots(fpv(x, y), player_color(owner), 24, 3.0, 0.9);
+                Event::BaseLanded { owner, x, y } => {
+                    self.fx.ring(fpv(x, y), player_color(owner), 7.0, 1.2);
+                    self.fx.dots(fpv(x, y), player_color(owner), 40, 5.0, 1.1);
+                }
+                Event::Expanded { owner, .. } => {
+                    if let Some(b) = world.base_of(owner) {
+                        let at = fpv(b.x, b.y);
+                        self.fx.ring(at, pal::ORE, 5.0, 1.0);
+                        self.fx.dots(at, player_color(owner), 24, 4.0, 0.9);
+                    }
                 }
                 Event::PlayerJoined { player } => {
                     if let Some(p) = world.players.get(player as usize) {
@@ -289,8 +296,8 @@ impl WorldView {
                 Event::PlayerEliminated { .. } => {}
                 Event::QuestDone { player, reward, .. } => {
                     // The reward lands at home.
-                    if let Some(f) = world.factories.iter().find(|f| f.owner == player) {
-                        let at = fpv(f.x, f.y);
+                    if let Some(b) = world.base_of(player) {
+                        let at = fpv(b.x, b.y);
                         self.fx.ring(at, pal::ORE, 6.0, 1.4);
                         if reward > 0 {
                             self.fx.dots(at, pal::ORE_CORE, 30, 3.5, 1.2);
@@ -368,23 +375,6 @@ impl WorldView {
         let alpha = alpha.clamp(0.0, 1.0);
         self.draw_stars(cam);
 
-        if let Some(owner) = hl.build_range_for {
-            // Where a factory may go: outlines over the faintest wash, so
-            // that a crowd of dronoids does not add up to a glare.
-            for f in world.factories.iter().filter(|f| f.owner == owner) {
-                let c = cam.w2s(fpv(f.x, f.y));
-                let r = fp(BUILD_RANGE + 2 * FACTORY_RADIUS) * z;
-                draw_circle(c.x, c.y, r, with_alpha(pal::GOOD, 0.022));
-                draw_circle_lines(c.x, c.y, r, 1.0, with_alpha(pal::GOOD, 0.3));
-            }
-            for d in world.dronoids.iter().filter(|d| d.owner == owner) {
-                let c = cam.w2s(fpv(d.x, d.y));
-                let r = fp(BUILD_RANGE) * z;
-                draw_circle(c.x, c.y, r, with_alpha(pal::GOOD, 0.006));
-                draw_circle_lines(c.x, c.y, r, 1.0, with_alpha(pal::GOOD, 0.09));
-            }
-        }
-
         // Whatever the view reaches of the terrain.
         let tl = cam.s2w(Vec2::ZERO);
         let br = cam.s2w(vec2(screen_width(), screen_height()));
@@ -455,7 +445,7 @@ impl WorldView {
                 return;
             }
             let sc = cam.w2s(c);
-            let col = bonus_color(k.bonus);
+            let col = perk_color(k.perk);
             let r = fp(RELIC_RADIUS) * z;
             let pulse = 0.7 + 0.3 * (t * 2.2 + (k.id % 97) as f32).sin();
             if z < 5.0 {
@@ -485,53 +475,67 @@ impl WorldView {
             }
         }
 
-        // Factories.
-        for f in &world.factories {
-            let c = fpv(f.x, f.y);
-            if !cam.visible(c, 4.0) || !sight.shows(f.owner, c) {
+        // Bases: a large hexagon, its production lines as bays around the
+        // core (each with the progress of its next dronoid), its perks as
+        // pips outside, a corner of the ring a kind.
+        for b in &world.bases {
+            let c = fpv(b.x, b.y);
+            if !cam.visible(c, 8.0) || !sight.shows(b.owner, c) {
                 continue;
             }
             let sc = cam.w2s(c);
-            let pc = if f.enabled { player_color(f.owner) } else { scale_rgb(player_color(f.owner), 0.45) };
-            let r = fp(FACTORY_RADIUS) * z;
+            let pc = player_color(b.owner);
+            let r = fp(BASE_RADIUS) * z;
             let hex = regular(sc, r, 6, PI / 6.0);
-            poly_fill(&hex, with_alpha(pc, 0.13));
-            poly_lines(&hex, (z * 0.08).max(1.5), pc);
-            poly_lines(&regular(sc, r * 0.55, 6, PI / 6.0), (z * 0.03).max(1.0), with_alpha(pc, 0.5));
-            poly_lines(&regular(sc, r * 0.42, 3, t * 0.8 + f.id as f32), (z * 0.04).max(1.0), mix(pc, WHITE, 0.3));
-            draw_circle(sc.x, sc.y, r * 0.13, mix(pc, WHITE, 0.6));
-            if f.enabled && f.timer > 0 {
-                let prog = (1.0 - f.timer as f32 / world.spawn_ticks(f.id) as f32).clamp(0.0, 1.0);
-                arc(sc, r * 1.25, -PI / 2.0, -PI / 2.0 + TAU * prog, (z * 0.04).max(1.0), with_alpha(pc, 0.5));
+            poly_fill(&hex, with_alpha(pc, 0.12));
+            poly_lines(&hex, (z * 0.1).max(1.5), pc);
+            if r < 8.0 {
+                continue;
             }
-            // What relics gave it: one pip a level, a corner a kind.
-            if z >= 8.0 {
-                for b in Bonus::ALL {
-                    let col = bonus_color(b);
-                    let a0 = -PI * 0.75 + b.index() as f32 * PI / 2.0;
-                    for l in 0..world.bonus_level(f.id, b) {
-                        let p = sc + Vec2::from_angle(a0 + (l as f32 - 1.0) * 0.2) * r * 1.42;
-                        draw_poly(p.x, p.y, 4, (z * 0.13).max(2.5), 0.0, col);
+            poly_lines(&regular(sc, r * 0.62, 6, PI / 6.0), (z * 0.035).max(1.0), with_alpha(pc, 0.45));
+            poly_lines(&regular(sc, r * 0.3, 3, t * 0.6 + b.id as f32), (z * 0.05).max(1.0), mix(pc, WHITE, 0.3));
+            draw_circle(sc.x, sc.y, r * 0.07, mix(pc, WHITE, 0.6));
+            let wait = b.spawn_ticks() as f32;
+            let n = b.lines.len().max(1) as f32;
+            for (i, l) in b.lines.iter().enumerate() {
+                let a = -PI / 2.0 + i as f32 * TAU / n;
+                let at = sc + Vec2::from_angle(a) * r * 0.81;
+                let col = if l.enabled { pc } else { scale_rgb(pc, 0.4) };
+                let bay = regular(at, r * 0.12, 6, a);
+                poly_fill(&bay, with_alpha(col, 0.25));
+                poly_lines(&bay, (z * 0.03).max(1.0), col);
+                if l.enabled && l.timer > 0 {
+                    let prog = (1.0 - l.timer as f32 / wait).clamp(0.0, 1.0);
+                    arc(at, r * 0.17, -PI / 2.0, -PI / 2.0 + TAU * prog, (z * 0.03).max(1.0), with_alpha(mix(col, WHITE, 0.3), 0.7));
+                }
+            }
+            if z >= 6.0 {
+                for p in Perk::ALL {
+                    let col = perk_color(p);
+                    let a0 = -PI / 2.0 + (p.index() as f32 + 0.5) * TAU / PERKS as f32;
+                    for lvl in 0..b.level(p) {
+                        let at = sc + Vec2::from_angle(a0 + (lvl as f32 - 1.0) * 0.11) * r * 1.16;
+                        draw_poly(at.x, at.y, 4, (z * 0.16).max(2.5), 0.0, col);
                     }
                 }
             }
-            let max_hp = world.factory_max_hp(f.id);
-            if f.hp < max_hp {
-                let w = r * 1.8;
-                let frac = f.hp as f32 / max_hp as f32;
-                draw_rectangle(sc.x - w / 2.0, sc.y + r * 1.4, w, (z * 0.12).max(3.0), with_alpha(BLACK, 0.7));
-                draw_rectangle(sc.x - w / 2.0, sc.y + r * 1.4, w * frac, (z * 0.12).max(3.0), mix(pal::BAD, pal::GOOD, frac));
+            let max_hp = b.max_hp();
+            if b.hp < max_hp {
+                let w = r * 1.6;
+                let frac = b.hp as f32 / max_hp as f32;
+                draw_rectangle(sc.x - w / 2.0, sc.y + r * 1.3, w, (z * 0.12).max(3.0), with_alpha(BLACK, 0.7));
+                draw_rectangle(sc.x - w / 2.0, sc.y + r * 1.3, w * frac, (z * 0.12).max(3.0), mix(pal::BAD, pal::GOOD, frac));
             }
-            if world.shielded(f.owner) {
+            if world.shielded(b.owner) {
                 // Newcomer protection: a faint shimmering bubble.
-                let shimmer = 0.10 + 0.05 * (t * 1.7 + f.id as f32).sin();
-                draw_circle_lines(sc.x, sc.y, r * 2.3, 1.0, with_alpha(mix(pc, WHITE, 0.4), shimmer * 2.0));
-                draw_circle(sc.x, sc.y, r * 2.3, with_alpha(pc, shimmer * 0.35));
+                let shimmer = 0.10 + 0.05 * (t * 1.7 + b.id as f32).sin();
+                draw_circle_lines(sc.x, sc.y, r * 1.9, 1.0, with_alpha(mix(pc, WHITE, 0.4), shimmer * 2.0));
+                draw_circle(sc.x, sc.y, r * 1.9, with_alpha(pc, shimmer * 0.35));
             }
-            if hl.factory == Some(f.id) {
+            if hl.base == Some(b.id) {
                 for i in 0..6 {
-                    let a0 = t * 0.8 + i as f32 * TAU / 6.0;
-                    arc(sc, r * 1.6, a0, a0 + 0.6, 2.0, WHITE);
+                    let a0 = t * 0.5 + i as f32 * TAU / 6.0;
+                    arc(sc, r * 1.45, a0, a0 + 0.6, 2.0, WHITE);
                 }
             }
         }
@@ -592,7 +596,7 @@ impl WorldView {
         if let Some(p) = hl.landing {
             let c = cam.w2s(p);
             let col = player_color(hl.me);
-            let rr = fp(FACTORY_RADIUS) * z * 2.0;
+            let rr = fp(BASE_RADIUS) * z * 1.2;
             for i in 0..3 {
                 let k = (t * 0.5 + i as f32 / 3.0) % 1.0;
                 draw_circle_lines(c.x, c.y, rr * (1.0 + k * 2.0), 1.5, with_alpha(col, 0.5 * (1.0 - k)));
@@ -604,7 +608,7 @@ impl WorldView {
             let c = cam.w2s(p);
             let col = if ok { pal::GOOD } else { pal::BAD };
             let pulse = 0.6 + 0.4 * (t * 6.0).sin();
-            let hex = regular(c, fp(FACTORY_RADIUS) * z, 6, PI / 6.0);
+            let hex = regular(c, fp(BASE_RADIUS) * z, 6, PI / 6.0);
             poly_lines(&hex, 2.0, with_alpha(col, pulse));
             poly_fill(&hex, with_alpha(col, 0.12));
         }
@@ -682,7 +686,7 @@ pub fn draw_minimap(world: &World, cam: &Cam, r: Rect, sight: &Sight, mouse: Vec
         let c = fpv(k.x, k.y);
         let (p, t) = (at(c), fade(at(c)));
         if t > 0.0 && sight.explored(c) {
-            draw_poly(p.x, p.y, 4, 3.2, 0.0, with_alpha(bonus_color(k.bonus), t));
+            draw_poly(p.x, p.y, 4, 3.2, 0.0, with_alpha(perk_color(k.perk), t));
         }
     });
     for d in world.dronoids.iter().filter(|d| sight.shows(d.owner, fpv(d.x, d.y))) {
@@ -691,11 +695,11 @@ pub fn draw_minimap(world: &World, cam: &Cam, r: Rect, sight: &Sight, mouse: Vec
             draw_rectangle(p.x - 0.7, p.y - 0.7, 1.6, 1.6, with_alpha(player_color(d.owner), t));
         }
     }
-    for f in world.factories.iter().filter(|f| sight.shows(f.owner, fpv(f.x, f.y))) {
-        let (p, t) = (at(fpv(f.x, f.y)), fade(at(fpv(f.x, f.y))));
+    for b in world.bases.iter().filter(|b| sight.shows(b.owner, fpv(b.x, b.y))) {
+        let (p, t) = (at(fpv(b.x, b.y)), fade(at(fpv(b.x, b.y))));
         if t > 0.0 {
-            let s = if f.owner == me { 5.0 } else { 4.0 };
-            draw_rectangle(p.x - s / 2.0, p.y - s / 2.0, s, s, with_alpha(player_color(f.owner), t));
+            let s = if b.owner == me { 7.0 } else { 5.0 };
+            draw_poly(p.x, p.y, 6, s / 2.0 + 1.0, 30.0, with_alpha(player_color(b.owner), t));
         }
     }
     // Where we are looking.
@@ -717,18 +721,18 @@ mod tests {
         for name in ["moi", "autre"] {
             let id = w.join(name, false).unwrap();
             let (hx, hy) = w.players[id as usize].home;
-            w.step(&[(id, Command::PlaceFactory { x: hx, y: hy, name: m.name.into(), source: m.source.into() })]);
+            w.step(&[(id, Command::Land { x: hx, y: hy, name: m.name.into(), source: m.source.into() })]);
         }
         for _ in 0..5 {
             w.step(&[]);
         }
-        let mine = w.factories.iter().find(|f| f.owner == 0).unwrap().clone();
-        let theirs = w.factories.iter().find(|f| f.owner == 1).unwrap().clone();
+        let mine = w.base_of(0).unwrap().clone();
+        let theirs = w.base_of(1).unwrap().clone();
         let sight = Sight::of(&w, 0, 1.0, Rect::new(-3000.0, -3000.0, 6000.0, 6000.0));
         assert!(sight.shows(0, fpv(mine.x, mine.y)));
         assert!(!sight.shows(1, fpv(theirs.x, theirs.y)), "a far colony hides in the fog");
         assert!(!sight.explored(fpv(theirs.x, theirs.y)));
-        // An enemy dronoid parked next to our factory is seen.
+        // An enemy dronoid parked next to our base is seen.
         let di = w.dronoids.iter().position(|d| d.owner == 1).unwrap();
         let near = fpv(mine.x + 5 * FP, mine.y);
         w.dronoids[di].x = mine.x + 5 * FP;

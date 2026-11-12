@@ -205,6 +205,76 @@ class SiteTest(unittest.TestCase):
         self.assertIsNone(self.call("me")[1]["account"]["nickname"], "a fresh account")
         self.assertEqual(self.call("nickname", {"nickname": "Leaving"})[0], 200, "the nickname is free again")
 
+    def test_an_account_is_a_nickname_and_a_password(self):
+        status, me = self.call("register", {"nickname": "  Nova  Prime ", "password": "correct horse"})
+        self.assertEqual(status, 200)
+        account = me["account"]
+        self.assertEqual((account["nickname"], account["password"], account["linked"]), ("Nova Prime", True, []))
+        self.assertTrue(account["ticket"].startswith("site."))
+        self.assertEqual(self.call("me")[1]["account"]["nickname"], "Nova Prime", "signed in at once")
+        # Only a salted hash is kept.
+        db = self.server.RequestHandlerClass.site.db
+        stored = db.execute("SELECT password FROM accounts").fetchone()[0]
+        self.assertTrue(stored.startswith("scrypt$") and "correct horse" not in stored)
+        # Signed out, then in again from another browser, whatever the case.
+        self.call("logout", {})
+        self.assertIsNone(self.call("me")[1]["account"])
+        other = http.cookiejar.CookieJar()
+        self.assertEqual(self.call("signin", {"nickname": "nova prime", "password": "wrong one!"}, jar=other)[0], 401)
+        status, me = self.call("signin", {"nickname": "nova prime", "password": "correct horse"}, jar=other)
+        self.assertEqual((status, me["account"]["nickname"]), (200, "Nova Prime"))
+        # Nobody else gets the nickname, in any case.
+        self.assertEqual(self.call("register", {"nickname": "NOVA PRIME", "password": "another one"})[0], 409)
+
+    def test_what_an_account_cannot_be(self):
+        for body in [
+            {"nickname": "ok name", "password": "short"},
+            {"nickname": "ok name", "password": "x" * 129},
+            {"nickname": "ok name"},
+            {"nickname": "AI Vega", "password": "long enough"},
+            {"nickname": "x", "password": "long enough"},
+        ]:
+            self.assertEqual(self.call("register", body)[0], 400, body)
+        # A name played under as a guest goes with its guest token only.
+        self.assertEqual(self.call("register", {"nickname": "Ana", "password": "long enough"})[0], 409)
+        self.assertEqual(self.call("register", {"nickname": "Zoe", "password": "long enough", "guest_token": ds.OWNED})[0], 409)
+        self.assertEqual(self.call("guest", {"nickname": "Ana", "guest_token": "guest-token-ana"}), (200, {"known": True}))
+        for body in [{"nickname": "Ana", "guest_token": "nope"}, {"nickname": "Zoe", "guest_token": ds.OWNED}, {"nickname": "Bob"}]:
+            self.assertEqual(self.call("guest", body), (200, {"known": False}), body)
+        status, me = self.call("register", {"nickname": "Ana", "password": "long enough", "guest_token": "guest-token-ana"})
+        self.assertEqual((status, me["account"]["nickname"]), (200, "Ana"))
+        self.assertEqual(self.call("signin", {"nickname": "Nobody", "password": "long enough"})[0], 401)
+        self.assertEqual(self.call("signin", {"nickname": 3})[0], 400)
+
+    def test_sign_ins_slow_down_after_failures(self):
+        self.call("register", {"nickname": "Target", "password": "the right one"})
+        self.call("logout", {})
+        for _ in range(ds.TRIES):
+            self.assertEqual(self.call("signin", {"nickname": "Target", "password": "a guess!"})[0], 401)
+        self.assertEqual(self.call("signin", {"nickname": "Target", "password": "the right one"})[0], 429)
+        # (Forgotten after a while.)
+        site = self.server.RequestHandlerClass.site
+        site.failures.clear()
+        self.assertEqual(self.call("signin", {"nickname": "Target", "password": "the right one"})[0], 200)
+
+    def test_changing_the_password(self):
+        self.call("register", {"nickname": "Changer", "password": "first password"})
+        self.assertEqual(self.call("password", {"current": "not it at all", "password": "second password"})[0], 403)
+        self.assertEqual(self.call("password", {"current": "first password", "password": "short"})[0], 400)
+        self.assertEqual(self.call("password", {"current": "first password", "password": "second password"})[0], 200)
+        self.call("logout", {})
+        self.assertEqual(self.call("password", {"current": "second password", "password": "third password"})[0], 401)
+        self.assertEqual(self.call("signin", {"nickname": "Changer", "password": "first password"})[0], 401)
+        self.assertEqual(self.call("signin", {"nickname": "Changer", "password": "second password"})[0], 200)
+
+    def test_an_account_made_at_a_provider_can_add_a_password(self):
+        self.call(f"login/{ds.DEV}?who=a")
+        self.call("nickname", {"nickname": "Linked"})
+        self.assertFalse(self.call("me")[1]["account"]["password"])
+        self.assertEqual(self.call("password", {"password": "now one too"})[0], 200)
+        self.call("logout", {})
+        self.assertEqual(self.call("signin", {"nickname": "Linked", "password": "now one too"})[0], 200)
+
     def test_the_test_login_only_exists_on_ones_own_machine(self):
         site = ds.Site(
             {
@@ -216,7 +286,6 @@ class SiteTest(unittest.TestCase):
         )
         self.assertFalse(site.dev)
         self.assertEqual(site.offered(), [])
-
 
     def test_a_database_from_before_the_translation_keeps_its_nicknames(self):
         import sqlite3
@@ -234,6 +303,7 @@ class SiteTest(unittest.TestCase):
         config = {"base_url": "http://localhost:1/dronoids", "database": path, "secret_file": os.path.join(self.dir, "secret")}
         site = ds.Site(config)
         self.assertEqual(site.db.execute("SELECT nickname, nickname_key FROM accounts").fetchall(), [("Nova", "nova")])
+        self.assertEqual(site.describe(1)["account"]["password"], False, "a password can be added later")
         site.db.close()
         # And again: nothing left to rename.
         site = ds.Site(config)
