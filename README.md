@@ -3,11 +3,13 @@
 [![CI](https://github.com/primo-ideas/dronoids/actions/workflows/ci.yml/badge.svg)](https://github.com/primo-ideas/dronoids/actions/workflows/ci.yml)
 
 A shared, persistent space sector, seen from above, geometric and neon.
-You arrive **with nothing** but a big central **base**. Its production lines build
-**dronoids**, which follow to the letter a **program** written in a small, playful
-assembly language, **DASM**. The programs provided are naive on purpose: the game is
-writing better ones. Relics out in the sector give the base **perks**. Your colony
-keeps working when you leave. An account (a nickname and a password) is needed to play
+You arrive **with nothing** but a big central **base**. It builds **dronoids**, and you
+put them to work with **tasks**: "these 10 go mining until 250 crystals are in", "these
+3 explore eastwards for 5 minutes". **Factories** build more of them, **beacons** let
+you see further, and relics out in the sector give the base **perks**. Underneath,
+every dronoid follows a **program** written in a small, playful assembly language,
+**DASM**, which you can write yourself if you wish. Your colony keeps working when you
+leave. An account (a nickname and a password) is needed to play
 in the shared sector.
 
 **Play: <https://primo-ideas.xyz/dronoids/>**
@@ -38,18 +40,30 @@ A recent stable Rust (edition 2024). Dependencies: `macroquad` (rendering), `ser
 - **The base**: one per colony, large (6 units across), 3000 points of hull, mending
   itself slowly (a point a second). When it falls, the colony is gone with all its
   dronoids, and the player lands anew.
-- **Production lines**: a base starts with two. Each line has its **own program**
-  and its **own quota**, and builds in parallel with the others: a dronoid every 30 s
-  (the first one of a line comes quickly), for 10 crystals. A line can be paused.
-  Giving a line another program reprograms its dronoids too.
-- **The hangar**: all lines together hold at most the hangar's room, 12 dronoids at
-  first. **Expand** (150 crystals) makes room for 6 more, up to 150.
-- **First steps**: six objectives, one after the other (land, mine 100 crystals,
-  apply a program of your own, map the surroundings, enlarge the hangar, bring home a
+- **Production lines**: a base starts with two, each with its **own quota**, building
+  in parallel: a dronoid every 30 s (the first one of a line comes quickly), for 10
+  crystals. A line can be paused. New dronoids wait at home for a task.
+- **Tasks**: a kind (**Mine**, **Explore**, **Prospect** for relics, **Guard**, **Raid**,
+  or **Custom**: a program of your own), how many dronoids, until when (so many
+  crystals or shards brought home, so many minutes, or until stopped) and a few
+  options (Explore: a heading; Raid: a target). A task takes that many dronoids
+  waiting at home, and more as they come; once its objective is met, they come home
+  and wait again. A task can be stopped, launched again, or set to start over by
+  itself. A new base lands with a first one, mining with 4 dronoids until stopped.
+- **Factories** (150 crystals), built where the base or a beacon sees: each builds
+  dronoids of its own, makes room for 8 more, and is a place to unload. 600 points
+  of hull. They do not see.
+- **Beacons** (50 crystals), built anywhere you see right now (around your base, a
+  beacon or any of your dronoids): each sees 30 units around it, and maps it at once.
+- **Room**: a colony holds at most 12 dronoids, plus 8 a factory and what the Hangar
+  perk adds, up to 150.
+- **First steps**: seven objectives, one after the other (land, mine 100 crystals,
+  launch a task, map the surroundings, build a factory, place a beacon, bring home a
   relic shard), each with a small reward in crystals. They are part of the world:
   progress follows the player from one session and one device to the next.
-- **Fog of war**: you only see around your base (24 units) and your dronoids
-  (12). Space explored already stays in memory, veiled (asteroids and crystals, but no
+- **Fog of war**: you only see around your base (24 units, more with Vision),
+  your beacons (30) and your dronoids (12). What the base and the beacons see is
+  outlined on the map. Space explored already stays in memory, veiled (asteroids and crystals, but no
   foreign unit); the unknown stays black. The explored map belongs to each player and
   persists: your dronoids keep mapping while you are away. (Every client replays the
   whole world: the fog is a choice of display, not a protection.)
@@ -88,12 +102,12 @@ A recent stable Rust (edition 2024). Dependencies: `macroquad` (rendering), `ser
 
 | Key | Effect |
 | --- | --- |
-| Left click | land the base; select; double-click the base for its first line's program |
+| Left click | land the base; select; build; double-click the base for the tasks |
 | Right drag, wheel | move the camera, zoom (out to a view of the whole explored area) |
 | ZQSD / WASD / arrows | move the camera |
-| `X` | expand the hangar (150 crystals) |
-| `E` / `P` | the first line's program, the dronoid's debugger / all programs |
-| `T` | set the base's target (read by `hunter`) |
+| `K` | the tasks |
+| `F` / `B` | build a factory / a beacon (Shift+click places several) |
+| `E` / `P` | the selected dronoid's debugger / the programs |
 | `M`, `L`, `H` or `Tab` | map, colonies, back to the base |
 | `F1` | language help |
 | Offline | `Space` pause, `1`-`4` speed, `N` next tick |
@@ -102,7 +116,7 @@ On a phone or a tablet:
 
 | Gesture | Effect |
 | --- | --- |
-| Tap | select, land the base, place a target; twice on the base for its first line's program |
+| Tap | select, land the base, build, place a raid's target; twice on the base for the tasks |
 | One finger sliding | move the camera (in the editor and the help: scroll) |
 | Two fingers | zoom, and move the camera |
 | Tap a text field or the code | bring up the phone's keyboard |

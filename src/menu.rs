@@ -144,7 +144,7 @@ impl Menu {
         let focus = self.demo.bases.first().map(|b| vec2(fp(b.x), fp(b.y))).unwrap_or(Vec2::splat(size / 2.0));
         let center = focus + vec2(40.0 * t.sin(), 25.0 * (t * 0.7).cos());
         let cam = Cam { center, zoom: 11.0, shake: Vec2::ZERO };
-        let hl = Highlight { base: None, dronoid: None, ghost: None, target: None, landing: None, me: 0 };
+        let hl = Highlight { base: None, building: false, dronoid: None, ghost: None, target: None, landing: None, me: 0 };
         self.view.draw(&self.demo, &cam, self.acc.clamp(0.0, 1.0), &hl, &Sight::all());
         draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.01, 0.012, 0.03, 0.62));
         let ty = sh * 0.16;

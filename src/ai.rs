@@ -4,7 +4,7 @@
 use crate::geo::{dir_vec, dist2};
 use crate::programs::builtin;
 use crate::rules::*;
-use crate::sim::{Command, World};
+use crate::sim::{Command, Limit, Structure, TaskKind, TaskSpec, World};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
@@ -21,16 +21,16 @@ impl Level {
             Level::Hard => "Hard",
         }
     }
-    /// How large a hangar the colony grows.
-    fn max_capacity(self) -> u16 {
+    /// How many factories the colony builds.
+    fn max_factories(self) -> usize {
         match self {
-            Level::Easy => 36,
-            Level::Normal => 60,
-            Level::Hard => 96,
+            Level::Easy => 2,
+            Level::Normal => 4,
+            Level::Hard => 8,
         }
     }
-    /// Once hunters are allowed, the share (in percent) of the hangar that
-    /// goes to them.
+    /// Once hunters are allowed, the share (in percent) of the colony's
+    /// dronoids that go to them.
     fn hunter_percent(self) -> u32 {
         match self {
             Level::Easy => 25,
@@ -60,6 +60,17 @@ pub struct Bot {
 /// idle hunters roam): the world is big enough
 /// for newcomers to grow in peace if they settle away from them.
 const RAID_RANGE: i32 = 170 * FP;
+
+/// A free spot for a factory around the base, within what it sees.
+fn factory_spot(w: &World, player: u8, bx: i32, by: i32) -> Option<(i32, i32)> {
+    (0..4)
+        .flat_map(|r| (0..360).step_by(30).map(move |a| (r, a + r * 15)))
+        .map(|(r, a)| {
+            let (dx, dy) = dir_vec(a, (9 + r * 4) * FP);
+            (bx + dx, by + dy)
+        })
+        .find(|p| w.can_build(player, Structure::Factory, p.0, p.1).is_ok())
+}
 
 /// A free spot to land the base, as close as possible to home.
 fn landing_spot(w: &World, player: u8) -> Option<(i32, i32)> {
@@ -99,32 +110,35 @@ impl Bot {
         let Some(base) = w.base_of(self.player) else { return cmds };
         let hunting = w.tick >= self.level.hunter_gate();
 
-        // Crystals go into room for more dronoids.
-        if me.minerals >= EXPAND_COST + 30 && base.capacity < self.level.max_capacity() {
-            cmds.push(Command::Expand);
+        // Crystals go into factories: more dronoids, and room for them.
+        let factories = w.factories.iter().filter(|f| f.owner == self.player).count();
+        if me.minerals >= FACTORY_COST + 30
+            && factories < self.level.max_factories()
+            && let Some((x, y)) = factory_spot(w, self.player, base.x, base.y)
+        {
+            cmds.push(Command::Build { kind: Structure::Factory, x, y });
         }
 
         if w.tick >= self.next_plan {
             self.next_plan = w.tick + 300;
-            // The first line mines; once hunting is allowed the second one
-            // hunts (guards, for the easiest colonies); any other mines.
-            let fighter = if self.level == Level::Easy { "guard" } else { "hunter" };
-            let cap = base.room() as u32;
-            let fighters = if hunting { cap * self.level.hunter_percent() / 100 } else { 0 };
-            let miners = base.lines.len() as u32 - (hunting && base.lines.len() > 1) as u32;
-            for (i, l) in base.lines.iter().enumerate() {
-                let (want, quota) = if i == 1 && hunting {
-                    (fighter, fighters)
-                } else {
-                    ("miner", (cap - fighters).div_ceil(miners.max(1)))
-                };
-                if w.program_name(l.prog) != want {
-                    let b = builtin(want).expect("builtin");
-                    cmds.push(Command::SetProgram { line: l.id, name: b.name.into(), source: b.source.into() });
-                }
-                let quota = quota.min(MAX_QUOTA as u32) as u8;
-                if l.quota != quota {
-                    cmds.push(Command::SetQuota { line: l.id, quota });
+            // A mining task that never ends; once hunting is allowed, a raid
+            // (a guard, for the easiest colonies) takes a share.
+            let fighter = if self.level == Level::Easy { TaskKind::Guard } else { TaskKind::Raid };
+            let room = w.room(self.player) as u32;
+            let fighters = if hunting { room * self.level.hunter_percent() / 100 } else { 0 };
+            for (kind, count) in [(TaskKind::Mine, room - fighters), (fighter, fighters)] {
+                let count = count.min(MAX_QUOTA as u32) as u8;
+                let task = w.tasks.iter().find(|t| t.owner == self.player && t.spec.kind == kind);
+                match task {
+                    None if count > 0 => {
+                        let mut spec = TaskSpec::new(kind, count);
+                        spec.limit = Limit::Never;
+                        cmds.push(Command::NewTask { spec });
+                    }
+                    Some(t) if t.spec.count != count && count > 0 => {
+                        cmds.push(Command::EditTask { id: t.id, count, limit: Limit::Never, repeat: false });
+                    }
+                    _ => {}
                 }
             }
             // Point the hunters at the closest rival within reach. With
@@ -202,8 +216,8 @@ mod tests {
             run(&mut w, &mut bots, gate + 2000);
             let home = w.players[0].home;
             let b = w.base_of(0).expect("landed");
-            assert!(b.lines.iter().any(|l| w.program_name(l.prog) == "hunter"), "{level:?}: a colony ends up with hunters");
-            assert!(w.dronoids.iter().any(|d| w.program_name(d.prog) == "hunter"), "{level:?}: and builds them");
+            assert!(w.tasks.iter().any(|t| t.spec.kind == TaskKind::Raid), "{level:?}: a colony ends up raiding");
+            assert!(w.dronoids.iter().any(|d| w.program_name(d.prog) == "hunter"), "{level:?}: with hunters"); 
             if level == Level::Hard {
                 assert_eq!(b.mem[2], 0, "the hardest colonies let them roam");
             } else {
@@ -216,9 +230,9 @@ mod tests {
     fn bot_grows() {
         let (mut w, mut bots) = bot_world(Level::Normal, 1, false);
         run(&mut w, &mut bots, 6000);
-        let b = w.base_of(0).expect("landed");
-        assert!(b.capacity > BASE_CAPACITY, "hangar of {}", b.capacity);
+        assert!(w.factories.iter().any(|f| f.owner == 0), "a colony builds factories");
         assert!(w.dronoid_count(0) > BASE_CAPACITY as usize, "{} dronoids", w.dronoid_count(0));
+        assert!(w.tasks.iter().any(|t| t.owner == 0 && t.spec.kind == TaskKind::Mine), "and puts them to mining");
     }
 
     /// Does anything ever happen between colonies left to themselves?
@@ -249,7 +263,7 @@ mod tests {
                 .iter()
                 .map(|p| {
                     let gone = if p.alive { "" } else { "x" };
-                    let cap = w.base_of(p.id).map_or(0, |b| b.capacity);
+                    let cap = w.room(p.id);
                     format!("{}:{}cap/{}d/{}k/{}c{gone}", p.id, cap, w.dronoid_count(p.id), p.kills, p.minerals)
                 })
                 .collect();

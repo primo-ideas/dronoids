@@ -9,6 +9,7 @@ mod gfx;
 mod library;
 mod menu;
 mod platform;
+mod tasks_ui;
 mod ui;
 mod view;
 

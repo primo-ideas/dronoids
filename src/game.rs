@@ -11,13 +11,14 @@ use dronoids::net::{ClientMsg, Conn, NetEvent, ServerMsg};
 use dronoids::programs;
 use dronoids::rules::*;
 use dronoids::sim::quests::{self, QUESTS};
-use dronoids::sim::{Command, Doing, Event, World};
+use dronoids::sim::{Command, Doing, Event, Structure, World};
 use dronoids::vm::{self, Cat, Reg};
 
 use crate::blocks::Blocks;
 use crate::editor::{token_color, Editor};
 use crate::gfx::{self, mix, pal, player_color, with_alpha, Bloom, Fog};
 use crate::library::{self, Library};
+use crate::tasks_ui::{TaskOut, TaskPanel};
 use crate::platform::Settings;
 use crate::ui::{self, TextField, Ui};
 use crate::view::{draw_minimap, fp, fpv, Cam, Highlight, Sight, WorldView, FOG_UNKNOWN, MAX_ZOOM, MIN_ZOOM};
@@ -46,14 +47,18 @@ pub enum Driver {
 pub enum Sel {
     None,
     Base(u32),
+    Factory(u32),
+    Beacon(u32),
     Dronoid(u32),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tool {
     None,
-    /// Pick the point the base's hunters head for.
+    /// Pick the point a raid being set up heads for.
     Target,
+    /// Place a factory or a beacon.
+    Build(Structure),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -79,6 +84,7 @@ enum Act {
     ToggleHelp,
     ToggleMap,
     TogglePlayers,
+    ToggleTasks,
     /// The list of programs to give a production line.
     ToggleProgramMenu(u32),
     CloseEditor,
@@ -150,6 +156,8 @@ pub struct Game {
     help_open: bool,
     map_open: bool,
     players_open: bool,
+    tasks_open: bool,
+    task_panel: TaskPanel,
     /// The production line whose list of programs is open.
     program_menu: Option<u32>,
     toasts: Vec<Toast>,
@@ -201,6 +209,8 @@ impl Game {
             help_open: false,
             map_open: false,
             players_open: false,
+            tasks_open: false,
+            task_panel: TaskPanel::default(),
             program_menu: None,
             toasts: vec![],
             hull: None,
@@ -350,7 +360,8 @@ impl Game {
                 Event::PlayerJoined { .. }
                     | Event::PlayerEliminated { .. }
                     | Event::BaseDestroyed { .. }
-                    | Event::Expanded { .. }
+                    | Event::FactoryDestroyed { .. }
+                    | Event::TaskDone { .. }
                     | Event::QuestDone { .. }
                     | Event::Shard { level: Some(_), .. }
             )
@@ -455,8 +466,14 @@ impl Game {
                 Event::BaseDestroyed { owner, .. } if owner == self.me => {
                     self.toast("Your base has fallen", pal::BAD);
                 }
-                Event::Expanded { owner, capacity } if owner == self.me => {
-                    self.toast(format!("Hangar enlarged: room for {capacity} dronoids"), pal::GOOD);
+                Event::FactoryDestroyed { owner, .. } if owner == self.me => {
+                    self.toast("One of your factories was destroyed", pal::BAD);
+                }
+                Event::TaskDone { owner, task } if owner == self.me => {
+                    if let Some(t) = self.world.task(task) {
+                        let again = if t.spec.repeat { ": it starts over" } else { "" };
+                        self.toast(format!("Task done, its dronoids are home: {}{again}", t.spec.title()), crate::tasks_ui::kind_color(t.spec.kind));
+                    }
                 }
                 Event::Shard { owner, perk, level: Some(level), .. } if owner == self.me => {
                     let text = format!("{} level {level}: {}", perk.name(), perk.effect(level));
@@ -513,6 +530,7 @@ impl Game {
         let (sight, cam) = (&self.sight, &self.cam);
         self.fog.apply(bloom, FOG_UNKNOWN, || sight.paint_mask(cam));
         bloom.finish();
+        crate::view::draw_lookouts(&self.world, &self.cam, &self.sight, hl.building, self.view.time);
 
         let compact = ui::compact();
         let mut acts = vec![];
@@ -537,13 +555,32 @@ impl Game {
                 if self.players_open {
                     self.players_panel(ui, top);
                 }
+                if self.tasks_open && !self.landing() {
+                    let compact = ui::compact();
+                    let want = self.task_panel.height(&self.world, self.me);
+                    let room = screen_height() - top - if compact { 60.0 } else { 70.0 };
+                    let r = if compact {
+                        Rect::new(8.0, top, screen_width() - 16.0, want.min(room))
+                    } else {
+                        Rect::new(16.0, top, 350.0, want.min(room))
+                    };
+                    let mut outs = vec![];
+                    self.task_panel.ui(ui, &self.world, self.me, lib, r, &mut outs);
+                    for o in outs {
+                        acts.push(match o {
+                            TaskOut::Issue(c) => Act::Issue(c),
+                            TaskOut::PickTarget => Act::Tool(Tool::Target),
+                            TaskOut::EditPrograms(name) => Act::OpenProgram(name, None),
+                        });
+                    }
+                }
             }
             // Panels and toasts on a small screen pile up from the dock.
             let mut bottom = screen_height() - if compact { 52.0 } else { 16.0 };
             if self.editor_open {
                 self.editor_window(ui, lib, top, &mut acts);
             } else {
-                if let Some(y) = self.selection_panel(ui, lib, top, &mut acts) {
+                if let Some(y) = self.selection_panel(ui, top, &mut acts) {
                     bottom = y;
                 }
                 if self.map_open {
@@ -605,6 +642,8 @@ impl Game {
         // Someone else's unit that slips into the fog is no longer selected.
         let lost = match self.sel {
             Sel::Base(id) => self.world.base(id).is_some_and(|b| !self.sight.shows(b.owner, fpv(b.x, b.y))),
+            Sel::Factory(id) => self.world.factory(id).is_none_or(|f| !self.sight.shows(f.owner, fpv(f.x, f.y))),
+            Sel::Beacon(id) => !self.world.beacons.iter().any(|b| b.id == id && self.sight.shows(b.owner, fpv(b.x, b.y))),
             Sel::Dronoid(id) => self.world.dronoid(id).is_some_and(|d| !self.sight.shows(d.owner, fpv(d.x, d.y))),
             Sel::None => false,
         };
@@ -623,7 +662,12 @@ impl Game {
         if self.program_menu.is_some() && (my_base.is_none() || self.sel != Sel::Base(my_base.unwrap_or(0))) {
             self.program_menu = None;
         }
-        if self.tool == Tool::Target && my_base.is_none() {
+        let still = match self.tool {
+            Tool::Target => self.task_panel.form.is_some() && self.tasks_open,
+            Tool::Build(_) => my_base.is_some(),
+            Tool::None => true,
+        };
+        if !still {
             self.tool = Tool::None;
         }
     }
@@ -634,11 +678,12 @@ impl Game {
     }
 
     fn highlight(&self, ui: &Ui) -> Highlight {
-        let ghost = if self.landing() && !ui.over_ui() && !self.editor_open {
-            let (x, y) = self.mouse_fp(ui);
-            Some((fpv(x, y), self.world.can_land(self.me, x, y).is_ok()))
-        } else {
-            None
+        let (x, y) = self.mouse_fp(ui);
+        let free = !ui.over_ui() && !self.editor_open;
+        let ghost = match self.tool {
+            _ if self.landing() && free => Some((fpv(x, y), self.world.can_land(self.me, x, y).is_ok(), None)),
+            Tool::Build(kind) if free => Some((fpv(x, y), self.world.can_build(self.me, kind, x, y).is_ok(), Some(kind))),
+            _ => None,
         };
         let mine = self.world.base_of(self.me);
         let target = match (self.tool, self.sel) {
@@ -653,7 +698,11 @@ impl Game {
             fpv(h.0, h.1)
         });
         Highlight {
-            base: if let Sel::Base(id) = self.sel { Some(id) } else { None },
+            base: match self.sel {
+                Sel::Base(id) | Sel::Factory(id) | Sel::Beacon(id) => Some(id),
+                _ => None,
+            },
+            building: matches!(self.tool, Tool::Build(_)),
             dronoid: if let Sel::Dronoid(id) = self.sel { Some(id) } else { None },
             ghost,
             target,
@@ -690,7 +739,14 @@ impl Game {
             }
             Act::ToggleHelp => self.help_open = !self.help_open,
             Act::ToggleMap => self.map_open = !self.map_open,
-            Act::TogglePlayers => self.players_open = !self.players_open,
+            Act::TogglePlayers => {
+                self.players_open = !self.players_open;
+                self.tasks_open &= !self.players_open;
+            }
+            Act::ToggleTasks => {
+                self.tasks_open = !self.tasks_open;
+                self.players_open &= !self.tasks_open;
+            }
             Act::ToggleProgramMenu(line) => {
                 self.program_menu = if self.program_menu == Some(line) { None } else { Some(line) };
             }
@@ -1255,10 +1311,15 @@ impl Game {
         if !ui::compact()
             && let Some(b) = self.world.base_of(self.me)
         {
-            let dronoids = self.world.dronoid_count(self.me);
-            let full = dronoids >= b.room();
-            let crowd = format!("{dronoids}/{} dronoids{}", b.room(), if full { " · hangar full" } else { "" });
+            let _ = b;
+            let (dronoids, room) = (self.world.dronoid_count(self.me), self.world.room(self.me));
+            let full = dronoids >= room;
+            let crowd = format!("{dronoids}/{room} dronoids{}", if full { " · no more room" } else { "" });
             note(&crowd, if full { pal::WARN } else { pal::DIM });
+            let idle = self.world.idle_count(self.me);
+            if idle > 0 {
+                note(&format!("{idle} waiting for a task"), pal::ACCENT);
+            }
         }
         if self.world.shielded(self.me) {
             let left =(me.shield_until - self.world.tick) as f32 / TICKS_PER_SEC;
@@ -1305,7 +1366,15 @@ impl Game {
         let pulse = with_alpha(pal::TEXT, 0.75 + 0.25 * (get_time() as f32 * 2.0).sin());
         let say = |mouse: &str, finger: &str| -> Vec<(String, Color)> { vec![((if ui.touch { finger } else { mouse }).to_string(), pulse)] };
         let parts: Vec<(String, Color)> = match self.tool {
-            Tool::Target => say("Click the target", "Tap the target"),
+            Tool::Target => say("Click where the raid heads for", "Tap where the raid heads for"),
+            Tool::Build(Structure::Factory) => say(
+                "Click where the base or a beacon sees to build a factory (Shift: several)",
+                "Tap where the base or a beacon sees to build a factory",
+            ),
+            Tool::Build(Structure::Beacon) => say(
+                "Click anywhere you see to place a beacon (Shift: several)",
+                "Tap anywhere you see to place a beacon",
+            ),
             Tool::None if self.landing() => say("Click a free spot to land your base", "Tap a free spot to land your base"),
             Tool::None => {
                 let Some(i) = quests::current(&self.world, self.me) else { return 48.0 };
@@ -1338,28 +1407,20 @@ impl Game {
     fn dock(&self, ui: &mut Ui, acts: &mut Vec<Act>) {
         let Some(me) = self.world.players.get(self.me as usize) else { return };
         let compact = ui::compact();
-        let can_grow = self.world.base_of(self.me).is_some_and(|b| b.room() < MAX_DRONOIDS_PER_PLAYER);
-        let can = me.minerals >= EXPAND_COST && me.alive && can_grow;
-        let items: [(String, bool, bool, Color, Act); 5] = [
-            (
-                if compact { format!("Expand {EXPAND_COST}") } else { format!("Expand · {EXPAND_COST}") },
-                false,
-                can,
-                pal::GOOD,
-                Act::Issue(Command::Expand),
-            ),
-            (
-                (if compact { "Code" } else { "Programs" }).into(),
-                self.editor_open,
-                true,
-                pal::ACCENT,
-                Act::OpenProgram(self.default_program_name(), None),
-            ),
+        let landed = me.alive && !self.landing();
+        let build = |kind: Structure| -> (String, bool, bool, Color, Act) {
+            let label = if compact { format!("{} {}", kind.name()[..1].to_uppercase(), kind.cost()) } else { format!("{} · {}", capitalized(kind.name()), kind.cost()) };
+            (label, self.tool == Tool::Build(kind), landed && me.minerals >= kind.cost(), pal::GOOD, Act::Tool(Tool::Build(kind)))
+        };
+        let items: [(String, bool, bool, Color, Act); 6] = [
+            ("Tasks".into(), self.tasks_open, landed, pal::ACCENT, Act::ToggleTasks),
+            build(Structure::Factory),
+            build(Structure::Beacon),
             ("Map".into(), self.map_open, true, pal::ACCENT, Act::ToggleMap),
-            ("Colonies".into(), self.players_open, true, pal::ACCENT, Act::TogglePlayers),
-            ("Base".into(), false, !self.landing(), pal::ACCENT, Act::CenterOn(self.home())),
+            ((if compact { "Others" } else { "Colonies" }).into(), self.players_open, true, pal::ACCENT, Act::TogglePlayers),
+            ("Base".into(), false, landed, pal::ACCENT, Act::CenterOn(self.home())),
         ];
-        let (pad, gap, h) = if compact { (16.0, 4.0, 38.0) } else { (26.0, 6.0, 30.0) };
+        let (pad, gap, h) = if compact { (12.0, 4.0, 38.0) } else { (26.0, 6.0, 30.0) };
         let mut widths: Vec<f32> = items.iter().map(|i| gfx::text_width(&i.0, 13.0) + pad).collect();
         let gaps = gap * (items.len() as f32 - 1.0);
         let room = screen_width() - 16.0 - gaps;
@@ -1371,16 +1432,9 @@ impl Game {
         let mut x = screen_width() / 2.0 - total / 2.0;
         let y = screen_height() - h - if compact { 8.0 } else { 12.0 };
         let tips = [
-            if self.landing() {
-                "Land your base first".to_string()
-            } else if !can_grow {
-                "The hangar is as large as it gets".to_string()
-            } else if can {
-                format!("Enlarge the hangar: room for {EXPAND_SLOTS} more dronoids (X)")
-            } else {
-                format!("{EXPAND_SLOTS} more dronoids in the hangar for {EXPAND_COST} crystals: {} to go", (EXPAND_COST - me.minerals).max(0))
-            },
-            "Read, write and apply programs (P)".into(),
+            format!("What your dronoids do: mine, explore, prospect, guard, raid (K) · {} waiting", self.world.idle_count(self.me)),
+            format!("A factory, where the base or a beacon sees: dronoids of its own, room for {FACTORY_ROOM} more (F)"),
+            format!("A beacon, anywhere you see: it sees {} units around (B)", BEACON_VISION / FP),
             "The space you have explored (M); click it to look there".into(),
             "Who lives in the sector, and how many dronoids (L)".into(),
             "Back to your base (H)".into(),
@@ -1391,10 +1445,7 @@ impl Game {
                 ui.tooltip(&tip);
             }
             if ui.button_ex(r, &label, active, enabled, color) {
-                acts.push(match act {
-                    Act::OpenProgram(..) if self.editor_open => Act::CloseEditor,
-                    a => a,
-                });
+                acts.push(act);
             }
             x += w + gap;
         }
@@ -1405,7 +1456,7 @@ impl Game {
             .world
             .players
             .iter()
-            .map(|p| (p.id, self.world.base_of(p.id).map_or(0, |b| b.room()), self.world.dronoid_count(p.id), p.alive))
+            .map(|p| (p.id, self.world.room(p.id), self.world.dronoid_count(p.id), p.alive))
             .collect();
         rows.sort_by_key(|r| (!r.3, std::cmp::Reverse(r.2 * 1000 + r.1), r.0));
         let shown = rows.len().min(14);
@@ -1420,7 +1471,7 @@ impl Game {
             Driver::Offline { .. } => "Training".into(),
         };
         // What the two numbers on each row count.
-        let cols = "dronoids / hangar";
+        let cols = "dronoids / room";
         let cw = gfx::text_width(cols, 11.0);
         gfx::text(cols, r.x + r.w - 10.0 - cw, r.y + 8.0, 11.0, pal::DIM);
         gfx::text(&title, r.x + 10.0, r.y + 7.0, gfx::fit_size(&title, 12.0, r.w - 30.0 - cw), pal::DIM);
@@ -1473,7 +1524,7 @@ impl Game {
 
     /// Top right; on a small screen, along the bottom above the dock, and
     /// then returns where its top is.
-    fn selection_panel(&self, ui: &mut Ui, lib: &Library, top: f32, acts: &mut Vec<Act>) -> Option<f32> {
+    fn selection_panel(&self, ui: &mut Ui, top: f32, acts: &mut Vec<Act>) -> Option<f32> {
         let h = match self.sel {
             Sel::None => return None,
             Sel::Base(id) => match self.world.base(id) {
@@ -1486,20 +1537,26 @@ impl Game {
                 Some(_) => 44.0,
                 None => return None,
             },
+            Sel::Factory(id) => match self.world.factory(id) {
+                Some(f) if f.owner == self.me => 64.0,
+                Some(_) => 44.0,
+                None => return None,
+            },
+            Sel::Beacon(_) => 44.0,
         };
         let compact = ui::compact();
         let (sw, sh) = (screen_width(), screen_height());
         let w = if compact { (sw - 16.0).min(420.0) } else { 310.0 };
         let x = if compact { (sw - w) / 2.0 } else { sw - w - 12.0 };
         let y = if compact { sh - 54.0 - h } else { top };
-        self.selection_body(ui, lib, acts, Rect::new(x, y, w, h));
+        self.selection_body(ui, acts, Rect::new(x, y, w, h));
         compact.then_some(y)
     }
 
     /// What a selected unit is and what can be done with it, nothing more:
     /// its health only once it is hurt, the pause only once it is paused,
     /// the target's clear button only when there is a target.
-    fn selection_body(&self, ui: &mut Ui, lib: &Library, acts: &mut Vec<Act>, r: Rect) {
+    fn selection_body(&self, ui: &mut Ui, acts: &mut Vec<Act>, r: Rect) {
         let (x, y, w) = (r.x, r.y, r.w);
         let health = |hp: i32, max: i32| {
             if hp < max {
@@ -1522,7 +1579,36 @@ impl Game {
                     theirs(b.owner, "base");
                     return;
                 }
-                self.base_body(ui, lib, acts, r, b);
+                self.base_body(ui, acts, r, b);
+            }
+            Sel::Factory(id) => {
+                let Some(f) = self.world.factory(id) else { return };
+                ui.panel(r);
+                health(f.hp, FACTORY_HP);
+                if f.owner != self.me {
+                    theirs(f.owner, "factory");
+                    return;
+                }
+                gfx::text("factory", x + 12.0, y + 10.0, 15.0, pal::ACCENT);
+                let wait = self.world.base_of(self.me).map_or(SPAWN_TICKS, |b| b.spawn_ticks());
+                let next = format!("next dronoid in {} s", (f.timer as f32 / TICKS_PER_SEC).ceil() as i32);
+                gfx::text(&next, x + w - 12.0 - gfx::text_width(&next, 12.0), y + 12.0, 12.0, pal::DIM);
+                let what = format!(
+                    "builds a dronoid every {} s · room for {FACTORY_ROOM} more · they unload here",
+                    (wait as f32 / TICKS_PER_SEC).round() as i32
+                );
+                gfx::text(&what, x + 12.0, y + 40.0, gfx::fit_size(&what, 12.0, w - 24.0), pal::DIM);
+            }
+            Sel::Beacon(id) => {
+                let Some(b) = self.world.beacons.iter().find(|b| b.id == id) else { return };
+                ui.panel(r);
+                if b.owner != self.me {
+                    theirs(b.owner, "beacon");
+                    return;
+                }
+                gfx::text("beacon", x + 12.0, y + 10.0, 15.0, pal::ACCENT);
+                let what = format!("sees {} units around", BEACON_VISION / FP);
+                gfx::text(&what, x + w - 12.0 - gfx::text_width(&what, 12.0), y + 12.0, 12.0, pal::DIM);
             }
             Sel::Dronoid(id) => {
                 let Some(d) = self.world.dronoid(id) else { return };
@@ -1559,69 +1645,48 @@ impl Game {
         Game::BASE_HEAD + b.lines.len() as f32 * Game::LINE_ROW + perks + more
     }
 
-    /// My base: its hangar, the target of its hunters, then one row per
-    /// production line (program, dronoids out of its quota, code, pause),
-    /// and what relics gave it.
-    fn base_body(&self, ui: &mut Ui, lib: &Library, acts: &mut Vec<Act>, r: Rect, b: &dronoids::sim::Base) {
+    /// My base: room and what it sees, the tasks, then one row per
+    /// production line (dronoids out of its quota, pause), and what relics
+    /// gave it.
+    fn base_body(&self, ui: &mut Ui, acts: &mut Vec<Act>, r: Rect, b: &dronoids::sim::Base) {
         let (x, y, w) = (r.x, r.y, r.w);
-        let compact = ui::compact();
         let me = &self.world.players[self.me as usize];
         let out = self.world.dronoid_count(self.me);
+        let room = self.world.room(self.me);
         gfx::text("base", x + 12.0, y + 10.0, 15.0, pal::ACCENT);
-        let hangar = format!("{out}/{} dronoids", b.room());
-        let full = out >= b.room();
+        let hangar = format!("{out}/{room} dronoids · sees {} units", b.vision() / FP);
+        let full = out >= room;
         gfx::text(&hangar, x + w - 12.0 - gfx::text_width(&hangar, 12.0), y + 12.0, 12.0, if full { pal::WARN } else { pal::DIM });
         if b.hp < b.max_hp() && ui.hover(Rect::new(x, y + 26.0, w, 12.0)) {
             ui.tooltip(&format!("{} / {}: a damaged base slowly mends itself", b.hp, b.max_hp()));
         }
 
         let cy = y + 40.0;
-        let room = b.room() < MAX_DRONOIDS_PER_PLAYER;
-        let expand = Rect::new(x + 12.0, cy, 128.0, 26.0);
-        if ui.button_ex(expand, &format!("Expand · {EXPAND_COST}"), false, room && me.minerals >= EXPAND_COST, pal::GOOD) {
-            acts.push(Act::Issue(Command::Expand));
-        }
-        if ui.hover(expand) {
-            ui.tooltip(&format!("{EXPAND_SLOTS} more dronoids in the hangar, for {EXPAND_COST} crystals"));
-        }
-        let aim = Rect::new(x + 146.0, cy, 70.0, 26.0);
-        if ui.button_ex(aim, "Target", self.tool == Tool::Target, true, pal::PINK) {
-            acts.push(Act::Tool(Tool::Target));
-        }
-        if ui.hover(aim) {
-            ui.tooltip("Writes X, Y to the base's memory 0 and 1 (2 = 1): hunter heads there");
-        }
-        if b.mem[2] != 0 && ui.button_ex(Rect::new(x + 220.0, cy, 24.0, 26.0), "×", false, true, pal::PINK) {
-            acts.push(Act::Issue(Command::SetMemory { index: 2, value: 0 }));
+        let idle = self.world.idle_count(self.me);
+        let tasks = Rect::new(x + 12.0, cy, w - 24.0, 26.0);
+        let label = format!("Tasks · {idle} waiting");
+        if ui.button_ex(tasks, &label, self.tasks_open, true, pal::GOOD) {
+            acts.push(Act::ToggleTasks);
         }
 
         let wait = b.spawn_ticks();
         let mut ly = y + Game::BASE_HEAD;
-        let mut menu_at = None;
         for (i, l) in b.lines.iter().enumerate() {
             let row = Rect::new(x + 8.0, ly, w - 16.0, Game::LINE_ROW - 4.0);
             // As asked, even before the world has it.
-            let (l, pname) = self.shown_line(l);
-            let (l, pname) = (&l, pname.as_str());
+            let (l, _) = self.shown_line(l);
+            let l = &l;
             let n = self.world.dronoids_of_line(l.id);
-            // From the right: pause, code, +, −, the count; the program takes the rest.
+            // From the right: pause, +, −, the count; the line's state takes the rest.
             let bh = row.h;
             let pause = Rect::new(row.x + row.w - 28.0, row.y, 28.0, bh);
-            let code = Rect::new(pause.x - 50.0, row.y, 46.0, bh);
-            let plus = Rect::new(code.x - 28.0, row.y, 24.0, bh);
+            let plus = Rect::new(pause.x - 30.0, row.y, 24.0, bh);
             let minus = Rect::new(plus.x - 26.0, row.y, 24.0, bh);
             let count = format!("{n}/{}", l.quota);
             let cw = gfx::text_width("00/00", 12.0) + 6.0;
             let name = Rect::new(row.x + 18.0, row.y, minus.x - cw - row.x - 22.0, bh);
             let col = if l.enabled { pal::ACCENT } else { pal::DIM };
             gfx::text(&format!("{}", i + 1), row.x + 2.0, row.y + 7.0, 13.0, with_alpha(col, 0.8));
-            let open = self.program_menu == Some(l.id);
-            if ui.button_ex(name, pname, open, true, if l.enabled { pal::ACCENT } else { pal::WARN }) {
-                acts.push(Act::ToggleProgramMenu(l.id));
-            }
-            if open {
-                menu_at = Some((l.id, pname.to_string(), ly));
-            }
             gfx::text(&count, minus.x - cw, row.y + 7.0, gfx::fit_size(&count, 12.0, cw - 4.0), pal::DIM);
             if ui.button(minus, "−") && l.quota > 0 {
                 acts.push(Act::Issue(Command::SetQuota { line: l.id, quota: l.quota - 1 }));
@@ -1629,28 +1694,30 @@ impl Game {
             if ui.button(plus, "+") && l.quota < MAX_QUOTA {
                 acts.push(Act::Issue(Command::SetQuota { line: l.id, quota: l.quota + 1 }));
             }
-            if ui.button_ex(code, "Code", false, true, pal::GOOD) {
-                acts.push(Act::OpenProgram(pname.to_string(), Some(l.id)));
-            }
             if ui.button_ex(pause, if l.enabled { "II" } else { ">" }, !l.enabled, true, pal::WARN) {
                 acts.push(Act::Issue(Command::ToggleLine { line: l.id }));
             }
             // What the line is up to: the next dronoid, or why none comes.
-            let (why, frac) = if !l.enabled {
-                ("paused".to_string(), 0.0)
+            let secs = (l.timer as f32 / TICKS_PER_SEC).ceil() as i32;
+            let (short, why, frac) = if !l.enabled {
+                ("paused".to_string(), "paused".to_string(), 0.0)
             } else if n >= l.quota as usize {
-                ("full: its quota is reached".to_string(), 1.0)
-            } else if out >= b.room() {
-                ("the hangar is full: Expand".to_string(), 1.0)
+                ("full".to_string(), "full: its quota is reached".to_string(), 1.0)
+            } else if out >= room {
+                ("no room".to_string(), "no more room: build a factory".to_string(), 1.0)
             } else if me.minerals < DRONOID_COST {
-                (format!("needs {DRONOID_COST} crystals"), 0.0)
+                ("crystals".to_string(), format!("needs {DRONOID_COST} crystals"), 0.0)
             } else {
-                let secs = (l.timer as f32 / TICKS_PER_SEC).ceil() as i32;
-                (format!("next dronoid in {secs} s"), 1.0 - l.timer as f32 / wait as f32)
+                (format!("{secs} s"), format!("next dronoid in {secs} s"), 1.0 - l.timer as f32 / wait as f32)
             };
+            gfx::text(&format!("line {}", i + 1), name.x, row.y + 6.0, 13.0, col);
+            let sw = gfx::text_width(&short, 11.0);
+            if name.x + gfx::text_width("line 0", 13.0) + 10.0 + sw < name.x + name.w {
+                gfx::text(&short, name.x + name.w - sw, row.y + 8.0, 11.0, pal::DIM);
+            }
             draw_rectangle(name.x, row.y + bh + 1.0, name.w * frac.clamp(0.0, 1.0), 2.0, with_alpha(col, 0.45));
             if ui.hover(name) {
-                ui.tooltip(&format!("line {}: {pname} · {why} · {}", i + 1, if open { "pick a program" } else { "click to change its program" }));
+                ui.tooltip(&format!("line {}: {why}", i + 1));
             } else if ui.hover(Rect::new(minus.x - cw, row.y, cw, bh)) {
                 ui.tooltip(&format!("{n} dronoids out of the {} this line may keep", l.quota));
             } else if ui.hover(pause) {
@@ -1665,33 +1732,6 @@ impl Game {
         if b.lines.len() < MAX_LINES {
             let more = format!("Assembly relics add production lines ({}/{MAX_LINES})", b.lines.len());
             gfx::text(&more, x + 12.0, ly + 2.0, gfx::fit_size(&more, 11.0, w - 24.0), pal::FAINT);
-        }
-
-        if let Some((line, pname, ry)) = menu_at {
-            // Beside the panel, or above it in two columns on a small screen.
-            let n = lib.entries.len().min(14);
-            let (cols, rh) = if compact { (2, 32.0) } else { (1, 26.0) };
-            let rows = n.div_ceil(cols);
-            let ph = 10.0 + rows as f32 * rh;
-            let pr = if compact { Rect::new(x, y - ph - 6.0, w, ph) } else { Rect::new(x - 172.0, ry, 164.0, ph) };
-            ui.panel(pr);
-            let cw = (pr.w - 10.0 - 6.0 * (cols - 1) as f32) / cols as f32;
-            for (i, e) in lib.entries.iter().take(n).enumerate() {
-                let (col, row) = ((i % cols) as f32, (i / cols) as f32);
-                let rr = Rect::new(pr.x + 5.0 + col * (cw + 6.0), pr.y + 5.0 + row * rh, cw, rh - 2.0);
-                if ui.button_ex(rr, &e.name, e.name == pname, true, pal::ACCENT) {
-                    match vm::assemble(&e.name, &e.source) {
-                        Ok(_) => acts.push(Act::Issue(Command::SetProgram { line, name: e.name.clone(), source: e.source.clone() })),
-                        Err(_) => acts.push(Act::OpenProgram(e.name.clone(), Some(line))),
-                    }
-                    acts.push(Act::ToggleProgramMenu(line));
-                }
-                if ui.hover(rr)
-                    && let Some(b) = programs::builtin(&e.name)
-                {
-                    ui.tooltip(b.summary);
-                }
-            }
         }
     }
 
@@ -1944,10 +1984,20 @@ impl Game {
             return;
         }
         if self.tool == Tool::Target {
-            for (i, v) in [(0u8, mx.div_euclid(FP)), (1, my.div_euclid(FP)), (2, 1)] {
-                acts.push(Act::Issue(Command::SetMemory { index: i, value: v }));
-            }
+            self.task_panel.set_target(mx.div_euclid(FP), my.div_euclid(FP));
             self.tool = Tool::None;
+            return;
+        }
+        if let Tool::Build(kind) = self.tool {
+            match self.world.can_build(self.me, kind, mx, my) {
+                Ok(()) => {
+                    acts.push(Act::Issue(Command::Build { kind, x: mx, y: my }));
+                    if !ui.shift {
+                        self.tool = Tool::None;
+                    }
+                }
+                Err(why) => self.toast(format!("Not here: {why}"), pal::WARN),
+            }
             return;
         }
         let wp = self.cam.s2w(ui.mouse);
@@ -1967,18 +2017,34 @@ impl Game {
             .map(|b| (b.id, fpv(b.x, b.y).distance(wp)))
             .filter(|(id, d)| *d < fp(BASE_RADIUS) + 0.4 && self.world.base(*id).is_some_and(|b| self.sight.shows(b.owner, fpv(b.x, b.y))))
             .min_by(|a, b| a.1.total_cmp(&b.1));
+        let near = |x: i32, y: i32, r: i32| fpv(x, y).distance(wp) < fp(r) + 0.4;
+        let factory = self
+            .world
+            .factories
+            .iter()
+            .find(|f| near(f.x, f.y, FACTORY_RADIUS) && self.sight.shows(f.owner, fpv(f.x, f.y)))
+            .map(|f| f.id);
+        let beacon = self
+            .world
+            .beacons
+            .iter()
+            .find(|b| near(b.x, b.y, BEACON_RADIUS * 2) && self.sight.shows(b.owner, fpv(b.x, b.y)))
+            .map(|b| b.id);
         let sel = match (dronoid, base) {
             (_, Some((id, _))) if dronoid.is_none_or(|d| d.1 > 0.5) => Sel::Base(id),
+            _ if factory.is_some() && dronoid.is_none_or(|d| d.1 > 0.5) => Sel::Factory(factory.unwrap()),
+            _ if beacon.is_some() && dronoid.is_none_or(|d| d.1 > 0.5) => Sel::Beacon(beacon.unwrap()),
             (Some((id, _)), _) => Sel::Dronoid(id),
             _ => Sel::None,
         };
+        // Twice on the base: what its dronoids are doing.
         if ui.double_click
             && sel == self.sel
             && let Sel::Base(id) = sel
             && self.world.base_of(self.me).is_some_and(|b| b.id == id)
-            && let Some((line, name)) = self.first_line()
+            && !self.tasks_open
         {
-            acts.push(Act::OpenProgram(name, Some(line)));
+            acts.push(Act::ToggleTasks);
         }
         // A finger has no hover: tapping a relic says what it is.
         if ui.touch
@@ -2024,8 +2090,15 @@ impl Game {
         if is_key_pressed(KeyCode::N) {
             acts.push(Act::Step);
         }
-        if is_key_pressed(KeyCode::X) && !self.landing() {
-            acts.push(Act::Issue(Command::Expand));
+        if !self.landing() {
+            for (key, kind) in [(KeyCode::F, Structure::Factory), (KeyCode::B, Structure::Beacon)] {
+                if is_key_pressed(key) {
+                    acts.push(Act::Tool(Tool::Build(kind)));
+                }
+            }
+            if is_key_pressed(KeyCode::K) {
+                acts.push(Act::ToggleTasks);
+            }
         }
         if is_key_pressed(KeyCode::M) {
             acts.push(Act::ToggleMap);
@@ -2033,29 +2106,15 @@ impl Game {
         if is_key_pressed(KeyCode::L) {
             acts.push(Act::TogglePlayers);
         }
-        if is_key_pressed(KeyCode::T) && self.world.base_of(self.me).is_some() {
-            acts.push(Act::Tool(Tool::Target));
-        }
         if is_key_pressed(KeyCode::P) {
             let name = self.default_program_name();
             acts.push(if self.editor_open { Act::CloseEditor } else { Act::OpenProgram(name, None) });
         }
-        if is_key_pressed(KeyCode::E) {
-            match self.sel {
-                Sel::Base(id) => {
-                    if self.world.base_of(self.me).is_some_and(|b| b.id == id)
-                        && let Some((line, name)) = self.first_line()
-                    {
-                        acts.push(Act::OpenProgram(name, Some(line)));
-                    }
-                }
-                Sel::Dronoid(id) => {
-                    if self.world.dronoid(id).is_some_and(|d| d.owner == self.me) {
-                        acts.push(Act::OpenDebug(id));
-                    }
-                }
-                Sel::None => {}
-            }
+        if is_key_pressed(KeyCode::E)
+            && let Sel::Dronoid(id) = self.sel
+            && self.world.dronoid(id).is_some_and(|d| d.owner == self.me)
+        {
+            acts.push(Act::OpenDebug(id));
         }
         if is_key_pressed(KeyCode::H) || is_key_pressed(KeyCode::Home) {
             acts.push(Act::CenterOn(self.home()));
@@ -2067,6 +2126,11 @@ impl Game {
             acts.push(Act::CenterOn(fpv(b.x, b.y)));
         }
     }
+}
+
+fn capitalized(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map_or(String::new(), |f| f.to_uppercase().collect::<String>() + c.as_str())
 }
 
 /// Helpers used by command-line switches (screenshots, quick testing).
@@ -2304,13 +2368,13 @@ fn help_sections(touch: bool) -> Vec<(&'static str, Vec<String>)> {
     if touch {
         out.push(("by touch", lines(&[
             "one finger sliding: move the map; two fingers: zoom",
-            "tap: pick the base or a dronoid; twice on the base: its first line's program",
+            "tap: pick the base or a dronoid; twice on the base: the tasks",
             "editor: slide to scroll, tap to place the cursor and type",
         ])));
     } else {
         out.push(("shortcuts", lines(&[
-            "X expand · T target · E program/debugger · P programs",
-            "M map · L colonies · H or Tab base",
+            "K tasks · F factory · B beacon · M map · L colonies",
+            "H or Tab base · E debugger · P programs",
             "ZQSD/WASD/arrows, right-drag: camera; wheel: zoom",
             "editor: Ctrl+S apply, Ctrl+Z/Y, Ctrl+D, Tab",
         ])));
@@ -2426,6 +2490,7 @@ mod tests {
             ("editor.rs", include_str!("editor.rs")),
             ("view.rs", include_str!("view.rs")),
             ("blocks.rs", include_str!("blocks.rs")),
+            ("tasks_ui.rs", include_str!("tasks_ui.rs")),
         ];
         for (name, code) in screens {
             for line in code.lines().filter(|l| !l.trim_start().starts_with("//")) {

@@ -4,7 +4,6 @@
 //! sessions and devices. Computer colonies have none.
 
 use super::{Event, World};
-use crate::rules::BASE_CAPACITY;
 
 pub struct Quest {
     pub title: &'static str,
@@ -18,11 +17,12 @@ pub struct Quest {
 
 pub const QUESTS: &[Quest] = &[
     Quest { title: "Land your base", hint: "click a free spot", hint_touch: "tap a free spot", reward: 0 },
-    Quest { title: "Mine 100 crystals", hint: "your dronoids mine on their own", hint_touch: "your dronoids mine on their own", reward: 40 },
-    Quest { title: "Apply a program of your own", hint: "Program (E), change a line, Apply", hint_touch: "Program, change a line, Apply", reward: 60 },
-    Quest { title: "Map the surroundings", hint: "put a line on scout: scouts go far", hint_touch: "put a line on scout: scouts go far", reward: 50 },
-    Quest { title: "Enlarge the hangar", hint: "Expand (X): room for more dronoids", hint_touch: "Expand: room for more dronoids", reward: 80 },
-    Quest { title: "Bring home a relic shard", hint: "put a line on prospector: relics give perks", hint_touch: "put a line on prospector: relics give perks", reward: 60 },
+    Quest { title: "Mine 100 crystals", hint: "your first task mines on its own", hint_touch: "your first task mines on its own", reward: 40 },
+    Quest { title: "Launch a task", hint: "Tasks (K), then New: Explore, Mine...", hint_touch: "Tasks, then New: Explore, Mine...", reward: 50 },
+    Quest { title: "Map the surroundings", hint: "an Explore task: its dronoids go far", hint_touch: "an Explore task: its dronoids go far", reward: 50 },
+    Quest { title: "Build a factory", hint: "Factory (F), where the base sees", hint_touch: "Factory, where the base sees", reward: 80 },
+    Quest { title: "Place a beacon", hint: "Beacon (B): it sees all around it", hint_touch: "Beacon: it sees all around it", reward: 50 },
+    Quest { title: "Bring home a relic shard", hint: "a Prospect task: relics give perks", hint_touch: "a Prospect task: relics give perks", reward: 60 },
 ];
 
 pub const MINED_GOAL: i64 = 100;
@@ -32,6 +32,9 @@ pub const MAPPED_GOAL: i64 = 700;
 
 /// Facts that are not visible in the world state afterwards.
 pub const FLAG_OWN_PROGRAM: u32 = 1;
+pub const FLAG_TASK: u32 = 2;
+pub const FLAG_FACTORY: u32 = 4;
+pub const FLAG_BEACON: u32 = 8;
 
 /// Objectives are checked this often (ticks).
 pub const CHECK_EVERY: u64 = 4;
@@ -51,10 +54,11 @@ pub fn progress(w: &World, player: u8, i: usize) -> (i64, i64) {
     match i {
         0 => (w.base_of(player).is_some() as i64, 1),
         1 => (p.mined.min(MINED_GOAL), MINED_GOAL),
-        2 => ((p.flags & FLAG_OWN_PROGRAM != 0) as i64, 1),
+        2 => ((p.flags & FLAG_TASK != 0) as i64, 1),
         3 => (p.seen.count().min(MAPPED_GOAL), MAPPED_GOAL),
-        4 => (w.base_of(player).is_some_and(|b| b.capacity > BASE_CAPACITY) as i64, 1),
-        5 => (w.base_of(player).is_some_and(|b| b.has_perks()) as i64, 1),
+        4 => ((p.flags & FLAG_FACTORY != 0) as i64, 1),
+        5 => ((p.flags & FLAG_BEACON != 0) as i64, 1),
+        6 => (w.base_of(player).is_some_and(|b| b.has_perks()) as i64, 1),
         _ => (0, 1),
     }
 }
@@ -88,7 +92,8 @@ mod tests {
     use super::*;
     use crate::geo::dir_vec;
     use crate::programs;
-    use crate::rules::{EXPAND_COST, FP};
+    use crate::rules::{FACTORY_COST, FP};
+    use crate::sim::{Structure, TaskKind, TaskSpec};
     use crate::sim::tests::land;
     use crate::sim::Command;
 
@@ -142,12 +147,10 @@ mod tests {
         assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 1, reward: QUESTS[1].reward });
         assert!(w.players[me as usize].minerals >= before + QUESTS[1].reward);
 
-        // A built-in program does not count as one of our own.
-        w.step(&[(me, Command::UpdateProgram { name: "miner".into(), source: miner.source.into() })]);
+        // The task the base lands with does not count: one launched does.
         idle(&mut w);
         assert_eq!(current(&w, me), Some(2));
-        let own = format!("; my own way\n{}", miner.source);
-        w.step(&[(me, Command::UpdateProgram { name: "miner".into(), source: own })]);
+        w.step(&[(me, Command::NewTask { spec: TaskSpec::new(TaskKind::Explore, 2) })]);
         assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 2, reward: QUESTS[2].reward });
 
         assert!(progress(&w, me, 3).0 < MAPPED_GOAL, "the arrival scan alone is not enough");
@@ -164,13 +167,23 @@ mod tests {
         }
         assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 3, reward: QUESTS[3].reward });
 
-        w.players[me as usize].minerals += EXPAND_COST;
-        w.step(&[(me, Command::Expand)]);
+        w.players[me as usize].minerals += FACTORY_COST + 100;
+        let b = w.base_of(me).unwrap().clone();
+        let spot = (0..360).step_by(30).map(|a| {
+            let (dx, dy) = dir_vec(a, 10 * FP);
+            (b.x + dx, b.y + dy)
+        });
+        let spots: Vec<(i32, i32)> = spot.collect();
+        let f = *spots.iter().find(|p| w.can_build(me, Structure::Factory, p.0, p.1).is_ok()).expect("room for a factory");
+        w.step(&[(me, Command::Build { kind: Structure::Factory, x: f.0, y: f.1 })]);
         assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 4, reward: QUESTS[4].reward });
+        let bc = *spots.iter().find(|p| w.can_build(me, Structure::Beacon, p.0, p.1).is_ok()).expect("room for a beacon");
+        w.step(&[(me, Command::Build { kind: Structure::Beacon, x: bc.0, y: bc.1 })]);
+        assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 5, reward: QUESTS[5].reward });
 
         // A shard of a relic, whatever its kind.
         w.bases.iter_mut().find(|b| b.owner == me).unwrap().perks[0] = 1;
-        assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 5, reward: QUESTS[5].reward });
+        assert_eq!(next_quest(&mut w), Event::QuestDone { player: me, quest: 6, reward: QUESTS[6].reward });
         assert_eq!(current(&w, me), None);
         idle(&mut w);
         assert_eq!(w.players[bot as usize].quests, 0);
@@ -179,7 +192,8 @@ mod tests {
         let copy = World::from_bytes(&w.to_bytes()).unwrap();
         assert_eq!(copy.players[me as usize].quests, w.players[me as usize].quests);
         let saved = World::from_save(&w.to_save()).unwrap();
-        assert_eq!((saved.players[me as usize].quests, saved.players[me as usize].flags), (0b111111, FLAG_OWN_PROGRAM));
+        assert_eq!(saved.players[me as usize].quests, 0b1111111);
+        assert_eq!(saved.players[me as usize].flags, FLAG_TASK | FLAG_FACTORY | FLAG_BEACON);
         assert_eq!(saved.state_hash(), w.state_hash());
     }
 }

@@ -56,16 +56,37 @@ pub const DRONOID_COST: i32 = 10;
 /// dronoids.
 pub const START_MINERALS: i32 = 4 * DRONOID_COST;
 
-/// Production lines a new base has. Each one builds dronoids of its own
-/// program, in parallel with the others; relics of Assembly add more.
+/// Production lines a new base has. Each one builds dronoids, which wait
+/// at the base for a task, in parallel with the others; relics of Assembly
+/// add more.
 pub const BASE_LINES: usize = 2;
 /// Ticks between two dronoids of a production line (30 s).
 pub const SPAWN_TICKS: i32 = 120;
-/// How many living dronoids a new base can hold...
+/// How many living dronoids a new base can hold (factories and Hangar add more).
 pub const BASE_CAPACITY: u16 = 12;
-/// ...and what each enlargement of its hangar costs and adds.
-pub const EXPAND_COST: i32 = 150;
-pub const EXPAND_SLOTS: u16 = 6;
+
+/// Factories: built near the base or a beacon, they build dronoids of
+/// their own, take what is unloaded there and make room for more.
+pub const FACTORY_COST: i32 = 150;
+pub const FACTORY_RADIUS: i32 = FP * 3 / 2;
+pub const FACTORY_HP: i32 = 600;
+pub const FACTORY_ROOM: usize = 8;
+pub const MAX_FACTORIES: usize = 12;
+/// Room between a factory and any other building of its colony...
+pub const BUILD_SPACING: i32 = 4 * FP;
+/// ...and to any building of another colony.
+pub const ENEMY_BUILD_CLEARANCE: i32 = 25 * FP;
+
+/// Beacons: built anywhere one sees, they let the colony see around them.
+pub const BEACON_COST: i32 = 50;
+pub const BEACON_RADIUS: i32 = FP * 3 / 5;
+pub const BEACON_VISION: i32 = 30 * FP;
+pub const MAX_BEACONS: usize = 30;
+
+/// Tasks: at most so many per colony, and dronoids that come back this
+/// close to the base or a factory are free again.
+pub const MAX_TASKS: usize = 16;
+pub const HOME_GAP: i32 = 3 * FP;
 
 /// Newcomers can neither be attacked nor attack for this long (10 min).
 pub const SHIELD_TICKS: u64 = (10.0 * 60.0 * TICKS_PER_SEC) as u64;

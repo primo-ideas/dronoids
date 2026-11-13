@@ -78,6 +78,13 @@ carries on; the bonuses relics gave its factories, added up, become the base's p
 hangar holds as many dronoids as the factories' quotas together (12 at least). A
 colony that had no factory left loses its dronoids and lands anew.
 
+Protocol 13 brought tasks, factories and beacons. Until then, dronoids ran the
+program of their production line for good: a sector saved before is converted when it
+is loaded, each colony's dronoids, by program, becoming a task that runs until it is
+stopped (a Mine task for those running `miner`, and so on; a Custom task for a program
+of one's own), so that they carry on exactly as they were. A save's `factories` are
+those of today when it has `bases`, the factories of protocol 9 and earlier otherwise.
+
 Protocol 11 brought five more kinds of perks (Vision, Drills, Armor, Hangar,
 Nanites) and a hundred levels to each, at 4 shards a level instead of 12. A base saved
 with five kinds reads back with none of the new ones; its shards stay as they were,

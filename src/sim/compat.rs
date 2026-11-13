@@ -16,7 +16,7 @@ use bincode::Options;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use super::{Base, Doing, Dronoid, Line, Ore, Player, ProgEntry, World};
+use super::{Base, Doing, Dronoid, Limit, Line, Ore, Player, ProgEntry, Task, TaskKind, TaskSpec, TaskState, World};
 use crate::vm::Vm;
 use crate::rng::Rng;
 use crate::rules::*;
@@ -96,6 +96,7 @@ impl DronoidOld {
             doing: self.doing,
             busy: self.busy,
             born: self.born,
+            task: 0,
         }
     }
 
@@ -198,6 +199,7 @@ pub(super) fn from_bincode(bytes: &[u8]) -> Result<(World, u32), String> {
     if let Ok(old) = strict::<WorldOld<PlayerV4>>(bytes) {
         let (mut w, factories) = upgrade(old, PlayerV4::into_player);
         found_bases(&mut w, factories, &BTreeMap::new());
+        found_tasks(&mut w);
         return Ok((w, 4));
     }
     if let Ok(old) = strict::<WorldOld<PlayerV3>>(bytes) {
@@ -211,6 +213,7 @@ pub(super) fn from_bincode(bytes: &[u8]) -> Result<(World, u32), String> {
             w.reveal(owner, x, y, r);
         }
         found_bases(&mut w, factories, &BTreeMap::new());
+        found_tasks(&mut w);
         return Ok((w, 3));
     }
     Err(current)
@@ -221,8 +224,12 @@ pub(super) fn from_bincode(bytes: &[u8]) -> Result<(World, u32), String> {
 pub(super) fn from_json(bytes: &[u8]) -> Result<World, String> {
     let mut value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     let fields = value.as_object_mut().ok_or("not a sector")?;
-    let factories = fields.remove("factories");
+    // Until protocol 9 a colony was its factories; since protocol 13 a
+    // base has factories beside it.
+    let legacy = !fields.contains_key("bases");
+    let factories = if legacy { fields.remove("factories") } else { None };
     let boosts = fields.remove("boosts");
+    let had_tasks = fields.contains_key("tasks");
     let mut w: World = serde_json::from_value(value).map_err(|e| e.to_string())?;
     if let Some(factories) = factories {
         let factories: Vec<Factory> = serde_json::from_value(factories).map_err(|e| e.to_string())?;
@@ -232,7 +239,37 @@ pub(super) fn from_json(bytes: &[u8]) -> Result<World, String> {
         };
         found_bases(&mut w, factories, &boosts);
     }
+    if !had_tasks {
+        found_tasks(&mut w);
+    }
     Ok(w)
+}
+
+/// Until protocol 12, dronoids ran the program of their production line,
+/// for good. Each colony's dronoids, by program, become a task that runs
+/// until it is stopped, of the kind that program is for (a program of
+/// one's own: a custom task), so that they carry on exactly as they were.
+pub(super) fn found_tasks(w: &mut World) {
+    let mut groups: BTreeMap<(u8, u32), Vec<usize>> = BTreeMap::new();
+    for (i, d) in w.dronoids.iter().enumerate() {
+        if w.base_of(d.owner).is_some() {
+            groups.entry((d.owner, d.prog)).or_default().push(i);
+        }
+    }
+    for ((owner, prog), members) in groups {
+        let name = w.program_name(prog).to_string();
+        let kind = TaskKind::ALL.into_iter().find(|k| k.program() == Some(name.as_str())).unwrap_or(TaskKind::Custom);
+        let mut spec = TaskSpec::new(kind, members.len().min(MAX_DRONOIDS_PER_PLAYER) as u8);
+        spec.limit = Limit::Never;
+        if kind == TaskKind::Custom {
+            spec.program = Some((name, w.programs[prog as usize].source.clone()));
+        }
+        let id = w.new_id();
+        w.tasks.push(Task { id, owner, spec, prog, state: TaskState::Running, progress: 0, started: w.tick, runs: 0 });
+        for i in members {
+            w.dronoids[i].task = id;
+        }
+    }
 }
 
 /// Each colony's factories become one base, where its oldest factory

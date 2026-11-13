@@ -9,7 +9,7 @@ use macroquad::prelude::*;
 
 use dronoids::rules::*;
 use dronoids::sim::fog::FogMap;
-use dronoids::sim::{ore_radius, Doing, Event, World};
+use dronoids::sim::{ore_radius, Doing, Event, Structure, World};
 
 use crate::fx::Fx;
 use crate::gfx::{arc, mix, pal, perk_color, player_color, poly_fill, poly_lines, regular, scale_rgb, with_alpha};
@@ -87,8 +87,8 @@ impl Sight {
 
     pub fn of(world: &World, me: u8, alpha: f32, area: Rect) -> Sight {
         let mut sources: Vec<(Vec2, f32)> = vec![];
-        for b in world.bases.iter().filter(|b| b.owner == me) {
-            sources.push((fpv(b.x, b.y), fp(b.vision())));
+        for (x, y, r) in world.lookouts(me) {
+            sources.push((fpv(x, y), fp(r)));
         }
         let a = alpha.clamp(0.0, 1.0);
         for d in world.dronoids.iter().filter(|d| d.owner == me) {
@@ -169,10 +169,14 @@ pub const FOG_UNKNOWN: Color = Color::new(0.025, 0.03, 0.055, 1.0);
 pub const FOG_EXPLORED: Color = Color::new(0.33, 0.37, 0.52, 1.0);
 
 pub struct Highlight {
+    /// The selected base, factory or beacon.
     pub base: Option<u32>,
+    /// A building is being placed: what the colony sees stands out.
+    pub building: bool,
     pub dronoid: Option<u32>,
-    /// Landing ghost: world position and validity.
-    pub ghost: Option<(Vec2, bool)>,
+    /// Ghost of what is being placed: world position, whether it can go
+    /// there, and what it is (none: the base landing).
+    pub ghost: Option<(Vec2, bool, Option<Structure>)>,
     /// Target marker of the selected base.
     pub target: Option<Vec2>,
     /// Suggested place for the base to land.
@@ -213,7 +217,8 @@ impl WorldView {
                 | Event::BaseDestroyed { x, y, .. }
                 | Event::BaseLanded { x, y, .. }
                 | Event::OreGrown { x, y } => sight.visible(fpv(x, y)),
-                Event::Expanded { owner, .. } => world.base_of(owner).is_some_and(|b| sight.visible(fpv(b.x, b.y))),
+                Event::Built { x, y, .. } | Event::FactoryDestroyed { x, y, .. } => sight.visible(fpv(x, y)),
+                Event::TaskDone { .. } => false,
                 Event::Mine { tx, ty, .. } | Event::Drop { tx, ty, .. } | Event::Shard { tx, ty, .. } => sight.visible(fpv(tx, ty)),
                 Event::Attack { x, y, tx, ty, .. } => sight.visible(fpv(x, y)) || sight.visible(fpv(tx, ty)),
                 Event::PlayerJoined { player } => {
@@ -283,13 +288,19 @@ impl WorldView {
                     self.fx.ring(fpv(x, y), player_color(owner), 7.0, 1.2);
                     self.fx.dots(fpv(x, y), player_color(owner), 40, 5.0, 1.1);
                 }
-                Event::Expanded { owner, .. } => {
-                    if let Some(b) = world.base_of(owner) {
-                        let at = fpv(b.x, b.y);
-                        self.fx.ring(at, pal::ORE, 5.0, 1.0);
-                        self.fx.dots(at, player_color(owner), 24, 4.0, 0.9);
-                    }
+                Event::Built { owner, x, y, kind } => {
+                    let at = fpv(x, y);
+                    let size = if kind == Structure::Beacon { 6.0 } else { 3.5 };
+                    self.fx.ring(at, player_color(owner), size, 1.0);
+                    self.fx.dots(at, player_color(owner), 24, 3.0, 0.9);
                 }
+                Event::FactoryDestroyed { owner, x, y } => {
+                    let at = fpv(x, y);
+                    self.fx.burst(at, player_color(owner), 50, 6.0, 1.3);
+                    self.fx.ring(at, WHITE, 3.0, 0.7);
+                    self.shake = self.shake.max(0.25);
+                }
+                Event::TaskDone { .. } => {}
                 Event::PlayerJoined { player } => {
                     if let Some(p) = world.players.get(player as usize) {
                         self.fx.ring(fpv(p.home.0, p.home.1), player_color(player), 6.0, 1.5);
@@ -479,6 +490,61 @@ impl WorldView {
             }
         }
 
+        // Beacons: a slender diamond with a slow pulse.
+        for b in &world.beacons {
+            let c = fpv(b.x, b.y);
+            if !cam.visible(c, 4.0) || !sight.shows(b.owner, c) {
+                continue;
+            }
+            let sc = cam.w2s(c);
+            let pc = player_color(b.owner);
+            let r = (fp(BEACON_RADIUS) * z).max(4.0);
+            let pulse = (t * 0.8 + b.id as f32 * 0.37).fract();
+            draw_circle_lines(sc.x, sc.y, r * (1.5 + 3.0 * pulse), 1.0, with_alpha(pc, 0.5 * (1.0 - pulse)));
+            let diamond = [sc + vec2(0.0, -r * 1.6), sc + vec2(r, 0.0), sc + vec2(0.0, r * 1.6), sc + vec2(-r, 0.0)];
+            poly_fill(&diamond, with_alpha(pc, 0.3));
+            poly_lines(&diamond, 1.5, pc);
+            draw_circle(sc.x, sc.y, r * 0.25, mix(pc, WHITE, 0.6));
+            if hl.base == Some(b.id) {
+                arc(sc, r * 2.4, t * 2.0, t * 2.0 + TAU * 0.75, 2.0, WHITE);
+            }
+        }
+
+        // Factories: a smaller hexagon, a turning square, the next dronoid
+        // filling a ring.
+        for f in &world.factories {
+            let c = fpv(f.x, f.y);
+            if !cam.visible(c, 5.0) || !sight.shows(f.owner, c) {
+                continue;
+            }
+            let sc = cam.w2s(c);
+            let pc = player_color(f.owner);
+            let r = (fp(FACTORY_RADIUS) * z).max(5.0);
+            let hex = regular(sc, r, 6, 0.0);
+            poly_fill(&hex, with_alpha(pc, 0.16));
+            poly_lines(&hex, (z * 0.07).max(1.5), pc);
+            if r > 8.0 {
+                poly_lines(&regular(sc, r * 0.45, 4, t * 0.9 + f.id as f32), (z * 0.04).max(1.0), mix(pc, WHITE, 0.3));
+                let wait = world.base_of(f.owner).map_or(SPAWN_TICKS, |b| b.spawn_ticks()) as f32;
+                if f.timer > 0 {
+                    let prog = (1.0 - f.timer as f32 / wait).clamp(0.0, 1.0);
+                    arc(sc, r * 1.25, -PI / 2.0, -PI / 2.0 + TAU * prog, (z * 0.04).max(1.0), with_alpha(pc, 0.5));
+                }
+            }
+            if f.hp < FACTORY_HP {
+                let w = r * 1.8;
+                let frac = f.hp as f32 / FACTORY_HP as f32;
+                draw_rectangle(sc.x - w / 2.0, sc.y + r * 1.4, w, 3.0, with_alpha(BLACK, 0.7));
+                draw_rectangle(sc.x - w / 2.0, sc.y + r * 1.4, w * frac, 3.0, mix(pal::BAD, pal::GOOD, frac));
+            }
+            if hl.base == Some(f.id) {
+                for i in 0..6 {
+                    let a0 = t * 0.6 + i as f32 * TAU / 6.0;
+                    arc(sc, r * 1.6, a0, a0 + 0.6, 2.0, WHITE);
+                }
+            }
+        }
+
         // Bases: a large hexagon, its production lines as bays around the
         // core (each with the progress of its next dronoid), its perks as
         // pips outside, a corner of the ring a kind.
@@ -615,13 +681,51 @@ impl WorldView {
             draw_circle(c.x, c.y, 3.0, col);
         }
 
-        if let Some((p, ok)) = hl.ghost {
+        if let Some((p, ok, kind)) = hl.ghost {
             let c = cam.w2s(p);
             let col = if ok { pal::GOOD } else { pal::BAD };
             let pulse = 0.6 + 0.4 * (t * 6.0).sin();
-            let hex = regular(c, fp(BASE_RADIUS) * z, 6, PI / 6.0);
-            poly_lines(&hex, 2.0, with_alpha(col, pulse));
-            poly_fill(&hex, with_alpha(col, 0.12));
+            let shape = match kind {
+                None => regular(c, fp(BASE_RADIUS) * z, 6, PI / 6.0),
+                Some(Structure::Factory) => regular(c, (fp(FACTORY_RADIUS) * z).max(5.0), 6, 0.0),
+                Some(Structure::Beacon) => {
+                    let r = (fp(BEACON_RADIUS) * z).max(4.0);
+                    vec![c + vec2(0.0, -r * 1.6), c + vec2(r, 0.0), c + vec2(0.0, r * 1.6), c + vec2(-r, 0.0)]
+                }
+            };
+            poly_lines(&shape, 2.0, with_alpha(col, pulse));
+            poly_fill(&shape, with_alpha(col, 0.12));
+            // What a beacon would see, there.
+            if kind == Some(Structure::Beacon) {
+                draw_circle_lines(c.x, c.y, fp(BEACON_VISION) * z, 1.0, with_alpha(col, 0.35));
+            }
+        }
+    }
+}
+
+/// What the colony's base and beacons see, outlined over the fog: a glow
+/// inside the edge and a dashed line on it, brighter while a building is
+/// being placed.
+pub fn draw_lookouts(world: &World, cam: &Cam, sight: &Sight, building: bool, t: f32) {
+    let Some(me) = sight.me() else { return };
+    let col = player_color(me);
+    let strong = if building { 1.0 } else { 0.6 };
+    let z = cam.zoom;
+    for (x, y, r) in world.lookouts(me) {
+        let c = fpv(x, y);
+        let rr = fp(r);
+        if !cam.visible(c, rr + 2.0) {
+            continue;
+        }
+        let sc = cam.w2s(c);
+        let rs = rr * z;
+        for k in 1..=4 {
+            draw_circle_lines(sc.x, sc.y, rs - k as f32 * 2.5, 2.5, with_alpha(col, 0.05 * strong * (5 - k) as f32 / 4.0));
+        }
+        let dashes = ((rs * TAU / 16.0) as usize).clamp(24, 320) & !1;
+        for k in (0..dashes).step_by(2) {
+            let a0 = k as f32 / dashes as f32 * TAU + t * 0.04;
+            arc(sc, rs, a0, a0 + TAU / dashes as f32, 2.0, with_alpha(col, 0.85 * strong));
         }
     }
 }
@@ -711,6 +815,18 @@ pub fn draw_minimap(world: &World, cam: &Cam, r: Rect, sight: &Sight, mouse: Vec
         let (p, t) = (at(fpv(d.x, d.y)), fade(at(fpv(d.x, d.y))));
         if t > 0.0 {
             draw_rectangle(p.x - 0.7, p.y - 0.7, 1.6, 1.6, with_alpha(player_color(d.owner), t));
+        }
+    }
+    for f in world.factories.iter().filter(|f| sight.shows(f.owner, fpv(f.x, f.y))) {
+        let (p, t) = (at(fpv(f.x, f.y)), fade(at(fpv(f.x, f.y))));
+        if t > 0.0 {
+            draw_poly(p.x, p.y, 6, 2.5, 0.0, with_alpha(player_color(f.owner), t * 0.8));
+        }
+    }
+    for b in world.beacons.iter().filter(|b| sight.shows(b.owner, fpv(b.x, b.y))) {
+        let (p, t) = (at(fpv(b.x, b.y)), fade(at(fpv(b.x, b.y))));
+        if t > 0.0 {
+            draw_poly(p.x, p.y, 4, 2.5, 0.0, with_alpha(mix(player_color(b.owner), WHITE, 0.4), t));
         }
     }
     for b in world.bases.iter().filter(|b| sight.shows(b.owner, fpv(b.x, b.y))) {
